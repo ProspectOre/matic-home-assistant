@@ -308,7 +308,7 @@ export class MaticPlanViewsV4 extends LitElement {
     const ordered = plan.runBehavior === "ordered";
     const previewRooms = ready && preview ? preview.rooms : [];
     // The server preview orders every room and area; boundaries count both.
-    const steps = ready && preview ? preview.steps ?? previewRooms : [];
+    const steps = ready && preview ? preview.steps : [];
     const areas = ready ? steps.length - previewRooms.length : planAreas(plan).length;
     const blockedRoom = !paused && blocker ? roomBlocker(state, plan)?.jump.roomId ?? null : null;
     // While a save is pending the preview is about to be read again, so it has no problem yet.

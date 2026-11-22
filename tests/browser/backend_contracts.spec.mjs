@@ -536,6 +536,7 @@ test("saved-plan preview parsing enforces the shared room-sequence limit", async
       const candidate = structuredClone(payload);
       candidate.plans[0].next_run_preview = {
         rooms: Array.from({ length: count }, (_, index) => room(index)),
+        entries: Array.from({ length: count }, (_, index) => ({ kind: "room", ...room(index) })),
         mission_boundaries: [],
         blocker: null,
         preview_token: "a".repeat(64),
@@ -600,6 +601,7 @@ test("saved-plan preview parsing accepts plans with custom areas", async ({ page
         parse({ rooms: [], mission_boundaries: [], blocker }).blocker),
       boundaryPastEntries: parse(ready({ mission_boundaries: [2] })),
       boundariesWithoutEntries: parse(ready({ entries: undefined })),
+      roomsWithoutEntries: parse(ready({ entries: undefined, mission_boundaries: [] })),
       emptyEntries: parse(ready({ rooms: [], entries: [], mission_boundaries: [] })),
       entriesNotList: parse(ready({ entries: {} })),
       tooMany: parse(ready({ entries: Array.from({ length: 201 }, () => area), mission_boundaries: [] })),
@@ -621,7 +623,9 @@ test("saved-plan preview parsing accepts plans with custom areas", async ({ page
   expect(result.areaWithoutId).toBe("invalid-plan-preview-room-id");
   expect(result.blockers).toEqual(["area_map_changed", "area_missing"]);
   expect(result.boundaryPastEntries).toBe("invalid-plan-preview-boundary");
-  expect(result.boundariesWithoutEntries).toBe("invalid-plan-preview-boundary");
+  expect(result.boundariesWithoutEntries).toBe("invalid-plan-preview");
+  // Only a blocked preview omits entries; its rooms are not read as steps.
+  expect(result.roomsWithoutEntries).toBe("empty-plan-preview");
   expect(result.emptyEntries).toBe("empty-plan-preview");
   expect(result.entriesNotList).toBe("invalid-plan-preview");
   expect(result.tooMany).toBe("invalid-plan-preview");

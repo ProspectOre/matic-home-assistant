@@ -17,11 +17,8 @@ const bundle = await build({
 });
 
 const preview = (entryId = "synthetic-entry", token = "a", mode = "vacuum") => ({
-  entryId,
-  floorToken: "f".repeat(64),
-  previewToken: token.repeat(64),
+  entryId, floorToken: "f".repeat(64), previewToken: token.repeat(64),
   rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: mode, coverageSetting: "standard", cadenceReasons: [] }],
-  missionBoundaries: [],
   blocker: null,
 });
 
@@ -151,21 +148,23 @@ test("@safety uses the HA websocket response envelope and sends a read-only sche
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const { MaticBackend } = await import("/backend-contract-test.js");
-    let message;
+    let message, boundaries = [];
     const hass = { connection: { sendMessagePromise: async (request) => {
       message = request;
       return { context: {}, response: {
         entry_id: "synthetic-entry", floor_token: "f".repeat(64), preview_token: "a".repeat(64),
-        rooms: [{ room_id: "room-a", name: "Kitchen", cleaning_mode: "mop", coverage_setting: "heavy_duty", cadence_reasons: ["mop_due"] }],
-        mission_boundaries: [], blocker: null,
+        rooms: [{ room_id: "room-a", name: "Kitchen", cleaning_mode: "mop", coverage_setting: "heavy_duty", cadence_reasons: ["mop_due"] },
+          { room_id: "room-b", name: "Hall", cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] }], mission_boundaries: boundaries, blocker: null,
       } };
     } } };
     const backend = new MaticBackend(() => hass);
-    const parsed = await backend.previewRoomSequence("vacuum.synthetic", [
-      { room: "room-a", cleaning_mode: "vacuum", coverage_setting: "standard" },
-    ], true);
+    const request = [{ room: "room-a", cleaning_mode: "vacuum", coverage_setting: "standard" }];
+    const parsed = await backend.previewRoomSequence("vacuum.synthetic", request, true);
+    // Rooms alone run as one mission, so a room sequence has no part break.
+    boundaries = [1];
+    const partBreak = await backend.previewRoomSequence("vacuum.synthetic", request, true).catch((error) => error.code);
     backend.dispose();
-    return { message, parsed };
+    return { message, parsed, partBreak };
   });
   expect(result.message).toEqual({
     type: "call_service", domain: "matic_robot", service: "preview_room_sequence",
@@ -176,6 +175,7 @@ test("@safety uses the HA websocket response envelope and sends a read-only sche
   });
   expect(result.parsed.floorToken).toBe("f".repeat(64));
   expect(result.parsed.rooms[0]).toMatchObject({ roomId: "room-a", cleaningMode: "mop", coverageSetting: "heavy_duty", cadenceReasons: ["mop_due"] });
+  expect({ boundaries: "missionBoundaries" in result.parsed, partBreak: result.partBreak }).toEqual({ boundaries: false, partBreak: "invalid-room-sequence-preview" });
 });
 
 test("@safety accepts 100 rooms and rejects larger preview requests before calling Home Assistant", async ({ page }) => {
@@ -612,16 +612,16 @@ test("@safety a generation and selection change discard old responses before adm
     const generation = h.store.value.generation;
     h.store.replace({ ...h.store.value, generation: generation + 1 });
     for (let i = 0; i < 20 && h.pending.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 0));
-    h.pending[0]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "b".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], missionBoundaries: [], blocker: null });
+    h.pending[0]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "b".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], blocker: null });
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterGenerationLate = h.store.value.manualRoomPreview.value?.preview.previewToken ?? null;
     h.store.replace({ ...h.store.value, selection: { ...h.store.value.selection,
       roomSettings: [{ roomId: "room-a", cleaningMode: "mop", coverageSetting: "standard" }] } });
     for (let i = 0; i < 20 && h.pending.length < 3; i++) await new Promise(resolve => setTimeout(resolve, 0));
-    h.pending[1]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "c".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], missionBoundaries: [], blocker: null });
+    h.pending[1]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "c".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], blocker: null });
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterSelectionLate = h.store.value.manualRoomPreview.value?.preview.previewToken ?? null;
-    h.pending[2]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "d".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "mop", coverageSetting: "standard", cadenceReasons: [] }], missionBoundaries: [], blocker: null });
+    h.pending[2]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "d".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "mop", coverageSetting: "standard", cadenceReasons: [] }], blocker: null });
     for (let i = 0; i < 20 && h.store.value.manualRoomPreview.value?.preview.previewToken !== "d".repeat(64); i++) await new Promise(resolve => setTimeout(resolve, 0));
     const admitted = h.store.value.manualRoomPreview.value;
     h.effects.dispose();
@@ -1097,7 +1097,7 @@ test("@safety preflight dispatches once with a fresh token when the effective pr
     const first = h.effects.executeAction("clean-rooms");
     for (let i = 0; i < 20 && h.pending.length < 1; i += 1) await new Promise(resolve => setTimeout(resolve, 0));
     const second = h.effects.executeAction("clean-rooms");
-    h.pending[0]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "b".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], missionBoundaries: [], blocker: null });
+    h.pending[0]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "b".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], blocker: null });
     await Promise.all([first, second]);
     const output = { previewCalls: h.previews.length, previewCountAtService: h.previewCountAtService[0], serviceCalls: h.calls.length,
       service: h.calls[0]?.[1], token: h.calls[0]?.[2]?.preview_token };
@@ -1127,7 +1127,7 @@ test("@safety administrator loss discards a late preview without state or notice
     const h = window.manualPreviewHarness;
     for (let i = 0; i < 20 && h.pending.length < 1; i++) await new Promise(resolve => setTimeout(resolve, 0));
     h.effects.sync({ ...h.projection, host: { ...h.projection.host, administrator: false } });
-    h.pending[0]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "c".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], missionBoundaries: [], blocker: null });
+    h.pending[0]({ entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "c".repeat(64), rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }], blocker: null });
     await new Promise(resolve => setTimeout(resolve, 0));
     const output = { status: h.store.value.manualRoomPreview.status,
       value: h.store.value.manualRoomPreview.value, notice: h.store.value.notice,
@@ -1145,7 +1145,7 @@ test("@safety retrying a failed preview admits a fresh response without exposing
     if (h.attempts === 1) throw new Error("synthetic backend rejection detail");
     return { entryId: "synthetic-entry", floorToken: "f".repeat(64), previewToken: "d".repeat(64),
       rooms: [{ roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] }],
-      missionBoundaries: [], blocker: null };
+      blocker: null };
   } });
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
