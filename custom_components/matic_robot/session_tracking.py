@@ -142,7 +142,7 @@ class CleaningSessionTracker:
             return native_session
         if native_session is None:
             return tracked
-        if _sessions_overlap(native_session, tracked):
+        if sessions_overlap(native_session, tracked):
             if native_session.mode_results or native_session.completed is False:
                 return native_session
             if tracked.completed is True:
@@ -154,8 +154,8 @@ class CleaningSessionTracker:
                     stop_reason=native_session.stop_reason,
                 )
             return replace(native_session, duration_seconds=tracked.duration_seconds)
-        native_started = _parse_timestamp(native_session.started_at)
-        tracked_started = _parse_timestamp(tracked.started_at)
+        native_started = parse_timestamp(native_session.started_at)
+        tracked_started = parse_timestamp(tracked.started_at)
         if native_started > tracked_started:
             return native_session
         return tracked
@@ -328,7 +328,7 @@ def _build_session(
     )
 
 
-def _parse_timestamp(value: str | None) -> datetime:
+def parse_timestamp(value: str | None) -> datetime:
     """Parse an optional session timestamp for deterministic comparison."""
     if value is None:
         return datetime.min.replace(tzinfo=UTC)
@@ -341,14 +341,14 @@ def _parse_timestamp(value: str | None) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _sessions_overlap(left: CleaningSession, right: CleaningSession) -> bool:
+def sessions_overlap(left: CleaningSession, right: CleaningSession) -> bool:
     """Return whether two bounded session intervals describe the same run."""
     if left.ended_at is None or right.ended_at is None:
         return False
-    left_start = _parse_timestamp(left.started_at)
-    left_end = _parse_timestamp(left.ended_at)
-    right_start = _parse_timestamp(right.started_at)
-    right_end = _parse_timestamp(right.ended_at)
+    left_start = parse_timestamp(left.started_at)
+    left_end = parse_timestamp(left.ended_at)
+    right_start = parse_timestamp(right.started_at)
+    right_end = parse_timestamp(right.ended_at)
     unknown = datetime.min.replace(tzinfo=UTC)
     if unknown in {left_start, left_end, right_start, right_end}:
         return False

@@ -759,7 +759,7 @@ const heldPlanController = async (t, failModule = false) => {
   globalThis.document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
   const store = new Store();
   const entry = entryFor();
-  const plan = { ...store.value.planDraft, id: "saved-plan", name: "Saved", enabled: true, roomOrder: [], nextRunPreview: { previewToken: "a".repeat(64), blocker: null, rooms: [], steps: [], missionBoundaries: [] } };
+  const plan = { ...store.value.planDraft, id: "saved-plan", name: "Saved", enabled: true, roomOrder: [], nextRunPreview: { previewToken: "a".repeat(64), blocker: null, steps: [], missionBoundaries: [] } };
   const plans = { selectedPlan: plan.id, plans: [plan] };
   const service = deferred();
   const calls = [];

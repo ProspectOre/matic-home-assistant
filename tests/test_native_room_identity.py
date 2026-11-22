@@ -15,7 +15,7 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.native_history import (
-    _import_daily_native_uncertainty,
+    import_daily_native_uncertainty,
 )
 from custom_components.matic_robot.room_statistics import (
     native_room_statistics_by_session,
@@ -139,9 +139,9 @@ def test_canonical_daily_hold_uses_floor_and_room_uuid_not_duplicate_name():
     floor_a_record = _record(ended, 7, "partition-a", "uuid-a", "Kitchen")
     robot: dict = {}
 
-    assert not _import_daily_native_uncertainty(robot, active_b, [floor_a_record])
+    assert not import_daily_native_uncertainty(robot, active_b, [floor_a_record])
     assert robot.get("daily_room_completions", {}) == {}
 
-    assert _import_daily_native_uncertainty(robot, floor_a, [floor_a_record])
+    assert import_daily_native_uncertainty(robot, floor_a, [floor_a_record])
     assert "room-a" in robot["daily_room_completions"]
     assert "room-b" not in robot["daily_room_completions"]

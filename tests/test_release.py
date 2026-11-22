@@ -137,6 +137,23 @@ def test_check_refuses_a_tag_the_checkout_contradicts(
         release.check(tag, branch, PUBLISHED, checkout)
 
 
+def test_every_relative_guide_link_in_the_notes_is_rewritten() -> None:
+    """A link the rewrite missed would be dead on the release page."""
+    body = (
+        "[a](map.md) [b](./map.md#x) [c](../README.md) [d](release-notes-0.5.0.md) "
+        "[e](https://example.com/guide.md) `[f](map.md)`\n```\n[g](map.md)\n```"
+    )
+    assert release.guide_links(body, "D") == (
+        "[a](D/map.md) [b](D/./map.md#x) [c](D/../README.md) "
+        "[d](D/release-notes-0.5.0.md) [e](https://example.com/guide.md) "
+        "`[f](map.md)`\n```\n[g](map.md)\n```"
+    )
+    for path in (release.ROOT / "docs").glob("release-notes-*.md"):
+        rewritten = release.guide_links(path.read_text(encoding="utf-8"), "D")
+        assert not re.search(r"\]\((?![a-z]+:|#|D/)[^)]*\.md", rewritten), path
+        assert "D/http" not in rewritten, path
+
+
 def test_check_refuses_an_existing_tag_and_missing_notes(checkout: Path) -> None:
     with pytest.raises(release.ReleaseError, match=r"v0\.6\.0-beta1 already exists"):
         release.check("v0.6.0-beta1", "main", {"v0.6.0-beta1"}, checkout)
@@ -339,10 +356,18 @@ def test_publish_creates_the_release_from_the_zip_and_its_notes(
     notes: str,
     flags: tuple[str, ...],
 ) -> None:
-    _write(checkout, {notes: "# Matic 0.6\n\nFirst paragraph.\n\n## More\n"})
+    body = (
+        "First paragraph, [map](map.md), [actions](actions.md#cleaning),\n"
+        "[below](#more), [releases](https://example.com/releases),\n"
+        "![map](images/map.png) and `handlers[i](event)`.\n\n## More\n"
+    )
+    _write(checkout, {notes: f"# Matic 0.6\n\n{body}"})
     github = FakeGitHub({}, {})
     monkeypatch.setattr(release, "_lines", github)
     monkeypatch.setenv("GITHUB_SHA", "c" * 40)
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    docs = f"https://github.com/owner/repo/blob/{tag}/docs"
 
     release.publish(tag, checkout)
 
@@ -350,7 +375,11 @@ def test_publish_creates_the_release_from_the_zip_and_its_notes(
         (
             *("gh", "release", "create", tag, str(checkout / release.ARCHIVE)),
             *("--target", "c" * 40, "--title", "Matic 0.6"),
-            *("--notes", "First paragraph.\n\n## More\n", *flags),
+            "--notes",
+            body.replace("](map.md)", f"]({docs}/map.md)").replace(
+                "](actions.md#cleaning)", f"]({docs}/actions.md#cleaning)"
+            ),
+            *flags,
         )
     ]
 

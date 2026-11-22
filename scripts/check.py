@@ -115,28 +115,33 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(path.read_bytes())
 
 
+def _source(path: Path, node: ast.ImportFrom) -> list[str]:
+    """Return the parts of the module a `from` import in a file reads."""
+    package = path.parent.parts
+    base = [*package[: len(package) - node.level + 1]] if node.level else []
+    return base + (node.module.split(".") if node.module else [])
+
+
+def _submodule(root: Path, parts: list[str]) -> bool:
+    target = root.joinpath(*parts)
+    return target.with_suffix(".py").is_file() or target.is_dir()
+
+
 def imported(root: Path, path: Path, removed: Container[str] = ()) -> set[str]:
     """Return the modules a Python file imports, relative imports resolved.
 
     `removed` names modules whose files are gone but may still be imported.
     """
-    package = path.parent.parts
     found = set()
     for node in ast.walk(_tree(root / path)):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            base = [*package[: len(package) - node.level + 1]] if node.level else []
-            base += node.module.split(".") if node.module else []
+            base = _source(path, node)
             for alias in node.names:
                 # `from package import name` targets a submodule when one exists.
                 name = ".".join([*base, alias.name])
-                target = root.joinpath(*base, alias.name)
-                submodule = (
-                    name in removed
-                    or target.with_suffix(".py").is_file()
-                    or target.is_dir()
-                )
+                submodule = name in removed or _submodule(root, [*base, alias.name])
                 found.add(name if submodule else ".".join(base))
     return found
 
@@ -183,6 +188,64 @@ def layer_violations(root: Path = ROOT) -> list[str]:
             banned = targets & platforms - {name} if name in platforms else set()
             reason = "platforms stay independent"
         found.extend(f"{name} imports {target}: {reason}" for target in sorted(banned))
+    return found
+
+
+def _private(name: str) -> bool:
+    return name.startswith("_") and not name.startswith("__")
+
+
+def _dotted(node: ast.expr) -> str | None:
+    """Return the dotted name an expression such as ``a.b.c`` spells, if any."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and (base := _dotted(node.value)):
+        return f"{base}.{node.attr}"
+    return None
+
+
+def private_name_violations(root: Path = ROOT) -> list[str]:
+    """Return each import or attribute read of another module's private name.
+
+    Names are private to the integration module that defines them; one that
+    another module needs is made public there.
+    """
+    directory = root.joinpath(*PACKAGE.split("."))
+    found = []
+    for path in sorted(directory.rglob("*.py")):
+        relative = path.relative_to(root)
+        if relative.as_posix().startswith(GENERATED):
+            continue
+        name = module_name(relative)
+        modules: dict[str, str] = {}
+        reached: list[tuple[int, str, str]] = []
+        tree = _tree(path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules |= {
+                    alias.asname or alias.name: alias.name for alias in node.names
+                }
+            elif isinstance(node, ast.ImportFrom):
+                base = _source(relative, node)
+                for alias in node.names:
+                    if _submodule(root, [*base, alias.name]):
+                        local = alias.asname or alias.name
+                        modules[local] = ".".join([*base, alias.name])
+                    elif _private(alias.name):
+                        reached.append((node.lineno, ".".join(base), alias.name))
+        reached += [
+            (node.lineno, modules[receiver], node.attr)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and _private(node.attr)
+            and (receiver := _dotted(node.value)) in modules
+        ]
+        found.extend(
+            f"{relative.as_posix()}:{line}: {private} is private to "
+            f"{source.removeprefix(f'{PACKAGE}.')}; make it public there"
+            for line, source, private in sorted(reached)
+            if source != name and _inside(source, PACKAGE)
+        )
     return found
 
 
@@ -411,10 +474,11 @@ def _trees(directory: str) -> dict[str, ast.Module]:
 
 
 def structure_violations() -> list[str]:
-    """Return every broken layer, size, length and unused-name rule."""
+    """Return every broken layer, private-name, size, length and unused-name rule."""
     integration = _trees(SOURCE)
     return [
         *layer_violations(),
+        *private_name_violations(),
         *size_violations(_code_sizes(), _baseline()),
         *size_violations(
             function_lengths(integration), _baseline(FUNCTIONS), FUNCTIONS

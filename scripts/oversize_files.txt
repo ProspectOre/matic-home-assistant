@@ -1,7 +1,7 @@
 custom_components/matic_robot/area_binding_geometry.py 1629
 custom_components/matic_robot/config_flow.py 1632
 custom_components/matic_robot/managed_observation.py 1087
-custom_components/matic_robot/plan_ledger.py 1660
+custom_components/matic_robot/plan_ledger.py 1653
 custom_components/matic_robot/sensor.py 1183
 custom_components/matic_robot/slam_map_store.py 1296
 frontend/map-studio-v4/effects.ts 1190
@@ -38,7 +38,7 @@ tests/test_services.py 6017
 tests/test_session_ownership.py 2585
 tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1816
-tests/test_slam_scene.py 3040
+tests/test_slam_scene.py 3032
 tests/test_stop_return.py 1479
 tests/test_vacuum.py 1377
 tests/test_workspace_socket.py 1262

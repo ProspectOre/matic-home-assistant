@@ -7,10 +7,10 @@ from google.protobuf.message import DecodeError
 from .models import (
     WifiNetwork,
 )
-from .operational_state import _OPERATIONAL_STATE_MAX_FIELDS
+from .operational_state import OPERATIONAL_STATE_MAX_FIELDS
 from .telemetry_fields import (
-    _TELEMETRY_NESTED_MAX_FIELDS,
     TELEMETRY_NESTED_MAX_BYTES,
+    TELEMETRY_NESTED_MAX_FIELDS,
     bounded_fields,
     decode_text_field,
     decode_text_from_fields,
@@ -29,7 +29,7 @@ def wifi_scan_block(payload: bytes) -> bytes | None:
             payload,
             7,
             max_bytes=WIFI_STATUS_MAX_BYTES,
-            max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+            max_fields=OPERATIONAL_STATE_MAX_FIELDS,
         )
     except DecodeError:
         return None
@@ -54,14 +54,14 @@ def decode_wifi_status(
         fields = bounded_fields(
             payload,
             max_bytes=WIFI_STATUS_MAX_BYTES,
-            max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+            max_fields=OPERATIONAL_STATE_MAX_FIELDS,
         )
         state = names.get(
             telemetry_varint(
                 payload,
                 1,
                 max_bytes=WIFI_STATUS_MAX_BYTES,
-                max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+                max_fields=OPERATIONAL_STATE_MAX_FIELDS,
             ),
             "unknown",
         )
@@ -75,7 +75,7 @@ def decode_wifi_status(
             payload,
             7,
             max_bytes=WIFI_STATUS_MAX_BYTES,
-            max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+            max_fields=OPERATIONAL_STATE_MAX_FIELDS,
         )
         scan_fields = bounded_fields(
             scan,
@@ -95,7 +95,7 @@ def decode_wifi_status(
             bounded_fields(
                 item,
                 max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-                max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+                max_fields=TELEMETRY_NESTED_MAX_FIELDS,
             )
             network_ssid = decode_text_field(item, 1) or decode_text_field(item, 7)
             if network_ssid is None:

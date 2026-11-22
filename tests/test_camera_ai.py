@@ -53,7 +53,7 @@ def _prepare_camera_tool(
     )
     monkeypatch.setattr(
         llm_camera,
-        "_PanelRobot",
+        "PanelRobot",
         lambda *_args: SimpleNamespace(entity_id="vacuum.matic"),
     )
     return hass, service_call
@@ -841,7 +841,7 @@ async def test_camera_assist_tools_use_generic_service_refusal(
     service_call.side_effect = HomeAssistantError("private provider detail")
     refusal = llm.ToolResult(data={"reason": "Photo tool unavailable."}, error=True)
     refusal_handler = AsyncMock(return_value=refusal)
-    monkeypatch.setattr(llm_camera, "_async_service_refusal", refusal_handler)
+    monkeypatch.setattr(llm_camera, "async_service_refusal", refusal_handler)
     args = {"place": "Kitchen"}
     if tool_type is MaticInvestigateTool:
         args.update(question="Is water visible?", ai_task_entity_id="ai_task.selected")

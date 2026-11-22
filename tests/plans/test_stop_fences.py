@@ -12,7 +12,7 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.const import EVENT_PLAN_DOCKED, EVENT_PLAN_FINISHED
 from custom_components.matic_robot.managed_executor import (
-    _async_execute_rooms,
+    async_execute_rooms,
     async_finish_plan_run,
 )
 from custom_components.matic_robot.managed_run import RoomStoppedInPlaceError
@@ -32,10 +32,10 @@ async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
         raise ServiceValidationError("room interrupted") from cause
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=stopped_leg),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -117,7 +117,7 @@ async def test_dock_closure_follows_the_runs_plan_finished(hass) -> None:
     )
     await asyncio.sleep(0)
     assert not closure.done()
-    assert manager.ledger.run_record("serial", "run-1").outcome == "running"
+    assert manager.repository.run_record("serial", "run-1").outcome == "running"
 
     await async_finish_plan_run(
         hass,
@@ -524,7 +524,7 @@ async def test_dock_closure_keeps_the_end_a_live_run_reached(
     await _finish(hass, manager, outcome, reason_code)
 
     assert await closure is fenced
-    assert manager.ledger.run_record("serial", "run-1").outcome == outcome
+    assert manager.repository.run_record("serial", "run-1").outcome == outcome
     assert manager.control.stop_fence_token("serial") is None
 
 
@@ -536,7 +536,7 @@ async def test_dock_closure_does_not_wait_when_the_end_failed_to_save(
     await _begin(manager)
     manager.ledger.async_finish_run = AsyncMock()
     await _finish(hass, manager, "cancelled", "managed_stop")
-    assert manager.ledger.run_record("serial", "run-1").outcome == "running"
+    assert manager.repository.run_record("serial", "run-1").outcome == "running"
 
     closing = manager.ledger.async_mark_run_docked("serial", "run-1")
     assert not await asyncio.wait_for(closing, 1)

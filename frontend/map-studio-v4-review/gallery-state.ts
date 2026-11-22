@@ -5,6 +5,8 @@ import type {
   ManualRoomSequencePreview,
   NextRunPreview,
   NextRunPreviewBlocker,
+  NextRunPreviewRoom,
+  NextRunPreviewStep,
   PlanRoom,
   PlansCatalog,
   RoomCadencePolicy,
@@ -140,20 +142,20 @@ const openPlan = (
   planDraft: draftForPlan(plan),
 });
 
+/** The preview steps of `rooms`, by their catalog names. */
+const previewRooms = (rooms: readonly PlanRoom[]): NextRunPreviewRoom[] => rooms.map((room) => ({
+  roomId: room.roomId,
+  name: syntheticPlans().rooms.find((candidate) => candidate.roomId === room.roomId)?.name ?? room.roomId,
+  cleaningMode: room.cleaningMode,
+  coverageSetting: room.coverageSetting,
+  cadenceReasons: room.cadenceReasons ?? [],
+}));
+
 /** A ready preview of `rooms`; its steps are the rooms unless `overrides` add areas. */
 const previewFor = (
   rooms: readonly PlanRoom[],
   overrides: Partial<NextRunPreview> = {},
-): NextRunPreview => {
-  const previewRooms = rooms.map((room) => ({
-    roomId: room.roomId,
-    name: syntheticPlans().rooms.find((candidate) => candidate.roomId === room.roomId)?.name ?? room.roomId,
-    cleaningMode: room.cleaningMode,
-    coverageSetting: room.coverageSetting,
-    cadenceReasons: room.cadenceReasons ?? [],
-  }));
-  return { previewToken: "e".repeat(64), rooms: previewRooms, steps: previewRooms, missionBoundaries: [], blocker: null, ...overrides };
-};
+): NextRunPreview => ({ previewToken: "e".repeat(64), steps: previewRooms(rooms), missionBoundaries: [], blocker: null, ...overrides });
 
 /** Replaces a plan's rooms and keeps its room order and next-run preview in step. */
 const planWithRooms = (
@@ -186,14 +188,14 @@ const galleryArea = (id: string): SavedArea => requireFixture(galleryAreas().are
  */
 const areasPlan = (runBehavior: SavedPlan["runBehavior"]): SavedPlan => {
   const daily = savedDailyPlan();
-  const [kitchen, living, office] = previewFor(daily.rooms).rooms;
+  const [kitchen, living, office] = previewRooms(daily.rooms);
   const entryway = galleryArea("entryway");
   const dining = galleryArea("dining");
   return {
     ...daily,
     runBehavior,
     entries: [roomEntry("room-a"), areaEntry(entryway), roomEntry("room-b"), roomEntry("room-c"), areaEntry(dining)],
-    nextRunPreview: previewFor(runBehavior === "intelligent" ? [...daily.rooms].reverse() : daily.rooms, {
+    nextRunPreview: previewFor([], {
       // Synthetic history: dining has waited longest, followed by Office.
       steps: (runBehavior === "intelligent"
         ? [areaStep(dining), office, areaStep(entryway), living, kitchen]
@@ -456,21 +458,6 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
         }),
       }), "run");
     }
-    case "plan-run-parts": {
-      // Saved order with mop due in the first room and Entryway after it.
-      // Rooms share a part; a custom area is a part of its own.
-      const rooms = savedDailyPlan().rooms.map((room, index): PlanRoom => index === 0
-        ? { ...room, cleaningMode: "vacuum_and_mop", cadenceReasons: ["mop_due"] }
-        : room);
-      const [kitchen, ...rest] = previewFor(rooms).rooms;
-      const entryway = galleryArea("entryway");
-      return openPlan(withAreas(state), planWithRooms(savedDailyPlan(), rooms, {
-        runBehavior: "ordered",
-        entries: [roomEntry("room-a"), areaEntry(entryway), roomEntry("room-b"), roomEntry("room-c")],
-        nextRunPreview: previewFor(rooms, { steps: [requireFixture(kitchen, "room"), areaStep(entryway), ...rest], missionBoundaries: [1, 2] }),
-        nextRunEstimateSeconds: null,
-      }), "run");
-    }
     case "plan-edit-ordered":
       return openPlan(state, { ...savedDailyPlan(), runBehavior: "ordered" }, "edit");
     case "plan-new":
@@ -521,7 +508,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
         : room);
       return {
         ...openPlan(state, planWithRooms(savedDailyPlan(), rooms, {
-          nextRunPreview: previewFor(rooms, { blocker: "invalid_cadence_policy" }),
+          nextRunPreview: previewFor([], { blocker: "invalid_cadence_policy" }),
         }), "edit"),
         expandedRoom: "room-a",
       };
@@ -816,8 +803,15 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
     case "rooms-empty":
       return { ...withPlans(state, { ...syntheticPlans(), rooms: [], plans: [], selectedPlan: null }), workflow: "rooms" };
     // Custom areas in plans. Run lists the areas in their places and parts.
-    case "plan-run-areas":
-      return openPlan(withAreas(state), areasPlan("ordered"), "run");
+    case "plan-run-areas": {
+      // Mop is due in Kitchen, so the run mops it and the Run view says so.
+      const plan = areasPlan("ordered");
+      const mopDue = (step: NextRunPreviewStep): NextRunPreviewStep => "roomId" in step && step.roomId === "room-a"
+        ? { ...step, cleaningMode: "vacuum_and_mop", cadenceReasons: ["mop_due"] }
+        : step;
+      const preview = requireFixture(plan.nextRunPreview, "preview");
+      return openPlan(withAreas(state), { ...plan, nextRunPreview: { ...preview, steps: preview.steps.map(mopDue) } }, "run");
+    }
     case "plan-run-areas-only":
       return openPlan(withAreas(state), spotsPlan(), "run", catalogWith([savedDailyPlan(), spotsPlan()]));
     // Edit shows the saved tie-break order. Smart Order ranks all

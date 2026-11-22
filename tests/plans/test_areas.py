@@ -26,10 +26,10 @@ from custom_components.matic_robot.area_binding_geometry import floor_identity
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from custom_components.matic_robot.managed_area import _async_run_area_leg
+from custom_components.matic_robot.managed_area import async_run_area_leg
 from custom_components.matic_robot.managed_run import (
     NativeTaskEndedError,
-    _PreparedRoomDispatch,
+    PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import (
     AreaBindingUpgradeResult,
@@ -249,7 +249,7 @@ async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
             "map_binding": legacy_bindings.v4(floor_plan, circles),
         }
 
-    original_index_factory = plan_catalog_module.binding_geometry._room_geometry_index
+    original_index_factory = plan_catalog_module.binding_geometry.room_geometry_index
     statuses = []
 
     def check_status(*args, **kwargs):
@@ -260,7 +260,7 @@ async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
     with (
         patch.object(
             plan_catalog_module.binding_geometry,
-            "_room_geometry_index",
+            "room_geometry_index",
             side_effect=original_index_factory,
         ) as index_factory,
         patch.object(
@@ -475,7 +475,7 @@ async def test_current_area_binding_without_frames_upgrades_to_room_anchored(
     area["map_binding"] = binding = binding_for_area(floor_plan, circles)
     del binding["frame"]
     with patch(
-        "custom_components.matic_robot.area_binding_geometry._translation_room_anchors",
+        "custom_components.matic_robot.area_binding_geometry.translation_room_anchors",
         return_value=[],
     ):
         assert await manager.catalog.async_upgrade_area_bindings(
@@ -515,7 +515,7 @@ async def test_area_history_baseline_failure_never_stops_or_credits(hass) -> Non
     )
 
     with pytest.raises(HomeAssistantError, match="cleaning history could not be read"):
-        await _async_run_area_leg(
+        await async_run_area_leg(
             hass,
             call,
             manager,
@@ -722,7 +722,7 @@ async def test_failed_area_stops_only_without_its_runs_own_stop(
 
     # The fake robot's session has already ended, so the area never starts.
     with pytest.raises(NativeTaskEndedError):
-        await _async_run_area_leg(
+        await async_run_area_leg(
             hass,
             call,
             manager,
@@ -733,7 +733,7 @@ async def test_failed_area_stops_only_without_its_runs_own_stop(
             asyncio.Event(),
             motion_token,
             stop,
-            prepared_dispatch=_PreparedRoomDispatch(
+            prepared_dispatch=PreparedRoomDispatch(
                 rooms=(),
                 history_baseline=None,
                 dispatched_at=dt_util.utcnow(),

@@ -11,10 +11,10 @@ from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 
 from .firmware_reports import ASSESSMENTS
-from .llm_common import _READ_ONLY, _ROBOT_FIELD, _entry_name, _error, _MaticTool
+from .llm_common import READ_ONLY, ROBOT_FIELD, MaticTool, entry_name, tool_error
 
 
-class MaticGetFirmwareTool(_MaticTool):
+class MaticGetFirmwareTool(MaticTool):
     """Expose the saved firmware reports without raw snapshots or live reads."""
 
     name = "MaticGetFirmware"
@@ -26,10 +26,10 @@ class MaticGetFirmwareTool(_MaticTool):
         "nothing to the robot. Research assessments are untrusted and never turn "
         "on a control."
     )
-    annotations = _READ_ONLY
+    annotations = READ_ONLY
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Optional("include_history", default=False): cv.boolean,
         }
     )
@@ -50,7 +50,7 @@ class MaticGetFirmwareTool(_MaticTool):
         for entry in entries:
             tracker = entry.runtime_data.firmware_tracker
             result: dict[str, Any] = {
-                "robot": _entry_name(entry),
+                "robot": entry_name(entry),
                 "entry_id": entry.entry_id,
                 "report": tracker.report(entry.entry_id),
             }
@@ -63,7 +63,7 @@ class MaticGetFirmwareTool(_MaticTool):
 
 
 _FIRMWARE_CLAIM_FIELDS: dict[probatio.Marker, Any] = {
-    **_ROBOT_FIELD,
+    **ROBOT_FIELD,
     probatio.Required("report_id"): probatio.All(
         cv.string, probatio.Length(min=24, max=24)
     ),
@@ -79,7 +79,7 @@ _FIRMWARE_CLAIM_FIELDS: dict[probatio.Marker, Any] = {
 }
 
 
-class MaticClaimFirmwareInvestigationTool(_MaticTool):
+class MaticClaimFirmwareInvestigationTool(MaticTool):
     """Reserve one report for the configured investigator."""
 
     name = "MaticClaimFirmwareInvestigation"
@@ -109,11 +109,11 @@ class MaticClaimFirmwareInvestigationTool(_MaticTool):
                 )
             )
         except ValueError as err:
-            raise _error("llm_firmware_research_rejected", error=str(err)) from err
+            raise tool_error("llm_firmware_research_rejected", error=str(err)) from err
         return llm.ToolResult(data=cast(JsonObjectType, result))
 
 
-class MaticCompleteFirmwareInvestigationTool(_MaticTool):
+class MaticCompleteFirmwareInvestigationTool(MaticTool):
     """Store a cited assessment without changing any robot control."""
 
     name = "MaticCompleteFirmwareInvestigation"
@@ -158,5 +158,5 @@ class MaticCompleteFirmwareInvestigationTool(_MaticTool):
                 entry.entry_id, **args
             )
         except ValueError as err:
-            raise _error("llm_firmware_research_rejected", error=str(err)) from err
+            raise tool_error("llm_firmware_research_rejected", error=str(err)) from err
         return llm.ToolResult(data={"recorded": True, "robot_control_changed": False})

@@ -18,11 +18,11 @@ from custom_components.matic_robot.client.exceptions import (
 )
 from custom_components.matic_robot.client.models import FloorPlan
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_executor import async_execute_rooms
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_run import (
-    _failure_reason_code,
     coverage_guard_message,
+    failure_reason_code,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from tests.plans.fakes import memory_manager
@@ -76,7 +76,7 @@ async def test_coverage_preflight_guard_is_safe_and_sends_no_command(
     assert error.reason_code == expected.value
     assert str(error) == expected.value
     assert "opaque-native-identity" not in coverage_guard_message(error)
-    assert _failure_reason_code(error) == expected.value
+    assert failure_reason_code(error) == expected.value
     client._connection._async_send_user_payload.assert_not_awaited()
 
 
@@ -140,7 +140,7 @@ async def test_managed_room_projects_guard_to_event_and_localized_service_error(
     )
 
     with pytest.raises(ServiceValidationError) as caught:
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             call,
             manager,
@@ -212,7 +212,7 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
     )
 
     with pytest.raises(ServiceValidationError) as caught:
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             call,
             manager,
@@ -238,7 +238,7 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
         if args.args[0] == "matic_robot_room_failed"
     )
     assert room_event["reason_code"] == reason.value
-    assert _failure_reason_code(caught.value) == reason.value
+    assert failure_reason_code(caught.value) == reason.value
     stop_sender.assert_not_awaited()
     manager.control.replace_managed_motion.assert_not_called()
 
@@ -331,7 +331,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
             "custom_components.matic_robot.managed_dispatch._async_recover_managed_dispatch_identity",
             AsyncMock(return_value=None),
         )
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,

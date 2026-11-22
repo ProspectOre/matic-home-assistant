@@ -23,7 +23,7 @@ async def test_all_plans_resets_every_rotation_without_naming_a_plan(hass) -> No
     )
 
     with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
+        "custom_components.matic_robot.service_context.saved_plan_context",
         return_value=("vacuum.test", None, "serial", {"room-study": "Study"}),
     ):
         await _registered_handler(services, "reset_plan_history")(call)

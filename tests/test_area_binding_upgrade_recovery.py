@@ -6,9 +6,9 @@ from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSI
 from custom_components.matic_robot.client import FloorPlan, Room
 from custom_components.matic_robot.plan_model import (
     AreaBindingUpgradeResult,
-    checkpoint_legs,
     plan_area_fingerprint,
 )
+from custom_components.matic_robot.plan_records import RecoveryCheckpoint
 from tests import legacy_bindings
 from tests.plans.fakes import memory_manager
 
@@ -60,5 +60,5 @@ async def test_conversion_moves_recovery_checkpoint_to_the_new_fingerprint(
     assert after != before
     entries = robot["last_run"]["recovery_checkpoint"]["entries"]
     assert entries == [{**entry, "fingerprint": after}, other]
-    leg, _ = checkpoint_legs({"rooms": [], "entries": entries})
+    leg, _ = RecoveryCheckpoint.parse({"rooms": [], "entries": entries}).legs()
     assert leg.fingerprint == robot["area_history"]["rug"]["fingerprint"] == after

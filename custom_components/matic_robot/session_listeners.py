@@ -23,7 +23,7 @@ from .cues import async_fire_cues_events
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
 from .repair_placeholders import repair_placeholders
 from .session import RobotSession
-from .session_tracking import _parse_timestamp, _sessions_overlap
+from .session_tracking import parse_timestamp, sessions_overlap
 from .time_zone import known_zone, time_zones_differ
 
 if TYPE_CHECKING:
@@ -342,9 +342,9 @@ class _FinishedSessions:
             return
         if session.ended_at is None:
             previous = self._last
-            if previous is None or _parse_timestamp(
+            if previous is None or parse_timestamp(
                 session.started_at
-            ) > _parse_timestamp(previous.started_at):
+            ) > parse_timestamp(previous.started_at):
                 self._last = session
             return
         # A partial first snapshot may omit pre-existing runs. Never replay
@@ -353,23 +353,23 @@ class _FinishedSessions:
         observed_active = (
             previous is not None
             and previous.ended_at is None
-            and _parse_timestamp(previous.started_at)
-            == _parse_timestamp(session.started_at)
+            and parse_timestamp(previous.started_at)
+            == parse_timestamp(session.started_at)
         )
         if (
             not observed_active
-            and _parse_timestamp(session.ended_at) <= self._observation_started_at
+            and parse_timestamp(session.ended_at) <= self._observation_started_at
         ):
             return
         key = (session.started_at, session.ended_at)
         # Partial collection snapshots can regress to an older run. Never
         # move the publication cursor backwards or replay historical events.
         if previous is not None and (
-            _parse_timestamp(session.started_at) < _parse_timestamp(previous.started_at)
+            parse_timestamp(session.started_at) < parse_timestamp(previous.started_at)
             or (
                 previous.ended_at is not None
-                and _parse_timestamp(session.started_at)
-                == _parse_timestamp(previous.started_at)
+                and parse_timestamp(session.started_at)
+                == parse_timestamp(previous.started_at)
             )
         ):
             return
@@ -378,7 +378,7 @@ class _FinishedSessions:
         # That enrichment must not trigger automations twice.
         if previous is not None and (
             (previous.started_at, previous.ended_at) == key
-            or _sessions_overlap(previous, session)
+            or sessions_overlap(previous, session)
         ):
             return
         self._hass.bus.async_fire(

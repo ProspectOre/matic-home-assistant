@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import timedelta
 from types import SimpleNamespace
@@ -27,9 +28,9 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import (
     CleaningRoom,
-    _rotation_details,
-    _rotation_sort_key,
     plan_floor_token,
+    rotation_details,
+    rotation_sort_key,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_machine import count_room
@@ -62,7 +63,7 @@ def rotation_order(
 ) -> list[CleaningRoom]:
     """Rooms in the order an intelligent plan's preview would clean them."""
     candidates = manager.planning.rotation_candidates(serial_number, plan_id, rooms)
-    return [candidate.room for candidate in sorted(candidates, key=_rotation_sort_key)]
+    return [candidate.room for candidate in sorted(candidates, key=rotation_sort_key)]
 
 
 def rotation_explanation(
@@ -73,9 +74,7 @@ def rotation_explanation(
 ) -> list[dict[str, Any]]:
     """The explanation an intelligent plan's preview gives for that order."""
     candidates = manager.planning.rotation_candidates(serial_number, plan_id, rooms)
-    return _rotation_details(
-        sorted(candidates, key=_rotation_sort_key), intelligent=True
-    )
+    return rotation_details(sorted(candidates, key=rotation_sort_key), intelligent=True)
 
 
 OWNED_SESSION = b"synthetic-owned-session"
@@ -201,6 +200,15 @@ def credit_rooms(args: tuple, kwargs: dict, rooms: list[CleaningRoom]) -> None:
     for room in rooms:
         count_room(manager.repository.robot(serial_number)["last_run"], room.room_id)
         kwargs["record_room_completed"](room)
+
+
+def recovery_record(
+    manager: CleaningPlanManager, serial_number: str = "serial"
+) -> dict[str, Any] | None:
+    """The stored run restart recovery resumes, as saved, else None."""
+    if manager.recovery.recovery_run(serial_number) is None:
+        return None
+    return deepcopy(manager.repository.robot(serial_number)["last_run"])
 
 
 async def save_run_checkpoint(

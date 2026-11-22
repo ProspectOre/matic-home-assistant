@@ -35,12 +35,12 @@ from .leg_finish import async_end_after_current_room
 from .managed_run import (
     NativeTaskEndedError,
     PlanCancelledError,
+    PreparedRoomDispatch,
     RoomInterruptedError,
     RoomRunOutcome,
     RoomStartTimeoutError,
     RoomStoppedInPlaceError,
     RoomTakenOverError,
-    _PreparedRoomDispatch,
 )
 from .plan_model import CleaningRoom
 from .plans import CleaningPlanManager
@@ -123,7 +123,7 @@ class _LegRun:
     floor_token: str
     provenance: str
     run_id: str | None
-    checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]]
+    checkpoint_dispatch: Callable[[PreparedRoomDispatch], Awaitable[None]]
     advance: Callable[[RunEvent], Awaitable[CheckpointWrite]]
     cancel_event: asyncio.Event | None
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None
@@ -138,7 +138,7 @@ class _LegRun:
     # The room the robot is cleaning, or the recovered run's current room.
     active_room: CleaningRoom
     # The mission sent, or the prepared one this leg adopts.
-    dispatch: _PreparedRoomDispatch | None
+    dispatch: PreparedRoomDispatch | None
     native_identity: bytes | None = None
     # Whether a start may have reached the robot, so a failure must STOP it.
     dispatch_attempted: bool = False
@@ -146,7 +146,7 @@ class _LegRun:
     stop_sent: bool = False
     # The room the robot finishes before ending the mission on a Smart Stop.
     last_room: CleaningRoom | None = None
-    room_observer: observation._LegOutcomeObserver | None = None
+    room_observer: observation.LegOutcomeObserver | None = None
     finish_task: asyncio.Task[None] | None = None
     observed_ids: set[str] = field(default_factory=set)
     # Room id to the robot's (ended_at, duration_seconds) for its credit.
@@ -156,7 +156,7 @@ class _LegRun:
 
     def __post_init__(self) -> None:
         self.observed_ids.add(self.active_room.room_id)
-        self.managed_user_command = dispatch_control._guard_native_commands(
+        self.managed_user_command = dispatch_control.guard_native_commands(
             self.managed_user_command,
             self.manager,
             self.serial_number,
@@ -243,7 +243,7 @@ class _LegRun:
     async def async_dispatch(self) -> None:
         """Send the leg's mission, or adopt the prepared one, and checkpoint it."""
         if self.dispatch is None:
-            self.dispatch = await dispatch_control._async_dispatch_leg_command(
+            self.dispatch = await dispatch_control.async_dispatch_leg_command(
                 self.robot,
                 self.leg,
                 self.motion_token,
@@ -276,7 +276,7 @@ class _LegRun:
         dispatch = self.dispatch
         assert dispatch is not None
         try:
-            start_state = await observation._async_wait_for_owned_start(
+            start_state = await observation.async_wait_for_owned_start(
                 self.robot,
                 self.call.data["start_timeout"],
                 self.cancel_event,
@@ -294,7 +294,7 @@ class _LegRun:
             return False
         recovered_suspended = self.recovered_suspend_reason in _SUSPENDED
         if not self.single:
-            self.room_observer = observation._LegOutcomeObserver(
+            self.room_observer = observation.LegOutcomeObserver(
                 self.robot,
                 self.leg,
                 self.active_room,
@@ -323,7 +323,7 @@ class _LegRun:
         if start_state is RobotActivity.PAUSED or recovered_suspended:
             await self.async_hold(
                 self.recovered_suspend_reason or "paused",
-                managed_run._remaining_completion_time(
+                managed_run.remaining_completion_time(
                     self.dispatch, self.call.data["completion_timeout"]
                 ),
             )
@@ -337,13 +337,13 @@ class _LegRun:
     async def async_watch(self) -> None:
         """Follow the mission room by room until it ends within its budget."""
         assert self.dispatch is not None
-        completion_budget = await managed_run._async_completion_budget(
+        completion_budget = await managed_run.async_completion_budget(
             self.dispatch,
             self.call.data["completion_timeout"],
             self.checkpoint_dispatch,
         )
         refresh_task = asyncio.create_task(
-            observation._async_periodic_refresh(self.robot.refresh)
+            observation.async_periodic_refresh(self.robot.refresh)
         )
         try:
             async with asyncio.timeout(completion_budget) as mission_timeout:
@@ -354,7 +354,7 @@ class _LegRun:
                         await self.async_enter_room(changed_room)
                         continue
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
-                        if await observation._async_wait_for_active_session_resolution(
+                        if await observation.async_wait_for_active_session_resolution(
                             self.robot,
                             self.cancel_event,
                             expected_identity=self.native_identity,
@@ -387,15 +387,15 @@ class _LegRun:
     async def async_next_outcome(self) -> tuple[RoomRunOutcome, CleaningRoom | None]:
         """Wait for the leg's next outcome while the run still owns its task."""
         if self.room_observer is not None:
-            return await observation._async_wait_with_native_identity(
+            return await observation.async_wait_with_native_identity(
                 partial(self.room_observer.next, self.cancel_event),
                 self.robot.session_identity,
                 self.native_identity,
             )
-        outcome = await observation._async_wait_with_native_identity(
+        outcome = await observation.async_wait_with_native_identity(
             # Owned start already observed this room. Preserve that evidence
             # across transient cleaning during dock travel.
-            lambda: observation._async_wait_for_room_outcome(
+            lambda: observation.async_wait_for_room_outcome(
                 self.robot, self.leg[0], self.cancel_event, initial_observed=True
             ),
             self.robot.session_identity,
@@ -408,7 +408,7 @@ class _LegRun:
         await self.manager.ledger.async_mark_suspended(
             self.serial_number, self.plan_id, self.active_room, reason
         )
-        await observation._async_wait_for_owned_resume(
+        await observation.async_wait_for_owned_resume(
             self.robot,
             seconds,
             self.cancel_event,
@@ -430,7 +430,7 @@ class _LegRun:
         async def confirm_ownership() -> None:
             return None
 
-        await observation._async_wait_with_native_identity(
+        await observation.async_wait_with_native_identity(
             confirm_ownership, self.robot.session_identity, self.native_identity
         )
         if (
@@ -441,7 +441,7 @@ class _LegRun:
         ):
             # The robot kept the next room: the queue change failed or came
             # too late. Honor the finish request at this boundary.
-            await dispatch_control._async_cleanup_managed_motion(
+            await dispatch_control.async_cleanup_managed_motion(
                 self.managed_user_command, self.motion_token, dispatch_attempted=True
             )
             self.stop_sent = True
@@ -474,7 +474,7 @@ class _LegRun:
         )
         if not self.single:
             self.credited.update(
-                await observation._async_verify_leg_completion(
+                await observation.async_verify_leg_completion(
                     self.robot.session_history,
                     dispatch.history_baseline,
                     self.leg,
@@ -492,7 +492,7 @@ class _LegRun:
             return bool(self.credited or self.unreachable)
         room = self.leg[0]
         evidence: list[tuple[str, int]] = []
-        verdict = await observation._async_adjudicate_room_end(
+        verdict = await observation.async_adjudicate_room_end(
             self.robot.session_history,
             dispatch.history_baseline,
             room,
@@ -515,7 +515,7 @@ class _LegRun:
     def late_marker(self, credited_ids: Collection[str] = ()) -> Any:
         """Return what a late history record settles this leg's rooms by."""
         if self.single:
-            return history_reconciliation._build_native_reconciliation(
+            return history_reconciliation.build_native_reconciliation(
                 self.plan_id,
                 self.leg[0],
                 self.dispatch,
@@ -549,12 +549,12 @@ class _LegRun:
     def stored_marker(self, marker: Any) -> dict[str, Any]:
         """Return the ledger's keyword for ``marker``, none when there is none."""
         if self.single:
-            marker = history_reconciliation._native_reconciliation_data(marker)
+            marker = history_reconciliation.native_reconciliation_data(marker)
         return {} if marker is None else {"native_reconciliation": marker}
 
     def watch_late_history(self, marker: Any) -> None:
         if self.single:
-            history_reconciliation._schedule_native_reconciliation(
+            history_reconciliation.schedule_native_reconciliation(
                 self.hass,
                 self.manager,
                 self.serial_number,
@@ -566,7 +566,7 @@ class _LegRun:
                 self.call.context,
             )
         elif marker is not None:
-            history_reconciliation._schedule_grouped_native_reconciliation(
+            history_reconciliation.schedule_grouped_native_reconciliation(
                 self.hass,
                 self.manager,
                 self.serial_number,
@@ -579,7 +579,7 @@ class _LegRun:
         self, mark: Callable[..., Awaitable[None]], reason: str, marker: Any
     ) -> None:
         """Record the active room's end with the marker while the run owns it."""
-        async with dispatch_control._managed_reconciliation_guard(
+        async with dispatch_control.managed_reconciliation_guard(
             self.manager, self.serial_number, self.motion_token
         ) as owned:
             if not owned:
@@ -591,7 +591,7 @@ class _LegRun:
                 reason,
                 **self.stored_marker(marker),
             )
-            if not dispatch_control._managed_reconciliation_is_current(
+            if not dispatch_control.managed_reconciliation_is_current(
                 self.manager, self.serial_number, self.motion_token
             ):
                 marker = None
@@ -611,7 +611,7 @@ class _LegRun:
 
         A shutdown that suspends the run records nothing here.
         """
-        if dispatch_control._shutdown_suspends_run(
+        if dispatch_control.shutdown_suspends_run(
             self.hass, self.manager, self.serial_number
         ):
             raise err
@@ -628,7 +628,7 @@ class _LegRun:
             await self.async_cancelled(err)
             raise err
         if isinstance(err, RoomTakenOverError):
-            err.suspend_reason = dispatch_control._suspended_run_reason(
+            err.suspend_reason = dispatch_control.suspended_run_reason(
                 self.manager, self.serial_number
             )
             await self.manager.ledger.async_mark_interrupted(
@@ -647,7 +647,7 @@ class _LegRun:
                 {"room": room.name},
             ) from err
         if isinstance(err, RoomInterruptedError):
-            await dispatch_control._async_cleanup_managed_motion(
+            await dispatch_control.async_cleanup_managed_motion(
                 self.managed_user_command, self.motion_token, self.dispatch_attempted
             )
             await self.async_record_ended(
@@ -661,7 +661,7 @@ class _LegRun:
                 room,
                 "interrupted",
                 error=str(err),
-                reason_code=managed_run._interruption_reason_code(err),
+                reason_code=managed_run.interruption_reason_code(err),
                 cause="unknown",
             )
             raise managed_run.validation_error(
@@ -671,7 +671,7 @@ class _LegRun:
 
     async def async_cancelled(self, err: PlanCancelledError) -> None:
         """Record a cancelled leg, or an interrupted one when the entry unloads."""
-        err.suspend_reason = dispatch_control._suspended_run_reason(
+        err.suspend_reason = dispatch_control.suspended_run_reason(
             self.manager, self.serial_number
         )
         room = self.active_room
@@ -679,7 +679,7 @@ class _LegRun:
             self.serial_number
         )
         if cancellation_reason == "config_entry_unload":
-            await dispatch_control._async_cleanup_managed_motion(
+            await dispatch_control.async_cleanup_managed_motion(
                 self.managed_user_command, self.motion_token, self.dispatch_attempted
             )
             await self.async_record_aborted(
@@ -722,14 +722,14 @@ class _LegRun:
             self.finish_room_event.clear()
         # A multi-room leg sends no cleanup STOP while this run's own STOP
         # settles; a one-room leg sends it either way.
-        if self.single or not dispatch_control._managed_stop_fence_owned_by_run(
+        if self.single or not dispatch_control.managed_stop_fence_owned_by_run(
             self.manager, self.serial_number, self.run_id
         ):
-            await dispatch_control._async_cleanup_managed_motion(
+            await dispatch_control.async_cleanup_managed_motion(
                 self.managed_user_command,
                 self.motion_token,
                 self.dispatch_attempted
-                and managed_run._coverage_guard_cause(err) is None,
+                and managed_run.coverage_guard_cause(err) is None,
             )
         if isinstance(err, RoomStartTimeoutError):
             failure_reason = "The robot did not begin cleaning before the start timeout"
@@ -749,7 +749,7 @@ class _LegRun:
             room,
             "failed",
             error=failure_reason,
-            reason_code=managed_run._failure_reason_code(err),
+            reason_code=managed_run.failure_reason_code(err),
             cause="unknown",
         )
         if isinstance(err, ServiceValidationError):
@@ -881,7 +881,7 @@ class _LegRun:
                         self.serial_number, self.plan_id, room
                     )
                 else:
-                    async with dispatch_control._managed_reconciliation_guard(
+                    async with dispatch_control.managed_reconciliation_guard(
                         self.manager, self.serial_number, self.motion_token
                     ) as owned:
                         if not owned or (
@@ -911,7 +911,7 @@ class _LegRun:
         )
 
 
-async def _async_run_leg(
+async def async_run_room_leg(
     hass: HomeAssistant,
     call: ServiceCall,
     manager: CleaningPlanManager,
@@ -922,11 +922,11 @@ async def _async_run_leg(
     motion_token: int,
     *,
     floor_token: str,
-    checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]],
+    checkpoint_dispatch: Callable[[PreparedRoomDispatch], Awaitable[None]],
     advance: Callable[[RunEvent], Awaitable[CheckpointWrite]],
     cancel_event: asyncio.Event | None = None,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
-    prepared_dispatch: _PreparedRoomDispatch | None = None,
+    prepared_dispatch: PreparedRoomDispatch | None = None,
     finish_room_event: asyncio.Event | None = None,
     floor_is_current: Callable[[], bool] | None = None,
     on_native_identity: Callable[[bytes | None], None] | None = None,
@@ -957,7 +957,7 @@ async def _async_run_leg(
         floor_token=floor_token,
         provenance=provenance
         if provenance is not None
-        else dispatch_control._run_provenance(call),
+        else dispatch_control.run_provenance(call),
         run_id=run_id,
         checkpoint_dispatch=checkpoint_dispatch,
         advance=advance,

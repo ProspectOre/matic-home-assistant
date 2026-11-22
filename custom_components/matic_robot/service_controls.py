@@ -31,7 +31,7 @@ from .service_names import (
     SERVICE_SKIP_ROOM,
 )
 from .service_plans import (
-    _validated_area_command,
+    validated_area_command,
 )
 from .service_schemas import (
     CLEAN_AREA_SERVICE_SCHEMA,
@@ -78,7 +78,7 @@ async def _async_clean(
 ) -> None:
     """Route the complete verified cleaning matrix to selected vacuums."""
     for entity_id in entity_ids:
-        entry = context._entry_for_entity(hass, entity_id)
+        entry = context.entry_for_entity(hass, entity_id)
         await RobotControls(hass, entry, entity_id).async_ensure_stop_settled(
             entry.runtime_data.session.info.serial_number
         )
@@ -130,12 +130,12 @@ async def _async_clean_area(
     entity_ids: list[str],
 ) -> None:
     """Clean one private saved area without putting coordinates in the call."""
-    entity_id, entry, serial_number, _room_map = context._saved_plan_context(
+    entity_id, entry, serial_number, _room_map = context.saved_plan_context(
         hass, entity_ids, require_current_floor=True
     )
     commands = RobotControls(hass, entry, entity_id)
     area_command = partial(
-        _validated_area_command,
+        validated_area_command,
         cleaning_mode=call.data.get("cleaning_mode"),
         coverage_setting=call.data.get("coverage_setting"),
     )
@@ -193,7 +193,7 @@ async def _async_each_robot(
     unavailable vacuum and ran the others concurrently.
     """
     robots = [
-        RobotControls(hass, context._entry_for_entity(hass, entity_id), entity_id)
+        RobotControls(hass, context.entry_for_entity(hass, entity_id), entity_id)
         for entity_id in entity_ids
     ]
     results = await asyncio.gather(

@@ -99,9 +99,9 @@ class SlamHistoryStore:
         """Load and validate retained scenes off the event loop."""
         stored = await self._store.async_load() or {}
         snapshots, dirty = await self._hass.async_add_executor_job(
-            _history_format._decode_history, stored
+            _history_format.decode_history, stored
         )
-        salt, generation, paused, requests = _history_format._decode_history_state(
+        salt, generation, paused, requests = _history_format.decode_history_state(
             stored
         )
         dirty |= salt is None
@@ -120,10 +120,10 @@ class SlamHistoryStore:
             frame = snapshot.frame
             if frame is None:
                 scene = await self._hass.async_add_executor_job(
-                    _history_format._decompress_scene, snapshot.compressed
+                    _history_format.decompress_scene, snapshot.compressed
                 )
                 frame = await self._hass.async_add_executor_job(
-                    _history_format._scene_frame, scene
+                    _history_format.encoded_scene_frame, scene
                 )
             if group != snapshot.comparison_group or frame != snapshot.frame:
                 dirty = True
@@ -167,7 +167,7 @@ class SlamHistoryStore:
             generation = self._generation
         try:
             snapshot = await self._hass.async_add_executor_job(
-                _history_format._build_snapshot,
+                _history_format.build_snapshot,
                 scene,
                 revision,
                 created_at or datetime.now(UTC),
@@ -237,7 +237,7 @@ class SlamHistoryStore:
                 )
                 self._snapshots.append(snapshot)
                 self._capacity_blocked = False
-                _history_format._enforce_history_bounds(self._snapshots)
+                _history_format.enforce_history_bounds(self._snapshots)
                 self._generation += 1
                 try:
                     await self._persist_locked()
@@ -297,7 +297,7 @@ class SlamHistoryStore:
     def public_group(self, mission_token: str | None) -> str | None:
         if not isinstance(
             mission_token, str
-        ) or not _history_format._valid_mission_token(mission_token):
+        ) or not _history_format.valid_mission_token(mission_token):
             return None
         return hmac.new(
             self._group_salt, mission_token.encode(), hashlib.sha256
@@ -307,7 +307,7 @@ class SlamHistoryStore:
         self, mission_token: str | None
     ) -> tuple[_history_format.SlamHistorySnapshot, ...]:
         """Return only snapshots proven to belong to the active map mission."""
-        if not _history_format._valid_mission_token(mission_token):
+        if not _history_format.valid_mission_token(mission_token):
             return ()
         return tuple(
             snapshot
@@ -324,7 +324,7 @@ class SlamHistoryStore:
             mission_token = snapshot.mission_token
             if not isinstance(
                 mission_token, str
-            ) or not _history_format._valid_mission_token(mission_token):
+            ) or not _history_format.valid_mission_token(mission_token):
                 continue
             grouped.setdefault(mission_token, []).append(snapshot)
         return tuple(
@@ -378,7 +378,7 @@ class SlamHistoryStore:
         self._active_read_bytes += MAX_SCENE_BYTES
         decode_task = asyncio.ensure_future(
             self._hass.async_add_executor_job(
-                _history_format._decompress_scene, snapshot.compressed
+                _history_format.decompress_scene, snapshot.compressed
             )
         )
         release_after_decode = False
@@ -474,7 +474,7 @@ class SlamHistoryStore:
                     by_id[item.record_id] = replace(
                         item,
                         retention="kept",
-                        name=_history_format._valid_name(name)
+                        name=_history_format.valid_name(name)
                         if name is not None
                         else item.name,
                     )
@@ -484,7 +484,7 @@ class SlamHistoryStore:
                         raise HistoryRequestError("history-record-not-kept")
                     by_id[item.record_id] = replace(item, retention="automatic")
             elif action == "rename":
-                clean_name = _history_format._valid_name(name)
+                clean_name = _history_format.valid_name(name)
                 for item in selected:
                     if item.retention == "trash":
                         raise HistoryRequestError("history-record-in-trash")
@@ -696,7 +696,7 @@ class SlamHistoryStore:
         ):
             raise HistoryRequestError("invalid-history-archive")
         fingerprint = await self._hass.async_add_executor_job(
-            _history_format._archive_fingerprint, archive
+            _history_format.archive_fingerprint, archive
         )
         async with self._mutation_lock:
             prior = self._requests.get(request_id)
@@ -707,7 +707,7 @@ class SlamHistoryStore:
             if self._closed or expected_generation != self._generation:
                 raise HistoryRequestError("history-generation-conflict")
         prepared = await self._hass.async_add_executor_job(
-            _history_format._import_records, archive.get("records"), self._group_salt
+            _history_format.import_records, archive.get("records"), self._group_salt
         )
         async with self._mutation_lock:
             prior = self._requests.get(request_id)
@@ -795,7 +795,7 @@ class SlamHistoryStore:
 
     async def _persist_locked(self) -> None:
         data = await self._hass.async_add_executor_job(
-            _history_format._serialize_history,
+            _history_format.serialize_history,
             tuple(self._snapshots),
             self._group_salt,
             self._generation,
@@ -824,7 +824,7 @@ class SlamHistoryStore:
         self._expiry_changed.set()
         async with self._mutation_lock:
             data = await self._hass.async_add_executor_job(
-                _history_format._serialize_history,
+                _history_format.serialize_history,
                 tuple(self._snapshots),
                 self._group_salt,
                 self._generation,
@@ -851,7 +851,7 @@ class SlamHistoryStore:
             return
         self._store.async_delay_save(
             partial(
-                _history_format._serialize_history,
+                _history_format.serialize_history,
                 tuple(self._snapshots),
                 self._group_salt,
                 self._generation,

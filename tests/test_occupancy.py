@@ -3,6 +3,7 @@
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import probatio
@@ -16,7 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.client.models import Room
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.occupancy import (
     area_occupancy_sensors,
     entry_vacuum_entity_id,
@@ -337,7 +338,7 @@ async def test_save_plan_stores_occupancy_settings_for_its_rooms(hass) -> None:
     )
     context = ("vacuum.test", SimpleNamespace(), "serial", {"room-kitchen": "Kitchen"})
     with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
+        "custom_components.matic_robot.service_context.saved_plan_context",
         return_value=context,
     ):
         result = await _registered_handler(services, "save_plan")(call)
@@ -414,14 +415,14 @@ async def test_preview_and_run_hold_occupied_rooms(hass) -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=context,
         ),
         patch(
             "custom_components.matic_robot.service_plans.occupancy_holds", read_holds
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(side_effect=execute),
         ) as run,
     ):
@@ -452,7 +453,7 @@ async def test_run_refuses_when_every_room_is_held(hass) -> None:
     }
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=context,
         ),
         patch(
@@ -460,7 +461,7 @@ async def test_run_refuses_when_every_room_is_held(hass) -> None:
             return_value=holds,
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as run,
         pytest.raises(ServiceValidationError) as raised,
@@ -483,7 +484,7 @@ async def test_preview_of_unknown_plan_reads_no_occupancy(hass) -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=context,
         ),
         patch("custom_components.matic_robot.service_plans.occupancy_holds") as read,
@@ -519,12 +520,12 @@ async def test_executor_fires_room_held_with_the_run_id(hass) -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             AsyncMock(side_effect=RuntimeError("stop after admission")),
         ),
         pytest.raises(RuntimeError),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,
@@ -593,6 +594,18 @@ async def _workspace_plan(runtime) -> dict[str, object]:
     return json.loads(response.body)["plans"][0]
 
 
+def _kitchen_preview() -> dict[str, Any]:
+    """The planner's preview of a run of Kitchen alone."""
+    room = {
+        "room_id": "room-1",
+        "name": "Kitchen",
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+        "cadence": {},
+    }
+    return {"rooms": [room], "entries": [{"kind": "room", **room}]}
+
+
 async def test_plan_workspace_projects_occupancy_settings_and_held_rooms() -> None:
     held = {"room-2": {"reason": "occupied", "sensor": "binary_sensor.study"}}
     runtime = _workspace_runtime(
@@ -603,15 +616,7 @@ async def test_plan_workspace_projects_occupancy_settings_and_held_rooms() -> No
     )
     runtime.cleaning_plans.planning.preview.side_effect = None
     runtime.cleaning_plans.planning.preview.return_value = {
-        "rooms": [
-            {
-                "room_id": "room-1",
-                "name": "Kitchen",
-                "cleaning_mode": "vacuum",
-                "coverage_setting": "standard",
-                "cadence": {},
-            }
-        ],
+        **_kitchen_preview(),
         "held_rooms": [{"room_id": "room-2", "name": "Study", **held["room-2"]}],
     }
     with (
@@ -659,7 +664,7 @@ async def test_plan_workspace_reports_every_room_held() -> None:
         plan = await _workspace_plan(runtime)
 
     assert plan["next_run_preview"] == {
-        "rooms": [],
+        "entries": [],
         "mission_boundaries": [],
         "blocker": "plan_rooms_held",
         "held_rooms": [
@@ -676,17 +681,7 @@ async def test_plan_workspace_reports_every_room_held() -> None:
 async def test_plan_workspace_reads_no_occupancy_without_a_vacuum() -> None:
     runtime = _workspace_runtime({"occupancy_aware": True})
     runtime.cleaning_plans.planning.preview.side_effect = None
-    runtime.cleaning_plans.planning.preview.return_value = {
-        "rooms": [
-            {
-                "room_id": "room-1",
-                "name": "Kitchen",
-                "cleaning_mode": "vacuum",
-                "coverage_setting": "standard",
-                "cadence": {},
-            }
-        ]
-    }
+    runtime.cleaning_plans.planning.preview.return_value = _kitchen_preview()
     with (
         patch(
             "custom_components.matic_robot.plan_views.entry_vacuum_entity_id",
@@ -697,5 +692,6 @@ async def test_plan_workspace_reads_no_occupancy_without_a_vacuum() -> None:
         plan = await _workspace_plan(runtime)
 
     holds.assert_not_called()
+    assert plan["next_run_preview"]["blocker"] is None
     assert "held_rooms" not in plan["next_run_preview"]
     assert "held_rooms" not in runtime.cleaning_plans.planning.preview.call_args.kwargs

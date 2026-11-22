@@ -13,7 +13,7 @@ from custom_components.matic_robot.plan_storage import (
     STORAGE_KEY,
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
-    _CleaningPlanStore,
+    CleaningPlanStore,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 
@@ -26,8 +26,8 @@ class _FailingEncoder(JSONEncoder):
         raise TypeError("PRIVATE-JSON-CONTENT-DO-NOT-LEAK")
 
 
-def _new_store(hass) -> _CleaningPlanStore:
-    return _CleaningPlanStore(
+def _new_store(hass) -> CleaningPlanStore:
+    return CleaningPlanStore(
         hass,
         STORAGE_VERSION,
         STORAGE_KEY,

@@ -27,8 +27,8 @@ from .client import (
 from .managed_run import (
     NativeHistoryBaselineUnavailableError,
     NativeHistoryIncompleteBaselineError,
+    PreparedRoomDispatch,
     RoomTakenOverError,
-    _PreparedRoomDispatch,
 )
 from .plan_model import (
     AreaLeg,
@@ -54,7 +54,7 @@ _LOGGER = logging.getLogger(__name__)
 DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS = 10
 
 
-def _shutdown_suspends_run(
+def shutdown_suspends_run(
     hass: HomeAssistant, manager: CleaningPlanManager, serial_number: str
 ) -> bool:
     """Distinguish HA shutdown from an explicit stop, replacement, or unload."""
@@ -65,7 +65,7 @@ def _shutdown_suspends_run(
     return reason == "home_assistant_shutdown" or hass.is_stopping
 
 
-async def _async_managed_user_command(
+async def async_managed_user_command(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
     manager: CleaningPlanManager,
@@ -92,12 +92,12 @@ async def _async_managed_user_command(
             )
         await runtime.session.heartbeat.async_request_refresh()
     if command is UserCommand.STOP:
-        _schedule_managed_dock_after_stop(
+        schedule_managed_dock_after_stop(
             hass, entry, manager, serial_number, entity_id, stop_run_id, context
         )
 
 
-def _schedule_managed_dock_after_stop(
+def schedule_managed_dock_after_stop(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
     manager: CleaningPlanManager,
@@ -133,7 +133,7 @@ def _schedule_managed_dock_after_stop(
     )
 
 
-def _schedule_run_dock_confirmation(
+def schedule_run_dock_confirmation(
     hass: HomeAssistant,
     manager: CleaningPlanManager,
     robot: RobotPort,
@@ -158,7 +158,7 @@ def _schedule_run_dock_confirmation(
     )
 
 
-async def _async_dispatch_leg_command(
+async def async_dispatch_leg_command(
     robot: RobotPort,
     rooms: Sequence[CleaningRoom] | AreaLeg,
     motion_token: int,
@@ -171,7 +171,7 @@ async def _async_dispatch_leg_command(
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
     expected_dispatch_revision: str | None = None,
-) -> _PreparedRoomDispatch:
+) -> PreparedRoomDispatch:
     """Start one owned leg mission and keep what its completion is judged by.
 
     A custom area leg is its own mission, started with the same ownership.
@@ -187,7 +187,7 @@ async def _async_dispatch_leg_command(
     )
     identity_baseline: bytes | None = None
     for attempt in range(observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
-        identity_baseline = await observation._async_read_session_identity(
+        identity_baseline = await observation.async_read_session_identity(
             robot.session_identity
         )
         if identity_baseline is not None:
@@ -276,7 +276,7 @@ async def _async_dispatch_leg_command(
         if identity is not None and on_identity is not None:
             on_identity(identity)
         raise
-    observed = await observation._async_read_session_identity(robot.session_identity)
+    observed = await observation.async_read_session_identity(robot.session_identity)
     identity = observed if observed and observed != identity_baseline else None
     if identity is not None and not _identity_matches_session(
         identity, managed_session_id
@@ -298,7 +298,7 @@ async def _async_dispatch_leg_command(
         )
     if on_identity is not None:
         on_identity(identity)
-    return _PreparedRoomDispatch(
+    return PreparedRoomDispatch(
         leg,
         history_baseline,
         dispatched_at,
@@ -360,7 +360,7 @@ async def _async_recover_managed_dispatch_identity(
     try:
         async with asyncio.timeout(DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS):
             while True:
-                observed = await observation._async_read_session_identity(reader)
+                observed = await observation.async_read_session_identity(reader)
                 if observed and observed != baseline:
                     return (
                         observed
@@ -372,7 +372,7 @@ async def _async_recover_managed_dispatch_identity(
         return None
 
 
-def _guard_native_commands(
+def guard_native_commands(
     sender: Callable[[int, UserCommand], Awaitable[None]] | None,
     manager: CleaningPlanManager,
     serial_number: str,
@@ -387,7 +387,7 @@ def _guard_native_commands(
 
     async def send(token: int, command: UserCommand) -> None:
         expected = expected_identity()
-        identity = await observation._async_read_session_identity(reader)
+        identity = await observation.async_read_session_identity(reader)
         ended_dock = (
             allow_ended_dock and command is UserCommand.DOCK and identity == b""
         )
@@ -401,7 +401,7 @@ def _guard_native_commands(
     return send
 
 
-async def _async_cleanup_managed_motion(
+async def async_cleanup_managed_motion(
     sender: Callable[[int, UserCommand], Awaitable[None]] | None,
     motion_token: int,
     dispatch_attempted: bool,
@@ -424,7 +424,7 @@ async def _async_cleanup_managed_motion(
         )
 
 
-def _managed_stop_fence_owned_by_run(
+def managed_stop_fence_owned_by_run(
     manager: CleaningPlanManager,
     serial_number: str,
     run_id: str | None,
@@ -435,7 +435,7 @@ def _managed_stop_fence_owned_by_run(
 
 
 @asynccontextmanager
-async def _managed_reconciliation_guard(
+async def managed_reconciliation_guard(
     manager: CleaningPlanManager,
     serial_number: str,
     motion_token: int,
@@ -447,7 +447,7 @@ async def _managed_reconciliation_guard(
         yield bool(current)
 
 
-def _managed_reconciliation_is_current(
+def managed_reconciliation_is_current(
     manager: CleaningPlanManager,
     serial_number: str,
     motion_token: int,
@@ -456,7 +456,7 @@ def _managed_reconciliation_is_current(
     return manager.control.managed_motion_is_current(serial_number, motion_token)
 
 
-def _suspended_run_reason(
+def suspended_run_reason(
     manager: CleaningPlanManager, serial_number: str
 ) -> str | None:
     """Capture a low-charge suspension before room cleanup clears its marker."""
@@ -469,7 +469,7 @@ def _suspended_run_reason(
     return None
 
 
-def _run_provenance(call: ServiceCall) -> str:
+def run_provenance(call: ServiceCall) -> str:
     """Return bounded trigger provenance without retaining account identity."""
     context = call.context
     if getattr(context, "parent_id", None):
@@ -499,7 +499,7 @@ async def _async_mark_run_docked(
     )
 
 
-async def _ensure_stop_settled(
+async def ensure_stop_settled(
     hass: HomeAssistant,
     manager: CleaningPlanManager,
     serial_number: str,
@@ -525,7 +525,7 @@ async def _ensure_stop_settled(
     )
 
 
-def _stop_is_pending(manager: CleaningPlanManager, serial_number: str) -> bool:
+def stop_is_pending(manager: CleaningPlanManager, serial_number: str) -> bool:
     """Read the OEM stop fence when the active manager supports it."""
     pending = manager.control.stop_pending
     return bool(pending(serial_number))

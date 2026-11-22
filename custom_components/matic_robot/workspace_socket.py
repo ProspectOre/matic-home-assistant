@@ -19,7 +19,7 @@ from homeassistant.exceptions import HomeAssistantError, Unauthorized
 
 from .client import AuthenticationRequiredError
 from .const import DOMAIN, EVENT_ACTIVITY_OBSERVED, EVENT_CLEANING_FINISHED
-from .slam_scene import _scene_snapshot_key
+from .slam_scene import scene_snapshot_key
 from .slam_view_data import catalog_entry_projection, pose_projection
 from .workspace_schema import (
     InvalidateEvent,
@@ -259,7 +259,7 @@ class WorkspaceSocket:
         tracked.source_state["zones"] = session.telemetry.value.zones
         tracked.source_state["plans"] = plans.catalog.plans(serial_number)
         tracked.source_state["areas"] = plans.catalog.areas(serial_number)
-        tracked.source_state["scene"] = _scene_snapshot_key(runtime)
+        tracked.source_state["scene"] = scene_snapshot_key(runtime)
         tracked.source_state["scene_boundary"] = self._scene_boundary_state(runtime)
         tracked.source_state["history"] = self._history_state(runtime.slam_history)
         tracked.source_unsubscribers.extend(
@@ -369,7 +369,7 @@ class WorkspaceSocket:
         if tracked is None or tracked.sources_closed:
             return
         runtime = tracked.entry.runtime_data
-        current = _scene_snapshot_key(runtime)
+        current = scene_snapshot_key(runtime)
         current_boundary = self._scene_boundary_state(runtime)
         previous = tracked.source_state.get("scene")
         previous_boundary = tracked.source_state.get("scene_boundary")

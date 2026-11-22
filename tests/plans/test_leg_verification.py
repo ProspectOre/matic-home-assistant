@@ -16,11 +16,11 @@ from custom_components.matic_robot.client.models import (
     RobotActivity,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_observation import (
     NativeRoomVerdict,
-    _async_adjudicate_room_end,
-    _async_verify_leg_completion,
+    async_adjudicate_room_end,
+    async_verify_leg_completion,
 )
 from custom_components.matic_robot.managed_run import PlanCancelledError, RoomRunOutcome
 from custom_components.matic_robot.plans import CleaningPlanManager
@@ -53,7 +53,7 @@ async def test_leg_that_ends_in_place_is_interrupted_without_credit(hass) -> Non
     record = leg_record(("Kitchen",), ("Kitchen",))
 
     with pytest.raises(ServiceValidationError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -100,7 +100,7 @@ async def test_leg_partial_verification_does_not_start_next_leg(
         return (leg_record(("Kitchen",), ("Kitchen",), completed=False),)
 
     sender = AsyncMock()
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -176,7 +176,7 @@ async def test_leg_verifier_filters_bad_records_and_ambiguity(hass) -> None:
         ),
     )
 
-    evidence = await _async_verify_leg_completion(
+    evidence = await async_verify_leg_completion(
         AsyncMock(return_value=records),
         frozenset({baseline_key}),
         rooms,
@@ -188,7 +188,7 @@ async def test_leg_verifier_filters_bad_records_and_ambiguity(hass) -> None:
 
     ambiguous = (*records, CleaningSessionRecord(b"twin", session(("Office",))))
     assert (
-        await _async_verify_leg_completion(
+        await async_verify_leg_completion(
             AsyncMock(return_value=ambiguous),
             frozenset({baseline_key}),
             rooms,
@@ -200,7 +200,7 @@ async def test_leg_verifier_filters_bad_records_and_ambiguity(hass) -> None:
     )
 
     assert (
-        await _async_verify_leg_completion(
+        await async_verify_leg_completion(
             AsyncMock(side_effect=MaticError("gone")),
             frozenset(),
             rooms,
@@ -222,7 +222,7 @@ async def test_leg_unclassified_error_reraises_after_failure_mark(hass) -> None:
     robot.on_start = send_command
 
     with pytest.raises(HomeAssistantError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -250,7 +250,7 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
         0,
     ):
         assert (
-            await _async_verify_leg_completion(
+            await async_verify_leg_completion(
                 AsyncMock(return_value=()),
                 frozenset(),
                 rooms,
@@ -265,7 +265,7 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
         cancel_event.set()
         reader = AsyncMock(return_value=())
         with pytest.raises(PlanCancelledError):
-            await _async_verify_leg_completion(
+            await async_verify_leg_completion(
                 reader,
                 frozenset(),
                 rooms,
@@ -277,7 +277,7 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
 
         quiet_cancel = asyncio.Event()
         assert (
-            await _async_verify_leg_completion(
+            await async_verify_leg_completion(
                 AsyncMock(return_value=()),
                 frozenset(),
                 rooms,
@@ -298,7 +298,7 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
         ),
         pytest.raises(PlanCancelledError),
     ):
-        await _async_verify_leg_completion(
+        await async_verify_leg_completion(
             AsyncMock(return_value=()),
             frozenset(),
             rooms,
@@ -354,7 +354,7 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
         )
 
     robot.on_start = send_command
-    result = await _async_run_leg(
+    result = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -387,7 +387,7 @@ async def test_leg_retries_matching_history_until_room_evidence_arrives(monkeypa
         ),
     )
     reader = AsyncMock(side_effect=[(early,), (final,)])
-    evidence = await _async_verify_leg_completion(
+    evidence = await async_verify_leg_completion(
         reader,
         frozenset(),
         leg_rooms(),
@@ -411,7 +411,7 @@ async def test_leg_rejects_different_matching_sessions_across_retries(monkeypatc
     first = leg_record(("Kitchen",), ("Kitchen",))
     second = replace(first, key=b"different-session")
     assert (
-        await _async_verify_leg_completion(
+        await async_verify_leg_completion(
             AsyncMock(side_effect=[(first,), (second,)]),
             frozenset(),
             leg_rooms(),
@@ -460,12 +460,12 @@ async def test_leg_resumes_native_session_after_handoff(hass, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_observation._async_wait_for_active_session_resolution",
+        "custom_components.matic_robot.managed_observation.async_wait_for_active_session_resolution",
         resolution,
     )
     robot.on_start = send_command
     sender = AsyncMock()
-    run = _async_run_leg(
+    run = async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -498,7 +498,7 @@ async def test_leg_accepts_native_history_after_three_minutes(monkeypatch):
     )
     final = leg_record(("Kitchen", "Office"), ("Kitchen", "Office"))
     reader = AsyncMock(side_effect=[()] * 90 + [(final,)])
-    evidence = await _async_verify_leg_completion(
+    evidence = await async_verify_leg_completion(
         reader,
         frozenset(),
         leg_rooms(),
@@ -538,7 +538,7 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
         return 30
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_run._async_completion_budget",
+        "custom_components.matic_robot.managed_run.async_completion_budget",
         begin_room_observations,
     )
     reads = 0
@@ -554,7 +554,7 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
             ),
         )
 
-    assert await _async_run_leg(
+    assert await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -607,12 +607,12 @@ async def test_terminal_history_has_its_own_budget(
 
     if multi_room:
         monkeypatch.setattr(
-            "custom_components.matic_robot.managed_run._async_completion_budget",
+            "custom_components.matic_robot.managed_run.async_completion_budget",
             terminal_leg,
         )
     else:
         monkeypatch.setattr(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             terminal_room,
         )
     reads = 0
@@ -627,7 +627,7 @@ async def test_terminal_history_has_its_own_budget(
         return (leg_record(names, names, key=robot.history_key()),)
 
     sender = AsyncMock()
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass, completion_timeout=0.02),
         manager,
@@ -669,7 +669,7 @@ async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room
             cancelled = True
         return ()
 
-    verify = _async_verify_leg_completion if multi_room else _async_adjudicate_room_end
+    verify = async_verify_leg_completion if multi_room else async_adjudicate_room_end
     result = await verify(
         slow_reader,
         frozenset(),
@@ -705,7 +705,7 @@ async def test_history_read_waiting_for_its_record_ends_with_the_run(
             raise
         return ()
 
-    verify = _async_verify_leg_completion if multi_room else _async_adjudicate_room_end
+    verify = async_verify_leg_completion if multi_room else async_adjudicate_room_end
     async with asyncio.timeout(5):
         if ended_by == "cancellation":
             with pytest.raises(PlanCancelledError):
@@ -738,7 +738,7 @@ async def test_leg_rejects_ambiguous_normalized_native_room_names():
         ("Kitchen", "Office"),
     )
     assert (
-        await _async_verify_leg_completion(
+        await async_verify_leg_completion(
             AsyncMock(return_value=(record,)),
             frozenset(),
             leg_rooms(),

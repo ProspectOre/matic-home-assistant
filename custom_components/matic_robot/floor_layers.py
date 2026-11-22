@@ -39,7 +39,7 @@ from .http import (
     runtime_for_entry,
 )
 from .map_schema import FloorLayers
-from .slam_view_data import _map_session_key
+from .slam_view_data import map_session_key
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
@@ -85,7 +85,7 @@ class MaticFloorLayersView(HomeAssistantView):
         identity = runtime.slam_map.mission_identity if runtime else None
         mission_id = identity.mission_id if identity else None
         # The frame Matic Map draws in: the mission and its floor partition.
-        map_key = _map_session_key(runtime) if runtime else None
+        map_key = map_session_key(runtime) if runtime else None
         if runtime is None or mission_id is None or map_key is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -140,7 +140,7 @@ def _still_current(
     """Return whether the entry still shows the map frame this request started on."""
     return (
         runtime_for_entry(hass, entry_id) is runtime
-        and _map_session_key(runtime) == map_key
+        and map_session_key(runtime) == map_key
     )
 
 

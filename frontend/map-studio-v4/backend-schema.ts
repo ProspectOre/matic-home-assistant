@@ -451,17 +451,14 @@ export interface PlanAreaEntry {
   readonly name: string;
 }
 
-export interface PreviewRoom {
+export interface PreviewRoomStep {
+  readonly kind: "room";
   readonly room_id: string;
   readonly name: string;
   readonly cleaning_mode: string;
   readonly coverage_setting: string;
   readonly cadence_reasons: readonly CadenceReason[];
   readonly daily_limit?: DailyLimit;
-}
-
-export interface PreviewRoomStep extends PreviewRoom {
-  readonly kind: "room";
 }
 
 /** A custom area in a preview; areas run every time, so no reasons. */
@@ -491,8 +488,7 @@ export interface MissingRoom {
 
 /** The next run in order; a blocked preview names its `blocker`. */
 export interface NextRunPreview {
-  readonly rooms: readonly PreviewRoom[];
-  readonly entries?: readonly (PreviewRoomStep | PreviewAreaStep)[];
+  readonly entries: readonly (PreviewRoomStep | PreviewAreaStep)[];
   readonly mission_boundaries: readonly number[];
   readonly daily_limit_held_rooms?: readonly DailyLimitHeldRoom[];
   readonly held_rooms?: readonly HeldRoom[];

@@ -96,7 +96,7 @@ async def test_preview_error_type_names_the_blocker(
 
     assert [
         plan["next_run_preview"] for plan in json.loads(response.body)["plans"]
-    ] == [{"rooms": [], "mission_boundaries": [], "blocker": blocker}] * 4
+    ] == [{"entries": [], "mission_boundaries": [], "blocker": blocker}] * 4
 
 
 async def test_plan_room_missing_from_the_map_keeps_its_settings_and_policy() -> None:

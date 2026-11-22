@@ -47,11 +47,11 @@ from .plan_model import (
     SharedRoomScheduleLockedError,
     SharedRoomScheduleMapChangedError,
     SharedRoomScheduleStaleError,
-    _bounded_stop_threshold,
-    _managed_stop_policy,
+    bounded_stop_threshold,
+    managed_stop_policy,
     stored_count,
 )
-from .plan_repository import PlanRepository, _MetadataLockLease
+from .plan_repository import MetadataLockLease, PlanRepository
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class _PreparedRunReservation:
 
 
 @dataclass(frozen=True, slots=True)
-class _CadenceMutation:
+class CadenceMutation:
     """Describe the persisted cadence rows currently being written."""
 
     plan_id: str
@@ -84,7 +84,7 @@ class PlanCadence:
     def __init__(self, repository: PlanRepository) -> None:
         self.repository = repository
         self.prepared_runs: dict[str, _PreparedRunReservation] = {}
-        self.pending_cadence_mutations: dict[str, dict[object, _CadenceMutation]] = {}
+        self.pending_cadence_mutations: dict[str, dict[object, CadenceMutation]] = {}
 
     def daily_limit_state(
         self,
@@ -139,7 +139,7 @@ class PlanCadence:
         ):
             raise ValueError("daily room limit must be between 1 and 100")
 
-        async def commit(_lease: _MetadataLockLease) -> plan_schema.DailyLimit:
+        async def commit(_lease: MetadataLockLease) -> plan_schema.DailyLimit:
             async with self.repository.commit(serial_number, user=True) as robot:
                 if not require_current():
                     raise RoomMapChangedError("room map changed")
@@ -185,11 +185,11 @@ class PlanCadence:
                 return
             raise validation_error("Run already reserved", "plan_already_running")
         plan = self.repository.robot(serial_number)["plans"].get(plan_id, {})
-        stop_enabled, stop_threshold = _managed_stop_policy(plan)
+        stop_enabled, stop_threshold = managed_stop_policy(plan)
         if finish_current_room is not None:
             stop_enabled = finish_current_room
         if finish_current_room_threshold is not None:
-            stop_threshold = _bounded_stop_threshold(finish_current_room_threshold)
+            stop_threshold = bounded_stop_threshold(finish_current_room_threshold)
         normalized_room_ids = tuple(dict.fromkeys(str(room_id) for room_id in room_ids))
         snapshots = cadence_by_room if isinstance(cadence_by_room, Mapping) else {}
         plan_rooms = {
@@ -301,7 +301,7 @@ class PlanCadence:
     def begin_cadence_mutation(
         self,
         serial_number: str,
-        mutation: _CadenceMutation,
+        mutation: CadenceMutation,
     ) -> object:
         token = object()
         self.pending_cadence_mutations.setdefault(serial_number, {})[token] = mutation
@@ -318,9 +318,9 @@ class PlanCadence:
     @asynccontextmanager
     async def cadence_commit(
         self, serial_number: str
-    ) -> AsyncIterator[list[_CadenceMutation]]:
+    ) -> AsyncIterator[list[CadenceMutation]]:
         """Commit a user edit; prepared runs see its cadence changes until saved."""
-        mutations: list[_CadenceMutation] = []
+        mutations: list[CadenceMutation] = []
         tokens: list[object] = []
         try:
             async with self.repository.commit(serial_number, user=True):
@@ -457,7 +457,7 @@ class PlanCadence:
     ) -> dict[str, Any]:
         """Delete one shared schedule and detach every saved consumer atomically."""
 
-        async def commit(_lease: _MetadataLockLease) -> dict[str, Any]:
+        async def commit(_lease: MetadataLockLease) -> dict[str, Any]:
             async with self.cadence_commit(serial_number) as mutations:
                 robot = self.repository.robot(serial_number)
                 schedule = robot.get("shared_room_cadence", {}).get(room_id)
@@ -483,7 +483,7 @@ class PlanCadence:
                     )
 
                 active = self.repository.active_plan(serial_number)
-                pending = native_history._validated_native_reconciliation(
+                pending = native_history.validated_native_reconciliation(
                     robot.get("pending_native_reconciliation")
                 )
                 if active is not None and active.room_id == room_id:
@@ -537,14 +537,14 @@ class PlanCadence:
                         private_records.pop(room_id, None)
                     plan_room_ids.setdefault(plan_id, set()).add(room_id)
                 mutations.extend(
-                    _CadenceMutation(
+                    CadenceMutation(
                         plan_id, frozenset(changed_rooms), frozenset({room_id})
                     )
                     for plan_id, changed_rooms in sorted(plan_room_ids.items())
                 )
                 if not mutations:
                     mutations.append(
-                        _CadenceMutation("", frozenset(), frozenset({room_id}))
+                        CadenceMutation("", frozenset(), frozenset({room_id}))
                     )
             return {
                 "room_id": room_id,
@@ -719,7 +719,7 @@ class PlanCadence:
         counter and its one-time due request.
         """
 
-        async def commit(_lease: _MetadataLockLease) -> dict[str, list[str]]:
+        async def commit(_lease: MetadataLockLease) -> dict[str, list[str]]:
             async with self.cadence_commit(serial_number) as mutations:
                 result = self.reset_cadence_transaction(
                     serial_number, plan_id, room_ids, modes=modes
@@ -750,7 +750,7 @@ class PlanCadence:
         room_ids: Sequence[str] | None = None,
         *,
         modes: Sequence[str] | None = None,
-    ) -> tuple[dict[str, list[str]], _CadenceMutation] | None:
+    ) -> tuple[dict[str, list[str]], CadenceMutation] | None:
         """Apply a cadence reset in the open commit.
 
         Returns ``None`` after leaving only the quarantine of a schedule whose
@@ -764,7 +764,7 @@ class PlanCadence:
         ]
         robot = self.repository.robot(serial_number)
         active = self.repository.active_plan(serial_number)
-        pending = native_history._validated_native_reconciliation(
+        pending = native_history.validated_native_reconciliation(
             robot.get("pending_native_reconciliation")
         )
         selected = set(room_ids or ())
@@ -863,7 +863,7 @@ class PlanCadence:
                     for mode in reset_modes:
                         policy[f"do_{mode}_next"] = False
         return {"reset_room_ids": target_ids, "reset_modes": reset_modes}, (
-            _CadenceMutation(
+            CadenceMutation(
                 plan_id,
                 frozenset(set(target_ids) - shared_ids),
                 frozenset(shared_ids),
@@ -888,7 +888,7 @@ class PlanCadence:
             (room_id for room_id, _policy in shared_updates),
         )
         active = self.repository.active_plan(serial_number)
-        pending = native_history._validated_native_reconciliation(
+        pending = native_history.validated_native_reconciliation(
             robot.get("pending_native_reconciliation")
         )
         if active is not None and active.plan_id == plan_id:

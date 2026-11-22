@@ -22,11 +22,11 @@ stable release on `main`.
 
 `uv run scripts/check.py` runs the formatter, linter, type checker, layer and
 size rules, privacy scan, and the tests whose imports lead to a changed file.
-`uv run ruff format .` fixes formatting. The layer, size and unused-name rules
-are listed in [AGENTS.md](AGENTS.md#layers); code outside the robot client
-imports it from `client/__init__.py`, so export a new client name there. Put
-tests of the client alone in `tests/client`; the check reruns them with Home
-Assistant blocked.
+`uv run ruff format .` fixes formatting. The layer, private-name, size and
+unused-name rules are listed in [AGENTS.md](AGENTS.md#layers); code outside the
+robot client imports it from `client/__init__.py`, so export a new client name
+there. Put tests of the client alone in `tests/client`; the check reruns them
+with Home Assistant blocked.
 
 CI runs the same command with `--all`, which runs every test. On a pull request
 it then requires a test to run every line and take every branch that your
@@ -144,7 +144,10 @@ one run of the Release workflow.
    (`0.6.0b1` for the tag `v0.6.0-beta1`, `0.6.0rc1` for `v0.6.0-rc1`), run
    `uv lock`, and write the notes in `docs/release-notes-0.6.0-beta1.md`, named
    as the tag without its `v`. The first line, `# Title`, becomes the release
-   title and the rest its body.
+   title and the rest its body. Link other guides inline, with a relative
+   target such as `map.md`; publishing points those links at the tag's copy of
+   `docs/`. Other links, images, code blocks fenced with three backticks and
+   one-line code spans are left as written.
 2. Once Test has passed on the branch head, run Release from Actions with the
    tag. A candidate runs on `release/X.Y` or `main`. A stable `vX.Y.Z` runs on
    `main`, after `release/X.Y` is merged into it.

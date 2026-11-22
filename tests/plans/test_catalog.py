@@ -12,7 +12,7 @@ from homeassistant.util import dt as dt_util
 
 import custom_components.matic_robot.plan_model as plan_model_module
 import custom_components.matic_robot.plan_state as plan_state_module
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.plan_catalog import (
     MAX_SAVED_PLANS_PER_ROBOT,
     SavedPlanLimitError,
@@ -609,12 +609,12 @@ async def test_managed_plan_rejects_native_name_aliases_before_any_dispatch(
     commands = AsyncMock()
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_dispatch.async_dispatch_leg_command",
             dispatch,
         ),
         pytest.raises(ServiceValidationError) as failure,
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,

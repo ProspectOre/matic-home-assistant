@@ -85,7 +85,7 @@ class SlamHistorySnapshot:
     archive_group: str | None = None
 
 
-def _build_snapshot(
+def build_snapshot(
     scene: bytes,
     revision: int,
     created_at: datetime,
@@ -97,7 +97,7 @@ def _build_snapshot(
         raise DecodeError("invalid SLAM history revision")
     if created_at.tzinfo is None:
         raise DecodeError("SLAM history timestamp must include a time zone")
-    if mission_token is not None and not _valid_mission_token(mission_token):
+    if mission_token is not None and not valid_mission_token(mission_token):
         raise DecodeError("SLAM history mission token is invalid")
     timestamp = created_at.astimezone(UTC)
     compressed = zlib.compress(scene, level=6)
@@ -117,11 +117,11 @@ def _build_snapshot(
             if mission_token is not None and group_salt
             else None
         ),
-        frame=_scene_frame(scene),
+        frame=encoded_scene_frame(scene),
     )
 
 
-def _serialize_history(
+def serialize_history(
     snapshots: tuple[SlamHistorySnapshot, ...],
     group_salt: bytes = b"",
     generation: int = 0,
@@ -162,7 +162,7 @@ def _serialize_history(
     }
 
 
-def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
+def decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
     if not isinstance(stored, Mapping):
         return [], True
     items = stored.get("snapshots", ())
@@ -217,8 +217,7 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
                 or isinstance(point_count, bool)
                 or point_count < 1
                 or (
-                    mission_token is not None
-                    and not _valid_mission_token(mission_token)
+                    mission_token is not None and not valid_mission_token(mission_token)
                 )
                 or len(compressed) > MAX_HISTORY_COMPRESSED_BYTES
                 or (
@@ -248,7 +247,7 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
             created_at_utc = created_at.astimezone(UTC)
             if record_id is None or comparison_group is None or frame is None:
                 dirty = True
-            scene = _decompress_scene(compressed)
+            scene = decompress_scene(compressed)
             header = parse_slam_scene_header(scene)
             if (
                 sha256(scene).hexdigest()[:24] != snapshot_id
@@ -286,16 +285,16 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
         # every individually valid scene until the entire cache is decoded.
         snapshots.sort(key=lambda snapshot: snapshot.created_at)
         before_count = len(snapshots)
-        _enforce_history_bounds(snapshots)
+        enforce_history_bounds(snapshots)
         dirty |= before_count != len(snapshots)
     snapshots.sort(key=lambda snapshot: snapshot.created_at)
     before = tuple(snapshot.snapshot_id for snapshot in snapshots)
-    _enforce_history_bounds(snapshots)
+    enforce_history_bounds(snapshots)
     dirty |= before != tuple(snapshot.snapshot_id for snapshot in snapshots)
     return snapshots, dirty
 
 
-def _decode_history_state(
+def decode_history_state(
     stored: object,
 ) -> tuple[bytes | None, int, bool, dict[str, tuple[str, dict[str, Any]]]]:
     if not isinstance(stored, Mapping):
@@ -345,7 +344,7 @@ def _legacy_record_id(
     return hashlib.sha256(material.encode()).hexdigest()[:32]
 
 
-def _scene_frame(scene: bytes) -> dict[str, Any]:
+def encoded_scene_frame(scene: bytes) -> dict[str, Any]:
     header = parse_slam_scene_header(scene)
     metadata_start = SCENE_HEADER_BYTES
     metadata = json.loads(
@@ -459,7 +458,7 @@ def _validate_coverage(
     }
 
 
-def _valid_name(value: str | None) -> str:
+def valid_name(value: str | None) -> str:
     if not isinstance(value, str):
         raise HistoryRequestError("invalid-history-name")
     cleaned = " ".join(value.split())
@@ -468,7 +467,7 @@ def _valid_name(value: str | None) -> str:
     return cleaned
 
 
-def _valid_mission_token(value: object) -> bool:
+def valid_mission_token(value: object) -> bool:
     if not isinstance(value, str) or len(value) != 64:
         return False
     try:
@@ -478,7 +477,7 @@ def _valid_mission_token(value: object) -> bool:
     return True
 
 
-def _decompress_scene(compressed: bytes) -> bytes:
+def decompress_scene(compressed: bytes) -> bytes:
     decompressor = zlib.decompressobj()
     scene = decompressor.decompress(compressed, MAX_SCENE_BYTES + 1)
     if (
@@ -493,7 +492,7 @@ def _decompress_scene(compressed: bytes) -> bytes:
     return scene
 
 
-def _enforce_history_bounds(snapshots: list[SlamHistorySnapshot]) -> None:
+def enforce_history_bounds(snapshots: list[SlamHistorySnapshot]) -> None:
     while len(snapshots) > MAX_HISTORY_ITEMS:
         snapshots.pop(_oldest_disposable_snapshot_index(snapshots))
     while (
@@ -523,7 +522,7 @@ def _oldest_disposable_snapshot_index(
     return 0
 
 
-def _archive_fingerprint(archive: Mapping[str, Any]) -> str:
+def archive_fingerprint(archive: Mapping[str, Any]) -> str:
     """Check an import archive's envelope and return its request fingerprint."""
     try:
         raw = json.dumps(archive, separators=(",", ":")).encode()
@@ -539,7 +538,7 @@ def _archive_fingerprint(archive: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _import_records(records: object, group_salt: bytes) -> list[SlamHistorySnapshot]:
+def import_records(records: object, group_salt: bytes) -> list[SlamHistorySnapshot]:
     """Decode archive records as kept, read-only history snapshots."""
     if not isinstance(records, list) or not records or len(records) > MAX_HISTORY_ITEMS:
         raise HistoryRequestError("invalid-history-archive")
@@ -584,8 +583,8 @@ def _import_records(records: object, group_salt: bytes) -> list[SlamHistorySnaps
                 )
             ):
                 raise ValueError
-            parsed = _build_snapshot(
-                _decompress_scene(compressed), 0, created_at, None, group_salt
+            parsed = build_snapshot(
+                decompress_scene(compressed), 0, created_at, None, group_salt
             )
         except (
             TypeError,
@@ -600,7 +599,7 @@ def _import_records(records: object, group_salt: bytes) -> list[SlamHistorySnaps
                 parsed,
                 record_id=secrets.token_hex(16),
                 retention="kept",
-                name=_valid_name(item.get("name"))
+                name=valid_name(item.get("name"))
                 if item.get("name") is not None
                 else None,
                 imported=True,

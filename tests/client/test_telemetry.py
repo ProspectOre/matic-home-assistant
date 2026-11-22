@@ -78,7 +78,7 @@ def test_scalar_telemetry_rejects_field_amplification_before_allocation(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(wire_module, "WireField", capture)
-    limit = telemetry_fields_module._TELEMETRY_NESTED_MAX_FIELDS
+    limit = telemetry_fields_module.TELEMETRY_NESTED_MAX_FIELDS
     payload = _vfield(1, 0) * (limit + 50)
     result = decoder(payload)
     assert result in {None, (None, None, None, None)}
@@ -109,7 +109,7 @@ def test_scalar_telemetry_rejects_oversized_bytes_before_parsing(
 
 
 def test_nested_water_flow_property_rejects_field_amplification() -> None:
-    dense = _vfield(1, 0) * (telemetry_fields_module._TELEMETRY_NESTED_MAX_FIELDS + 1)
+    dense = _vfield(1, 0) * (telemetry_fields_module.TELEMETRY_NESTED_MAX_FIELDS + 1)
     assert decode_water_flow_factor(_bfield(1, dense)) is None
 
 
@@ -453,7 +453,7 @@ def test_wifi_decoder_enforces_payload_network_and_nested_budgets(
     assert decode_wifi_status(wifi)[3] == ()
 
     one_network = _vfield(1, 3) + _bfield(7, _bfield(1, network))
-    monkeypatch.setattr(wifi_status_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
+    monkeypatch.setattr(wifi_status_module, "TELEMETRY_NESTED_MAX_FIELDS", 0)
     assert decode_wifi_status(one_network)[3] == ()
 
 

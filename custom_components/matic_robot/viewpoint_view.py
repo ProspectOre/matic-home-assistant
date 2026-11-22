@@ -18,7 +18,7 @@ from .http import (
     runtime_for_entry,
 )
 from .photo_gallery_view import viewpoint_json
-from .slam_view_data import _map_session_key
+from .slam_view_data import map_session_key
 from .viewpoints import async_save_viewpoint, current_floor_plan
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ class MaticViewpointsView(HomeAssistantView):
         try:
             floor_plan = current_floor_plan(entry)
             # The spot is in the coordinates of the map Matic Map showed.
-            if _map_session_key(entry.runtime_data) != key:
+            if map_session_key(entry.runtime_data) != key:
                 return _refused("map_changed")
             viewpoint = await async_save_viewpoint(
                 entry, floor_plan, name, x=x, y=y, heading=heading

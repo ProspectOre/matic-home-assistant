@@ -534,7 +534,8 @@ def _raised_keys() -> Iterator[tuple[str, int, str, frozenset[str] | None]]:
             )
             if not isinstance(node, ast.Call) or not (
                 name.endswith(("Error", "NotReady", "AuthFailed"))
-                or name in {"validation_error", "_error", "_async_refusal"}
+                or name
+                in {"validation_error", "_error", "tool_error", "_async_refusal"}
             ):
                 continue
             words = {k.arg: k.value for k in node.keywords}
@@ -555,8 +556,9 @@ def _raised_keys() -> Iterator[tuple[str, int, str, frozenset[str] | None]]:
                     else frozenset(),
                 )
                 continue
-            if name == "_error" and node.args:
-                # llm.py: _error("llm_*", **placeholders)
+            if name in {"_error", "tool_error"} and node.args:
+                # llm_common.py: tool_error("llm_*", **placeholders), and the
+                # photo, viewpoint and camera modules' own _error
                 yield (
                     path.name,
                     node.lineno,

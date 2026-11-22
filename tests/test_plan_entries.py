@@ -23,8 +23,6 @@ from custom_components.matic_robot.plan_model import (
     PlanAreaMapChangedError,
     PlanAreaMissingError,
     PlanDisabledError,
-    _dispatching_room_leg,
-    checkpoint_legs,
     leg_boundaries,
     leg_groups,
     plan_area_fingerprint,
@@ -34,10 +32,11 @@ from custom_components.matic_robot.plan_model import (
     preview_legs,
     run_entries,
 )
+from custom_components.matic_robot.plan_records import RecoveryCheckpoint
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
 from custom_components.matic_robot.service_plans import (
-    _plan_request_error,
+    plan_request_error,
 )
 from custom_components.matic_robot.service_schemas import (
     SAVE_PLAN_SCHEMA,
@@ -47,6 +46,10 @@ from tests.test_services import _registered_handler, _registered_services
 
 SERIAL = "serial"
 ROOM_MAP = {"room-kitchen": "Kitchen", "room-study": "Study", "room-hall": "Hall"}
+
+
+def _legs(checkpoint: dict) -> list:
+    return RecoveryCheckpoint.parse(checkpoint).legs()
 
 
 def _floor(*, mission_id: int = 42) -> FloorPlan:
@@ -602,7 +605,7 @@ async def _handler(hass, manager, service: str, schema, data: dict, floor=None):
     services = await _registered_services(hass, manager)
     floor = floor or _floor()
     with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
+        "custom_components.matic_robot.service_context.saved_plan_context",
         return_value=_context(floor),
     ):
         return await _registered_handler(services, service)(
@@ -706,16 +709,16 @@ async def test_save_plan_service_rejects_unusable_areas(
 
 
 def test_plan_request_errors_translate_area_failures() -> None:
-    assert _plan_request_error(PlanAreaMissingError("x")).translation_key == (
+    assert plan_request_error(PlanAreaMissingError("x")).translation_key == (
         "plan_area_missing"
     )
-    assert _plan_request_error(PlanAreaMapChangedError("x")).translation_key == (
+    assert plan_request_error(PlanAreaMapChangedError("x")).translation_key == (
         "area_map_changed"
     )
-    assert _plan_request_error(DuplicatePlanAreaError("x")).translation_key == (
+    assert plan_request_error(DuplicatePlanAreaError("x")).translation_key == (
         "duplicate_area"
     )
-    limit = _plan_request_error(PlanAreaLimitError("x"))
+    limit = plan_request_error(PlanAreaLimitError("x"))
     assert limit.translation_key == "plan_area_limit"
     assert limit.translation_placeholders == {"limit": str(MAX_ROOM_SEQUENCE_SIZE)}
 
@@ -753,11 +756,11 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
 
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=("vacuum.test", entry, SERIAL, dict(ROOM_MAP)),
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as execute,
     ):
@@ -810,11 +813,11 @@ async def test_running_a_room_only_plan_keeps_its_legacy_executor_call(hass) -> 
     )
     with (
         patch(
-            "custom_components.matic_robot.service_context._saved_plan_context",
+            "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=("vacuum.test", entry, SERIAL, dict(ROOM_MAP)),
         ),
         patch(
-            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            "custom_components.matic_robot.service_execution.async_execute_rooms",
             AsyncMock(),
         ) as execute,
     ):
@@ -832,7 +835,7 @@ async def test_preview_plan_service_returns_typed_entries(hass) -> None:
     services = await _registered_services(hass, manager)
 
     with patch(
-        "custom_components.matic_robot.service_context._saved_plan_context",
+        "custom_components.matic_robot.service_context.saved_plan_context",
         return_value=_context(floor),
     ):
         preview = await _registered_handler(services, "preview_plan")(
@@ -969,8 +972,8 @@ def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
             for room in rooms
         ],
     }
-    assert checkpoint_legs(room_only_checkpoint) == [rooms]
-    assert checkpoint_legs({**room_only_checkpoint, "single_room_missions": True}) == [
+    assert _legs(room_only_checkpoint) == [rooms]
+    assert _legs({**room_only_checkpoint, "single_room_missions": True}) == [
         [room] for room in rooms
     ]
 
@@ -991,13 +994,13 @@ def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
             _room_entry("room-hall"),
         ],
     }
-    assert checkpoint_legs(checkpoint) == [
+    assert _legs(checkpoint) == [
         rooms[:1],
         AreaLeg("rug", "Rug", "vacuum", "quick", _FINGERPRINT),
         rooms[1:],
     ]
     smart_stop = {**checkpoint, "single_room_missions": True}
-    assert checkpoint_legs(smart_stop) == [[room] for room in rooms[:1]] + [
+    assert _legs(smart_stop) == [[room] for room in rooms[:1]] + [
         AreaLeg("rug", "Rug", "vacuum", "quick", _FINGERPRINT),
         *[[room] for room in rooms[1:]],
     ]
@@ -1037,4 +1040,4 @@ def test_only_a_room_leg_is_a_mixed_dispatch(entries, leg_index, dispatching) ->
     }
     if entries is not None:
         checkpoint["entries"] = entries
-    assert _dispatching_room_leg(checkpoint) is dispatching
+    assert RecoveryCheckpoint.parse(checkpoint).dispatching_room_leg() is dispatching

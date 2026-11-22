@@ -87,7 +87,7 @@ from custom_components.matic_robot.slam_history_view import (
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_scene import MaticSlamSceneView
 from custom_components.matic_robot.slam_view_data import (
-    _map_session_key,
+    map_session_key,
     pose_projection,
 )
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
@@ -203,7 +203,9 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
                 async_save_area=AsyncMock(),
                 async_delete_area=AsyncMock(),
             ),
-            planning=SimpleNamespace(preview=MagicMock(return_value={"rooms": []})),
+            planning=SimpleNamespace(
+                preview=MagicMock(return_value={"rooms": [], "entries": []})
+            ),
             history=SimpleNamespace(
                 snapshot=MagicMock(
                     return_value={"selected_plan": None, "active_plan": None}
@@ -226,14 +228,14 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
 
 
 def _browser_session_key(runtime: SimpleNamespace) -> str:
-    key = _map_session_key(runtime)
+    key = map_session_key(runtime)
     assert key is not None
     return key
 
 
 def test_map_session_key_tracks_floor_partition_not_stream_token() -> None:
     runtime = _runtime()
-    original = _map_session_key(runtime)
+    original = map_session_key(runtime)
     identity = runtime.slam_map.mission_identity
     assert original is not None
     assert identity is not None
@@ -242,7 +244,7 @@ def test_map_session_key_tracks_floor_partition_not_stream_token() -> None:
         "replacement-stream-token",
         identity.mission_id,
     )
-    assert _map_session_key(runtime) == original
+    assert map_session_key(runtime) == original
 
     floor_plan = runtime.session.floor.value
     assert floor_plan is not None
@@ -250,13 +252,13 @@ def test_map_session_key_tracks_floor_partition_not_stream_token() -> None:
         floor_plan,
         partition_id_wire=b"replacement-partition",
     )
-    assert _map_session_key(runtime) != original
+    assert map_session_key(runtime) != original
 
     runtime.session.floor.value = replace(
         floor_plan,
         mission_id=floor_plan.mission_id + 1,
     )
-    assert _map_session_key(runtime) is None
+    assert map_session_key(runtime) is None
 
 
 def _hass(entry) -> SimpleNamespace:
@@ -990,7 +992,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     assert "private-session" not in blocked_response.text
 
     runtime.slam_map.mission_identity = None
-    assert _map_session_key(runtime) is None
+    assert map_session_key(runtime) is None
     empty_identity = await MaticSlamCatalogView().get(_request(hass))
     empty_entry = json.loads(empty_identity.body)["entries"][0]
     assert empty_entry["history_count"] == 0
@@ -1186,16 +1188,16 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
         }
     }
     runtime.cleaning_plans.history.snapshot.return_value = {"selected_plan": "weekday"}
+    kitchen = {
+        "room_id": "room-1",
+        "name": "Kitchen",
+        "cleaning_mode": "vacuum_and_mop",
+        "coverage_setting": "standard",
+        "cadence": {"mop_due": False, "coverage_due": False},
+    }
     runtime.cleaning_plans.planning.preview.return_value = {
-        "rooms": [
-            {
-                "room_id": "room-1",
-                "name": "Kitchen",
-                "cleaning_mode": "vacuum_and_mop",
-                "coverage_setting": "standard",
-                "cadence": {"mop_due": False, "coverage_due": False},
-            }
-        ]
+        "rooms": [kitchen],
+        "entries": [{"kind": "room", **kitchen}],
     }
     runtime.cleaning_plans.planning.preview.side_effect = None
     hass = _hass(_entry(runtime))
@@ -1241,15 +1243,6 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
                 "occupancy_aware": False,
                 "occupancy_sensors": {},
                 "next_run_preview": {
-                    "rooms": [
-                        {
-                            "room_id": "room-1",
-                            "name": "Kitchen",
-                            "cleaning_mode": "vacuum_and_mop",
-                            "coverage_setting": "standard",
-                            "cadence_reasons": [],
-                        }
-                    ],
                     "entries": [
                         {
                             "kind": "room",
@@ -1303,7 +1296,7 @@ async def test_plan_workspace_explains_legacy_room_limit() -> None:
 
     plan = json.loads(response.body)["plans"][0]
     assert plan["next_run_preview"] == {
-        "rooms": [],
+        "entries": [],
         "mission_boundaries": [],
         "blocker": "plan_room_limit",
     }
@@ -1510,23 +1503,25 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
         ),
     )
     runtime.slam_map.floor_plan_is_current.return_value = True
+    preview_rooms = [
+        {
+            "room_id": "room-2",
+            "name": "Study",
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "heavy_duty",
+            "cadence": {"mop_due": True, "coverage_due": True},
+        },
+        {
+            "room_id": "room-1",
+            "name": "Kitchen",
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+            "cadence": {"mop_due": False, "coverage_due": False},
+        },
+    ]
     preview_result = {
-        "rooms": [
-            {
-                "room_id": "room-2",
-                "name": "Study",
-                "cleaning_mode": "vacuum_and_mop",
-                "coverage_setting": "heavy_duty",
-                "cadence": {"mop_due": True, "coverage_due": True},
-            },
-            {
-                "room_id": "room-1",
-                "name": "Kitchen",
-                "cleaning_mode": "vacuum",
-                "coverage_setting": "standard",
-                "cadence": {"mop_due": False, "coverage_due": False},
-            },
-        ]
+        "rooms": preview_rooms,
+        "entries": [{"kind": "room", **room} for room in preview_rooms],
     }
     runtime.cleaning_plans.planning.preview.return_value = preview_result
     runtime.cleaning_plans.planning.preview.side_effect = None
@@ -1567,7 +1562,6 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
         },
     ]
     assert projected == {
-        "rooms": projected_rooms,
         "entries": [{"kind": "room", **room} for room in projected_rooms],
         "mission_boundaries": [1],
         "preview_token": preview_token,
@@ -1661,7 +1655,7 @@ async def test_plan_workspace_blocks_unverified_private_cadence() -> None:
 
     preview = json.loads(response.body)["plans"][0]["next_run_preview"]
     assert preview == {
-        "rooms": [],
+        "entries": [],
         "mission_boundaries": [],
         "blocker": "cadence_progress_unverified",
     }
@@ -2791,7 +2785,6 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         "cadence_reasons": [],
     }
     assert mixed["next_run_preview"] == {
-        "rooms": [room_projection],
         "entries": [
             area_projection,
             {"kind": "room", **room_projection},
@@ -2827,7 +2820,6 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         **token_inputs,
     )
     spots = plans["spots"]["next_run_preview"]
-    assert spots["rooms"] == []
     assert spots["entries"] == [area_projection]
     assert spots["mission_boundaries"] == []
     assert plans["spots"]["entries"] == [{**_area_entry("rug"), "name": "Rug"}]
@@ -2851,7 +2843,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     ]
     assert plans["mixed"]["next_run_preview"]["blocker"] == "area_missing"
     assert plans["spots"]["next_run_preview"] == {
-        "rooms": [],
+        "entries": [],
         "mission_boundaries": [],
         "blocker": "area_missing",
     }

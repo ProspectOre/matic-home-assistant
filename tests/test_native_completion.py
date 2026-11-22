@@ -145,7 +145,7 @@ async def test_grouped_verification_finishes_without_waiting_for_skipped_room(
     from unittest.mock import AsyncMock
 
     from custom_components.matic_robot.managed_observation import (
-        _async_verify_leg_completion,
+        async_verify_leg_completion,
     )
     from custom_components.matic_robot.plan_model import CleaningRoom
 
@@ -156,7 +156,7 @@ async def test_grouped_verification_finishes_without_waiting_for_skipped_room(
     )
     reader = AsyncMock(return_value=(record,))
     evidence = await asyncio.wait_for(
-        _async_verify_leg_completion(
+        async_verify_leg_completion(
             reader,
             frozenset(),
             rooms,

@@ -2,7 +2,7 @@
 
 The plan storage refuses a file older than 1.13, so there are no version
 steps. `parse_robot` repairs each stored robot once, when the plan manager
-loads; `robot()` keeps only `_normalize_robot`, the container repairs the
+loads; `robot()` keeps only `normalize_robot`, the container repairs the
 runtime writers rely on. The file stays at 1.13, which 0.5.4 reads.
 """
 
@@ -17,19 +17,19 @@ from .cadence_accounting import (
 from .client import is_sha256_hex
 from .native_history import (
     NATIVE_COMPLETION_DEDUP_MAX_KEYS,
-    _validated_native_reconciliation,
+    validated_native_reconciliation,
 )
 from .plan_model import (
     MANUAL_ROOM_SEQUENCE_PLAN_NAME,
-    _is_manual_room_sequence_plan_id,
+    is_manual_room_sequence_plan_id,
     normalize_run_outcome,
     normalize_run_provenance,
     stored_count,
 )
 from .plan_records import ActivePlan
 from .plan_timing import (
-    _latest_timestamp,
-    _normalize_duration_profiles,
+    latest_timestamp,
+    normalize_duration_profiles,
 )
 
 _LEGACY_MANUAL_ROOM_SEQUENCE_PLAN_NAME = "Map Studio room clean"
@@ -39,7 +39,7 @@ MAX_MANAGED_NATIVE_SESSION_CLAIMS = 1024
 
 def parse_robot(robot: dict[str, Any]) -> bool:
     """Repair one loaded robot's containers and legacy fields; True if changed."""
-    changed = _normalize_robot(robot)
+    changed = normalize_robot(robot)
     return _repair_legacy_fields(robot) or changed
 
 
@@ -48,7 +48,7 @@ def _repair_legacy_fields(robot: dict[str, Any]) -> bool:
     changed = False
     for rotation in robot["rotations"].values():
         for record in rotation["rooms"].values():
-            changed = _normalize_duration_profiles(record) or changed
+            changed = normalize_duration_profiles(record) or changed
     last_run = robot["last_run"]
     if last_run is not None:
         outcome = last_run.get("outcome")
@@ -73,7 +73,7 @@ def _repair_legacy_fields(robot: dict[str, Any]) -> bool:
         if (
             record is not None
             and record.get("plan_name") == _LEGACY_MANUAL_ROOM_SEQUENCE_PLAN_NAME
-            and _is_manual_room_sequence_plan_id(record.get("plan_id"))
+            and is_manual_room_sequence_plan_id(record.get("plan_id"))
         ):
             record["plan_name"] = MANUAL_ROOM_SEQUENCE_PLAN_NAME
             changed = True
@@ -91,7 +91,7 @@ def _sync_verified_global_room_history(robot: dict[str, Any]) -> bool:
             room_id = record.get("room_id", room_key)
             completed = record.get("last_completed")
             duration = record.get("last_duration_seconds")
-            timestamp = _latest_timestamp(completed)
+            timestamp = latest_timestamp(completed)
             if (
                 not isinstance(room_id, str)
                 or timestamp is None
@@ -107,7 +107,7 @@ def _sync_verified_global_room_history(robot: dict[str, Any]) -> bool:
 
     for room_id, (candidate_timestamp, candidate) in candidates.items():
         global_room = robot["rooms"].setdefault(room_id, {})
-        global_timestamp = _latest_timestamp(global_room.get("last_completed"))
+        global_timestamp = latest_timestamp(global_room.get("last_completed"))
         if global_timestamp is not None and global_timestamp > candidate_timestamp:
             continue
         updates = {
@@ -122,7 +122,7 @@ def _sync_verified_global_room_history(robot: dict[str, Any]) -> bool:
     return changed
 
 
-def _normalize_robot(robot: dict[str, Any]) -> bool:
+def normalize_robot(robot: dict[str, Any]) -> bool:
     """Repair malformed storage containers without inventing room history."""
     changed = _ensure_containers(robot)
     changed = _normalize_native_completion_dedup(robot) or changed
@@ -137,7 +137,7 @@ def _normalize_robot(robot: dict[str, Any]) -> bool:
     changed = _normalize_active_plan(robot) or changed
     changed = _normalize_last_run(robot) or changed
     pending = robot.get("pending_native_reconciliation")
-    if pending is not None and _validated_native_reconciliation(pending) is None:
+    if pending is not None and validated_native_reconciliation(pending) is None:
         robot.pop("pending_native_reconciliation", None)
         changed = True
     return _sync_verified_global_room_history(robot) or changed

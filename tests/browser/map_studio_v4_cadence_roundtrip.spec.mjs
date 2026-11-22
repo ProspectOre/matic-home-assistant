@@ -264,7 +264,7 @@ test("mop-only legacy vacuum rules stay visible and can leave shared participati
   catalog.plans[0].rooms[0].cleaning_mode = "mop";
   catalog.plans[0].rooms[0].cadence_reasons = ["coverage_requires_vacuum"];
   catalog.plans[0].next_run_preview = {
-    rooms: [], mission_boundaries: [], blocker: "coverage_requires_vacuum",
+    entries: [], mission_boundaries: [], blocker: "coverage_requires_vacuum",
   };
   const fixture = await installPanelFixture(page, { initialPlanCatalog: catalog, moduleSource: "packaged" });
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));

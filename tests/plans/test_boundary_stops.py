@@ -8,8 +8,8 @@ import pytest
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_executor import async_execute_rooms
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.plan_model import CleaningRoom, PlanStopDecision
 from custom_components.matic_robot.plans import CleaningPlanManager
@@ -20,6 +20,7 @@ from tests.plans.fakes import (
     leg_record,
     memory_manager,
     plan_room,
+    recovery_record,
     run_plan_call,
 )
 from tests.session_fakes import FakeRobot, robot_port, run_step
@@ -83,7 +84,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
 
     if reject_second_credit:
         with pytest.raises(PlanCancelledError, match="ownership changed"):
-            await _async_run_leg(
+            await async_run_room_leg(
                 hass,
                 run_plan_call(hass),
                 manager,
@@ -103,7 +104,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
             )
         completed = False
     else:
-        completed = await _async_run_leg(
+        completed = await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -164,7 +165,7 @@ async def test_leg_partial_record_credits_only_verified_subset(
         )
 
     sender = AsyncMock()
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -227,7 +228,7 @@ async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
 
     sender.side_effect = stop_then_return
 
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -297,7 +298,7 @@ async def test_boundary_stop_is_not_repeated_while_next_room_is_still_cleaning(
             robot.show("returning", current_area="Office", low_charge=False)
 
     sender = AsyncMock(side_effect=stop_then_settle)
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -384,7 +385,7 @@ async def test_new_smart_stop_run_shares_one_native_mission(hass) -> None:
     observed: list[list[CleaningRoom]] = []
 
     async def complete_leg(*args, **kwargs) -> bool:
-        checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
+        checkpoint = recovery_record(manager)["recovery_checkpoint"]
         assert checkpoint["single_room_missions"] is False
         observed.append(args[5])
         credit_rooms(args, kwargs, args[5])
@@ -392,15 +393,15 @@ async def test_new_smart_stop_run_shares_one_native_mission(hass) -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             AsyncMock(side_effect=complete_leg),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.managed_observation.async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,

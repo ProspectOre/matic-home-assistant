@@ -22,10 +22,10 @@ from custom_components.matic_robot.client.exceptions import (
 from custom_components.matic_robot.client.models import RobotActivity
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_area import _async_wait_for_area_end
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.managed_observation import (
     NativeRoomVerdict,
-    _async_wait_for_owned_start,
+    async_wait_for_owned_start,
 )
 from custom_components.matic_robot.managed_run import PlanCancelledError, RoomRunOutcome
 from custom_components.matic_robot.plan_model import (
@@ -39,7 +39,7 @@ from custom_components.matic_robot.restart import (
     async_recover_managed_run,
 )
 from custom_components.matic_robot.robot_commands import CleanPlanArea
-from tests.plans.fakes import save_run_checkpoint
+from tests.plans.fakes import recovery_record, save_run_checkpoint
 from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _session_identity
 
@@ -48,7 +48,7 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
     manager, entry, _, room = recovery_state
 
     async def execute(*args, **kwargs):
-        assert kwargs["recovery"]["run_id"] == "run"
+        assert kwargs["recovery"].run_id == "run"
         assert kwargs["recovered_dispatch"].rooms == (room,)
         assert kwargs["recovered_dispatch"].native_identity == b"synthetic-session"
         assert kwargs["floor_is_current"]()
@@ -58,7 +58,7 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
         )
 
     with patch(
-        "custom_components.matic_robot.restart._async_execute_rooms",
+        "custom_components.matic_robot.restart.async_execute_rooms",
         side_effect=execute,
     ) as runner:
         await async_recover_managed_run(hass, entry, "serial")
@@ -98,7 +98,7 @@ async def test_mixed_session_checkpoint_saves_only_fingerprint(recovery_state):
         "serial", "run", expected_hash
     )
 
-    stored = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
+    stored = recovery_record(manager)["recovery_checkpoint"]
     assert stored["mixed_initial_session_hash"] == expected_hash
     assert session_id not in str(stored)
 
@@ -139,7 +139,7 @@ async def test_mixed_session_checkpoint_refuses_a_custom_area_leg(
         await manager.recovery.async_checkpoint_mixed_session(
             "serial", "run", expected_hash
         )
-        stored = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
+        stored = recovery_record(manager)["recovery_checkpoint"]
         assert stored["mixed_initial_session_hash"] == expected_hash
     else:
         with pytest.raises(HomeAssistantError, match="not dispatchable"):
@@ -168,9 +168,9 @@ async def test_mixed_stop_rollback_ignores_changed_fence_owner(recovery_state):
         "serial", "run", expected_hash
     )
 
-    assert manager.recovery.recovery_run("serial")["recovery_checkpoint"][
-        "stop_intent"
-    ] == ("immediate")
+    assert recovery_record(manager)["recovery_checkpoint"]["stop_intent"] == (
+        "immediate"
+    )
 
 
 def test_mixed_session_fingerprint_rejects_malformed_values():
@@ -234,7 +234,7 @@ async def test_interrupted_mixed_dispatch_rechecks_after_stop_fence_persist(
 
     manager.recovery.async_prepare_mixed_dispatch_stop = replace_during_persist
     with patch(
-        "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
     ) as schedule:
         await async_recover_managed_run(hass, entry, "serial")
 
@@ -261,7 +261,7 @@ async def test_interrupted_mixed_dispatch_rechecks_identity_after_fence_persist(
         replacement_on_final_read
     )
     with patch(
-        "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
     ) as schedule:
         await async_recover_managed_run(hass, entry, "serial")
 
@@ -295,15 +295,13 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
         assert command is UserCommand.STOP
         assert manager.control.pending_stop_run_id("serial") == "run"
         assert (
-            manager.recovery.recovery_run("serial")["recovery_checkpoint"][
+            recovery_record(manager)["recovery_checkpoint"][
                 "mixed_initial_session_hash"
             ]
             == expected_hash
         )
         assert (
-            manager.recovery.recovery_run("serial")["recovery_checkpoint"][
-                "stop_intent"
-            ]
+            recovery_record(manager)["recovery_checkpoint"]["stop_intent"]
             == "immediate"
         )
         assert entry.runtime_data.client.async_get_cleaning_session_identity.await_args
@@ -314,7 +312,7 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
     with (
         patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
         patch(
-            "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+            "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
         ) as schedule,
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -347,7 +345,7 @@ async def test_interrupted_mixed_dispatch_rolls_back_failed_stop_prepare(
     with (
         pytest.raises(OSError, match="save failed"),
         patch(
-            "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+            "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
         ) as schedule,
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -390,7 +388,7 @@ async def test_restart_rolls_back_locally_rejected_mixed_recovery_stop(
 
     assert manager.control.pending_stop_run_id("serial") is None
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "unverified"
-    assert manager.recovery.recovery_run("serial") is None
+    assert recovery_record(manager) is None
 
 
 async def test_restart_does_not_replay_ambiguous_mixed_recovery_stop(
@@ -409,7 +407,7 @@ async def test_restart_does_not_replay_ambiguous_mixed_recovery_stop(
         transmitted_then_lost_ack
     )
     with patch(
-        "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
     ) as schedule:
         await async_recover_managed_run(hass, entry, "serial")
 
@@ -426,7 +424,7 @@ async def test_restart_does_not_replay_ambiguous_mixed_recovery_stop(
     await restored.async_load()
     entry.runtime_data.cleaning_plans = restored
     with patch(
-        "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
     ) as schedule_settlement:
         await async_recover_managed_run(hass, entry, "serial")
     entry.runtime_data.client.async_send_user_command.assert_awaited_once()
@@ -448,7 +446,7 @@ async def test_restart_cancellation_respects_mixed_stop_transmission(
     entry.runtime_data.client.async_send_user_command.side_effect = cancel_stop
     with (
         patch(
-            "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+            "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
         ) as schedule,
         pytest.raises(asyncio.CancelledError),
     ):
@@ -476,7 +474,7 @@ async def test_restart_unexpected_stop_error_respects_transmission(
 
     entry.runtime_data.client.async_send_user_command.side_effect = fail_stop
     with patch(
-        "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
     ) as schedule:
         if transmitted:
             await async_recover_managed_run(hass, entry, "serial")
@@ -566,11 +564,11 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
 
     with (
         patch(
-            "custom_components.matic_robot.restart._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.restart.async_wait_for_settled_leg_handoff",
             AsyncMock(side_effect=wait_for_handoff),
         ) as settled,
         patch(
-            "custom_components.matic_robot.restart._async_execute_rooms",
+            "custom_components.matic_robot.restart.async_execute_rooms",
             side_effect=execute,
         ) as runner,
     ):
@@ -648,15 +646,15 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
     with (
         patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
         patch(
-            "custom_components.matic_robot.restart._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.restart.async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
         patch(
-            "custom_components.matic_robot.restart._async_execute_rooms",
+            "custom_components.matic_robot.restart.async_execute_rooms",
             new_callable=AsyncMock,
         ) as execute,
         patch(
-            "custom_components.matic_robot.restart._async_verify_leg_completion",
+            "custom_components.matic_robot.restart.async_verify_leg_completion",
             AsyncMock(return_value={room.room_id: (dt_util.utcnow().isoformat(), 30)}),
         ) as verify,
     ):
@@ -734,7 +732,7 @@ async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
     with (
         patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
         patch(
-            "custom_components.matic_robot.restart._async_execute_rooms",
+            "custom_components.matic_robot.restart.async_execute_rooms",
             new_callable=AsyncMock,
         ) as runner,
     ):
@@ -746,7 +744,7 @@ async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
         "cancelled" if case == "stop_intent" else "unverified"
     )
     assert snapshot["active_plan"] is None
-    assert manager.recovery.recovery_run("serial") is None
+    assert recovery_record(manager) is None
 
 
 async def test_repeated_shutdown_preserves_checkpoint(hass, recovery_state):
@@ -757,7 +755,7 @@ async def test_repeated_shutdown_preserves_checkpoint(hass, recovery_state):
     )
     with pytest.raises(asyncio.CancelledError):
         await async_recover_managed_run(hass, entry, "serial")
-    assert manager.recovery.recovery_run("serial") is not None
+    assert recovery_record(manager) is not None
 
 
 async def test_checkpoint_load_preserves_active_room_and_hides_private_state(
@@ -824,7 +822,7 @@ async def test_recovered_command_remains_owned_and_stop_fenced(hass, recovery_st
         )
 
     with patch(
-        "custom_components.matic_robot.restart._async_execute_rooms",
+        "custom_components.matic_robot.restart.async_execute_rooms",
         side_effect=execute,
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -838,14 +836,13 @@ async def test_recovery_storage_ignores_retired_run_and_preserves_stop_intent(
 ):
     manager, entry, checkpoint, _ = recovery_state
     await manager.recovery.async_set_recovery_checkpoint("serial", "different-run", {})
-    assert manager.recovery.recovery_run("serial")["recovery_checkpoint"] == checkpoint
+    assert recovery_record(manager)["recovery_checkpoint"] == checkpoint
     await manager.recovery.async_checkpoint_stop_intent(
         "serial", "after_room", run_id="run"
     )
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     assert (
-        manager.recovery.recovery_run("serial")["recovery_checkpoint"]["stop_intent"]
-        == "after_room"
+        recovery_record(manager)["recovery_checkpoint"]["stop_intent"] == "after_room"
     )
     await manager.ledger.async_finish_run(
         "serial", "run", "cancelled", "managed_stop", 0
@@ -854,7 +851,7 @@ async def test_recovery_storage_ignores_retired_run_and_preserves_stop_intent(
         "serial", "running", reason="obsolete"
     )
     await async_recover_managed_run(hass, entry, "serial")
-    assert manager.recovery.recovery_run("serial") is None
+    assert recovery_record(manager) is None
 
 
 async def test_new_plan_cannot_replace_pending_recovery(hass, recovery_state):
@@ -862,7 +859,7 @@ async def test_new_plan_cannot_replace_pending_recovery(hass, recovery_state):
     from homeassistant.exceptions import ServiceValidationError
 
     with pytest.raises(ServiceValidationError, match="reconnecting"):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,
@@ -879,10 +876,10 @@ async def test_cooperative_shutdown_does_not_finalize(hass, recovery_state):
     await manager.ledger.async_finish_run("serial", "run", "unverified", "test", 0)
     hass.set_state(CoreState.stopping)
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=PlanCancelledError),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,
@@ -904,7 +901,7 @@ async def test_stop_during_recovery_status_save_wins(hass, recovery_state):
     with (
         patch.object(manager.recovery, "async_mark_recovery_status", side_effect=stop),
         patch(
-            "custom_components.matic_robot.restart._async_execute_rooms",
+            "custom_components.matic_robot.restart.async_execute_rooms",
             new_callable=AsyncMock,
         ) as runner,
     ):
@@ -943,7 +940,7 @@ async def test_restart_after_final_credit_preserves_verified_completion(
     )
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
     with patch(
-        "custom_components.matic_robot.restart._async_execute_rooms",
+        "custom_components.matic_robot.restart.async_execute_rooms",
         new_callable=AsyncMock,
     ) as runner:
         await async_recover_managed_run(hass, entry, "serial")
@@ -991,9 +988,10 @@ async def test_reloaded_room_retains_elapsed_and_original_timestamps(
         "serial", "plan", another, run_id="run"
     )
     await restored.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    assert restored.recovery.recovery_run("serial")["recovery_checkpoint"][
-        "started_room_ids"
-    ] == [room.room_id, another.room_id]
+    assert recovery_record(restored)["recovery_checkpoint"]["started_room_ids"] == [
+        room.room_id,
+        another.room_id,
+    ]
     assert not await restored.ledger.async_mark_started(
         "serial", "plan", room, run_id="run"
     )
@@ -1033,15 +1031,15 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
     manager.repository.robot("serial")["last_run"]["provenance"] = provenance
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_dispatch.async_dispatch_leg_command",
             new_callable=AsyncMock,
         ) as dispatch,
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
+            "custom_components.matic_robot.managed_observation.async_wait_with_native_identity",
             AsyncMock(
                 return_value=(RoomRunOutcome.HANDOFF_CANDIDATE, None)
                 if multi
@@ -1049,15 +1047,15 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
             ),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_active_session_resolution",
+            "custom_components.matic_robot.managed_observation.async_wait_for_active_session_resolution",
             AsyncMock(return_value=False),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_adjudicate_room_end",
+            "custom_components.matic_robot.managed_observation.async_adjudicate_room_end",
             AsyncMock(return_value=NativeRoomVerdict.COMPLETED),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_verify_leg_completion",
+            "custom_components.matic_robot.managed_observation.async_verify_leg_completion",
             AsyncMock(
                 return_value={
                     value.room_id: (dt_util.utcnow().isoformat(), 30) for value in rooms
@@ -1135,7 +1133,7 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
             0,
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_adjudicate_room_end",
+            "custom_components.matic_robot.managed_observation.async_adjudicate_room_end",
             AsyncMock(
                 return_value=NativeRoomVerdict.COMPLETED
                 if verified
@@ -1143,7 +1141,7 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
             ),
         ) as room_history,
         patch(
-            "custom_components.matic_robot.managed_observation._async_verify_leg_completion",
+            "custom_components.matic_robot.managed_observation.async_verify_leg_completion",
             AsyncMock(
                 return_value={
                     r.room_id: (dt_util.utcnow().isoformat(), 30) for r in rooms
@@ -1153,7 +1151,7 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
             ),
         ) as leg_history,
         patch(
-            "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_dispatch.async_dispatch_leg_command",
             new_callable=AsyncMock,
         ) as dispatch,
     ):
@@ -1203,7 +1201,7 @@ async def test_restart_does_not_confirm_native_history_after_ownership_changes(
     with (
         patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
         patch(
-            "custom_components.matic_robot.restart._async_verify_leg_completion",
+            "custom_components.matic_robot.restart.async_verify_leg_completion",
             AsyncMock(return_value=evidence),
         ) as verify,
     ):
@@ -1228,7 +1226,7 @@ async def test_recovered_paused_start_enters_resume_monitor(hass):
     robot = FakeRobot()
     robot.show("paused")
     assert (
-        await _async_wait_for_owned_start(
+        await async_wait_for_owned_start(
             robot.port(session_identity=AsyncMock()),
             120,
             None,
@@ -1325,7 +1323,7 @@ async def test_restart_does_not_rejoin_an_area_whose_session_ended(
     await _area_leg_checkpoint(manager, checkpoint, room)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
 
-    with patch("custom_components.matic_robot.restart._async_execute_rooms") as execute:
+    with patch("custom_components.matic_robot.restart.async_execute_rooms") as execute:
         await async_recover_managed_run(hass, entry, "serial")
 
     execute.assert_not_called()
@@ -1341,7 +1339,7 @@ async def test_restart_completes_a_run_whose_last_area_finished(hass, recovery_s
     await _area_leg_checkpoint(manager, checkpoint, room, finished_area_legs=[1])
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
 
-    with patch("custom_components.matic_robot.restart._async_execute_rooms") as execute:
+    with patch("custom_components.matic_robot.restart.async_execute_rooms") as execute:
         await async_recover_managed_run(hass, entry, "serial")
 
     execute.assert_not_called()
@@ -1363,7 +1361,7 @@ async def test_restart_never_verifies_or_mixes_an_area_leg(hass, recovery_state,
         changes["mixed_initial_session_hash"] = hashlib.sha256(b"session").hexdigest()
     await _area_leg_checkpoint(manager, checkpoint, room, **changes)
 
-    with patch("custom_components.matic_robot.restart._async_execute_rooms") as execute:
+    with patch("custom_components.matic_robot.restart.async_execute_rooms") as execute:
         await async_recover_managed_run(hass, entry, "serial")
 
     execute.assert_not_called()
@@ -1390,10 +1388,10 @@ async def test_restart_handoff_after_an_area_requires_its_finish(
 
     with (
         patch(
-            "custom_components.matic_robot.restart._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.restart.async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
-        patch("custom_components.matic_robot.restart._async_execute_rooms") as execute,
+        patch("custom_components.matic_robot.restart.async_execute_rooms") as execute,
     ):
         await async_recover_managed_run(hass, entry, "serial")
 
@@ -1438,11 +1436,11 @@ async def test_restart_handoff_dispatches_the_next_custom_area(
     with (
         entry.robot.taking_starts(),
         patch(
-            "custom_components.matic_robot.restart._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.restart.async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.managed_observation.async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
         patch(

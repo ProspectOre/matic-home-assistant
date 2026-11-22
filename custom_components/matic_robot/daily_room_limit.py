@@ -17,7 +17,7 @@ MAX_RECENT_COMPLETIONS = 1024
 RECEIPT_RETENTION = timedelta(hours=72)
 
 
-def _time(value: object) -> datetime | None:
+def parse_time(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
@@ -54,7 +54,7 @@ def _mark_unknown_hold_overflow(row: dict[str, Any], now: datetime) -> bool:
     """Collapse malformed or oversized holds into a bounded fail-closed timer."""
     changed = row.get("unknown_time_holds") != []
     row["unknown_time_holds"] = []
-    current_expiry = _time(row.get("overflow_until"))
+    current_expiry = parse_time(row.get("overflow_until"))
     target_expiry = now + RECEIPT_RETENTION
     if current_expiry is None or current_expiry < target_expiry - timedelta(hours=1):
         row["overflow_until"] = target_expiry.isoformat()
@@ -82,20 +82,20 @@ def record_unknown_completion_time(
         if not isinstance(holds, list) or len(holds) > MAX_RECENT_COMPLETIONS:
             return _mark_unknown_hold_overflow(row, now)
         if any(
-            not isinstance(hold, Mapping) or _time(hold.get("until")) is None
+            not isinstance(hold, Mapping) or parse_time(hold.get("until")) is None
             for hold in holds
         ):
             return _mark_unknown_hold_overflow(row, now)
         holds = [
             hold
             for hold in holds
-            if (until := _time(hold.get("until"))) is not None and until > now
+            if (until := parse_time(hold.get("until"))) is not None and until > now
         ]
         prior = next(
             (hold for hold in holds if hold.get("session_hash") == session_hash),
             None,
         )
-        expiry = _time(prior.get("until")) if prior is not None else None
+        expiry = parse_time(prior.get("until")) if prior is not None else None
         if expiry is not None and expiry > now + RECEIPT_RETENTION - timedelta(hours=1):
             return False
         holds = [hold for hold in holds if hold.get("session_hash") != session_hash]
@@ -110,7 +110,7 @@ def record_unknown_completion_time(
             return _mark_unknown_hold_overflow(row, now)
         row["unknown_time_holds"] = holds
         return True
-    expiry = _time(row.get("unknown_time_until"))
+    expiry = parse_time(row.get("unknown_time_until"))
     if expiry is not None and expiry > now + RECEIPT_RETENTION - timedelta(hours=1):
         return False
     row["unknown_time_until"] = (now + RECEIPT_RETENTION).isoformat()
@@ -129,7 +129,7 @@ def record_completion(
     unverified: bool = False,
 ) -> bool:
     """Record bounded verified or ambiguous evidence in its owning transaction."""
-    completed = _time(completed_at)
+    completed = parse_time(completed_at)
     if completed is None:
         return False
     now = now.astimezone(UTC)
@@ -179,7 +179,7 @@ def record_completion(
         not isinstance(existing, list)
         or any(
             not isinstance(item, dict)
-            or _time(item.get("at")) is None
+            or parse_time(item.get("at")) is None
             or (
                 item.get("identity") is not None
                 and not is_sha256_hex(item.get("identity"))
@@ -192,7 +192,7 @@ def record_completion(
             item
             for item in existing
             if isinstance(item, dict)
-            and (stamp := _time(item.get("at"))) is not None
+            and (stamp := parse_time(item.get("at"))) is not None
             and stamp >= now - RECEIPT_RETENTION
             and (item.get("identity") is None or is_sha256_hex(item.get("identity")))
         ]
@@ -249,7 +249,7 @@ def record_completion(
         row["overflow_until"] = (now + RECEIPT_RETENTION).isoformat()
         receipts = receipts[-MAX_RECENT_COMPLETIONS:]
     row["receipts"] = receipts
-    expiry = _time(row.get("overflow_until"))
+    expiry = parse_time(row.get("overflow_until"))
     if expiry is not None and expiry <= now:
         row.pop("overflow_until", None)
     return row != before or resolved_unknown
@@ -306,7 +306,7 @@ def daily_state(
         return _closed(limit, "completion_history_unverified")
     day = _LocalDay(now, timezone, now.astimezone(timezone).date())
     count = _count_receipts(row.get("receipts", []), identity, day)
-    overflow = _time(row.get("overflow_until"))
+    overflow = parse_time(row.get("overflow_until"))
     if (
         not count.verified
         or _last_clean_uncounted(robot, room_id, count.times, day)
@@ -360,7 +360,7 @@ def _completion_row(robot: Mapping[str, Any], room_id: str) -> Mapping[str, Any]
 
 def _evidence_readable(row: Mapping[str, Any], now: datetime) -> bool:
     """Return whether no hold is open and every stored field can be counted."""
-    unknown_time = _time(row.get("unknown_time_until"))
+    unknown_time = parse_time(row.get("unknown_time_until"))
     if "unknown_time_until" in row and (unknown_time is None or unknown_time > now):
         return False
     holds = row.get("unknown_time_holds", [])
@@ -368,12 +368,12 @@ def _evidence_readable(row: Mapping[str, Any], now: datetime) -> bool:
         return False
     if any(
         not isinstance(hold, Mapping)
-        or (until := _time(hold.get("until"))) is None
+        or (until := parse_time(hold.get("until"))) is None
         or until > now
         for hold in holds
     ):
         return False
-    if "overflow_until" in row and _time(row.get("overflow_until")) is None:
+    if "overflow_until" in row and parse_time(row.get("overflow_until")) is None:
         return False
     receipts = row.get("receipts", [])
     return isinstance(receipts, list) and len(receipts) <= MAX_RECENT_COMPLETIONS
@@ -387,7 +387,7 @@ def _count_receipts(receipts: list[Any], identity: str, day: _LocalDay) -> _DayC
     for receipt in receipts:
         if (
             not isinstance(receipt, Mapping)
-            or (stamp := _time(receipt.get("at"))) is None
+            or (stamp := parse_time(receipt.get("at"))) is None
         ):
             return _DayCount(completed, False, frozenset(times))
         if stamp > day.now or (in_day := day.contains(stamp)) is None:
@@ -418,7 +418,7 @@ def _last_clean_uncounted(
     rooms = robot.get("rooms")
     room = rooms.get(room_id) if isinstance(rooms, Mapping) else None
     last_completed = (
-        _time(room.get("last_completed")) if isinstance(room, Mapping) else None
+        parse_time(room.get("last_completed")) if isinstance(room, Mapping) else None
     )
     if last_completed is None:
         return False

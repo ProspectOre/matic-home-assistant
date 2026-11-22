@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import (
-    Sequence,
-)
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
@@ -30,16 +28,13 @@ from .coverage_accounting import (
     CoverageEvidence,
     coverage_evidence_from_storage,
 )
-from .plan_model import (
-    _dispatching_room_leg,
-    checkpoint_legs,
-    plan_floor_token,
-)
+from .plan_model import plan_floor_token
+from .plan_records import LastRun, RecoveryCheckpoint
 from .plan_repository import (
+    MetadataLockLease,
     PlanRepository,
-    _MetadataLockLease,
 )
-from .run_machine import RunPhase, recovery_run, run_checkpoint, running_run
+from .run_machine import RunPhase
 
 if TYPE_CHECKING:
     from .run_control import RunControl
@@ -76,31 +71,36 @@ class PlanRecovery:
         self.control = control
         self._finalizer = finalizer
 
-    def recovery_run(self, serial_number: str) -> dict[str, Any] | None:
-        """Return a private snapshot of the current restart checkpoint."""
-        run = recovery_run(self.repository.robot(serial_number))
-        return deepcopy(run) if run is not None else None
+    def recovery_run(self, serial_number: str) -> LastRun | None:
+        """Return the running run when it has a checkpoint to recover from."""
+        run = self.repository.last_run(serial_number)
+        return run if run is not None and run.live_checkpoint is not None else None
+
+    def checkpoint(self, serial_number: str, run_id: str) -> RecoveryCheckpoint | None:
+        """Return the recovery checkpoint of run ``run_id`` while it runs."""
+        run = self.repository.run_record(serial_number, run_id)
+        return run.live_checkpoint if run is not None else None
 
     def counted_room_ids(self, serial_number: str, run_id: str) -> frozenset[str]:
         """Return the rooms the running run ``run_id`` has counted."""
-        checkpoint = run_checkpoint(self.repository.robot(serial_number), run_id) or {}
-        return frozenset(checkpoint.get("completed_room_ids", ()))
+        checkpoint = self.checkpoint(serial_number, run_id)
+        return checkpoint.completed_room_ids if checkpoint else frozenset()
 
     async def async_set_recovery_checkpoint(
         self,
         serial_number: str,
         run_id: str,
-        checkpoint: dict[str, Any],
+        checkpoint: Mapping[str, Any],
     ) -> None:
-        """Persist the resolved queue required for safe restart recovery."""
+        """Persist the resolved queue, in its stored form, for restart recovery."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.commit(serial_number) as robot:
-                last_run = robot.get("last_run")
-                if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
+        async def commit(_lease: MetadataLockLease) -> bool:
+            async with self.repository.commit(serial_number):
+                run = self.repository.run_record(serial_number, run_id)
+                if run is None:
                     return False
-                existing = last_run.get("recovery_checkpoint", {})
-                normalized_checkpoint = deepcopy(checkpoint)
+                existing = run.checkpoint.stored() if run.checkpoint else {}
+                normalized_checkpoint = deepcopy(dict(checkpoint))
                 # Only the receipt writer may introduce evidence. Executor
                 # snapshots can preserve it for the same accepted leg, but
                 # cannot carry it into a new dispatch or a different floor.
@@ -137,7 +137,7 @@ class PlanRecovery:
                     normalized_checkpoint.pop("cadence_by_room", None)
                 else:
                     normalized_checkpoint["cadence_by_room"] = cadence_by_room
-                last_run["recovery_checkpoint"] = {
+                self.repository.draft_run(serial_number)["recovery_checkpoint"] = {
                     **normalized_checkpoint,
                     # Only count_room adds to the tally; a queue save keeps it.
                     "completed_room_ids": existing.get("completed_room_ids", []),
@@ -176,30 +176,29 @@ class PlanRecovery:
     ) -> bool:
         """Persist a verified dispatch only within its exact owned queue leg."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.commit(serial_number) as robot:
-                checkpoint = run_checkpoint(robot, run_id)
+        async def commit(_lease: MetadataLockLease) -> bool:
+            async with self.repository.commit(serial_number):
+                checkpoint = self.checkpoint(serial_number, run_id)
                 if (
                     checkpoint is None
-                    or checkpoint.get("phase") != RunPhase.DISPATCHING
-                    or checkpoint.get("floor_token") != plan_floor_token(floor_plan)
+                    or checkpoint.phase != RunPhase.DISPATCHING
+                    or checkpoint.floor_token != plan_floor_token(floor_plan)
                     or receipt.floor_hash != coverage_floor_hash(floor_plan)
                     or receipt.session_hash
                     != hashlib.sha256(str(session_id).encode("ascii")).hexdigest()
                 ):
                     return False
-                raw_rooms = checkpoint.get("rooms")
-                index = checkpoint.get("leg_index")
+                raw_rooms = checkpoint.rooms
+                index = checkpoint.leg_index
                 if (
-                    not isinstance(raw_rooms, list)
-                    or not raw_rooms
+                    not raw_rooms
                     or len(raw_rooms) > MAX_ROOM_SEQUENCE_SIZE
                     or type(index) is not int
                     or index < 0
                 ):
                     return False
                 try:
-                    legs = checkpoint_legs(checkpoint)
+                    legs = checkpoint.legs()
                 except TypeError, ValueError:
                     return False
                 leg = legs[index] if index < len(legs) else None
@@ -228,7 +227,9 @@ class PlanRecovery:
                 evidence = CoverageEvidence(receipt, tuple(sorted(bindings)))
                 if coverage_evidence_from_storage(evidence.as_storage()) is None:
                     return False
-                checkpoint["coverage_evidence"] = evidence.as_storage()
+                self.repository.draft_run(serial_number)["recovery_checkpoint"][
+                    "coverage_evidence"
+                ] = evidence.as_storage()
             return True
 
         return bool(
@@ -243,9 +244,9 @@ class PlanRecovery:
         """Read the current run's bounded receipt without exposing native IDs."""
         if run_id is None:
             return None
-        checkpoint = run_checkpoint(self.repository.robot(serial_number), run_id)
+        checkpoint = self.checkpoint(serial_number, run_id)
         evidence = coverage_evidence_from_storage(
-            checkpoint.get("coverage_evidence") if checkpoint is not None else None
+            checkpoint.coverage_evidence if checkpoint is not None else None
         )
         return evidence.receipt if evidence is not None else None
 
@@ -254,26 +255,26 @@ class PlanRecovery:
     ) -> None:
         """Persist the generated native identity before mixed START is sent."""
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.repository.commit(serial_number):
                 if not is_sha256_hex(session_identity_hash):
                     raise ValueError(
                         "mixed session identity must be a SHA-256 fingerprint"
                     )
-                checkpoint = run_checkpoint(
-                    self.repository.robot(serial_number), run_id
-                )
+                checkpoint = self.checkpoint(serial_number, run_id)
                 if (
                     checkpoint is None
-                    or checkpoint.get("phase") != RunPhase.DISPATCHING
-                    or not _dispatching_room_leg(checkpoint)
+                    or checkpoint.phase != RunPhase.DISPATCHING
+                    or not checkpoint.dispatching_room_leg()
                 ):
                     raise HomeAssistantError(
                         "Mixed mission checkpoint is not dispatchable",
                         translation_domain=DOMAIN,
                         translation_key="run_changed",
                     )
-                checkpoint["mixed_initial_session_hash"] = session_identity_hash
+                self.repository.draft_run(serial_number)["recovery_checkpoint"][
+                    "mixed_initial_session_hash"
+                ] = session_identity_hash
 
         await self.repository.async_run_owned_metadata(
             serial_number, commit, notify=True
@@ -286,31 +287,28 @@ class PlanRecovery:
         if serial_number in self.repository.metadata_admission_closed:
             return
 
-        def owned_checkpoint() -> dict[str, Any] | None:
-            checkpoint = run_checkpoint(self.repository.robot(serial_number), run_id)
+        def owned() -> None:
+            checkpoint = self.checkpoint(serial_number, run_id)
             if (
                 checkpoint is None
-                or checkpoint.get("phase") != RunPhase.DISPATCHING
-                or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
-                or checkpoint.get("stop_intent") not in {None, "after_room"}
+                or checkpoint.phase != RunPhase.DISPATCHING
+                or checkpoint.mixed_initial_session_hash != session_identity_hash
+                or checkpoint.stop_intent not in {None, "after_room"}
             ):
-                return None
-            return checkpoint
-
-        def owned() -> dict[str, Any]:
-            if (checkpoint := owned_checkpoint()) is None:
                 raise HomeAssistantError(
                     "Mixed mission STOP no longer owns its checkpoint",
                     translation_domain=DOMAIN,
                     translation_key="run_changed",
                 )
-            return checkpoint
 
         owned()
         self.control.mark_stop_pending(serial_number, run_id=run_id)
 
         def write() -> bool:
-            owned()["stop_intent"] = "immediate"
+            owned()
+            self.repository.draft_run(serial_number)["recovery_checkpoint"][
+                "stop_intent"
+            ] = "immediate"
             return True
 
         try:
@@ -325,11 +323,11 @@ class PlanRecovery:
                 *(asyncio.shield(task) for task in tuple(pending)),
                 return_exceptions=True,
             )
-            run = self.repository.last_run(serial_number)
+            run = self.repository.run_record(serial_number, run_id)
             if (
                 run is None
-                or run.run_id != run_id
-                or (run.checkpoint or {}).get("stop_intent") != "immediate"
+                or run.checkpoint is None
+                or run.checkpoint.stop_intent != "immediate"
             ):
                 self.control.clear_stop_pending(serial_number)
             raise
@@ -345,23 +343,17 @@ class PlanRecovery:
         if serial_number in self.repository.metadata_admission_closed:
             return
 
-        def owned_checkpoint() -> dict[str, Any] | None:
-            run = self.repository.robot(serial_number).get("last_run")
-            checkpoint = (
-                run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        def owned() -> bool:
+            run = self.repository.run_record(serial_number, run_id)
+            checkpoint = run.checkpoint if run is not None else None
+            return (
+                checkpoint is not None
+                and checkpoint.mixed_initial_session_hash == session_identity_hash
+                and checkpoint.stop_intent == "immediate"
             )
-            if (
-                not isinstance(run, dict)
-                or run.get("run_id") != run_id
-                or not isinstance(checkpoint, dict)
-                or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
-                or checkpoint.get("stop_intent") != "immediate"
-            ):
-                return None
-            return checkpoint
 
         if (
-            owned_checkpoint() is None
+            not owned()
             or self.repository.robot(serial_number).get(plan_storage.STOP_FENCE_RUN_ID)
             != run_id
         ):
@@ -369,8 +361,10 @@ class PlanRecovery:
         self.control.clear_stop_pending(serial_number)
 
         def write() -> bool:
-            if (checkpoint := owned_checkpoint()) is not None:
-                checkpoint.pop("stop_intent", None)
+            if owned():
+                self.repository.draft_run(serial_number)["recovery_checkpoint"].pop(
+                    "stop_intent", None
+                )
             return True
 
         await self.repository.async_mutate_and_save(
@@ -382,20 +376,18 @@ class PlanRecovery:
     ) -> None:
         """Do not lose a user's stop request if HA restarts before completion."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.commit(serial_number, user=True) as robot:
-                run = robot.get("last_run")
-                checkpoint = (
-                    run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        async def commit(_lease: MetadataLockLease) -> bool:
+            async with self.repository.commit(serial_number, user=True):
+                run = (
+                    self.repository.run_record(serial_number, run_id)
+                    if run_id is not None
+                    else None
                 )
-                if (
-                    run_id is None
-                    or not isinstance(run, dict)
-                    or run.get("run_id") != run_id
-                    or not isinstance(checkpoint, dict)
-                ):
+                if run is None or run.checkpoint is None:
                     return False
-                checkpoint["stop_intent"] = behavior
+                self.repository.draft_run(serial_number)["recovery_checkpoint"][
+                    "stop_intent"
+                ] = behavior
                 if behavior == "after_room":
                     self.control.finish_room_event(serial_number).set()
                 elif behavior == "immediate":
@@ -418,10 +410,10 @@ class PlanRecovery:
         if (run := self.recovery_run(serial_number)) is not None:
             await self._finalizer.async_finish_run(
                 serial_number,
-                run["run_id"],
+                run.run_id,
                 "unverified",
                 reason,
-                run.get("completed_room_count", 0),
+                run.completed_room_count,
                 cause="home_assistant",
             )
 
@@ -430,11 +422,12 @@ class PlanRecovery:
     ) -> None:
         """Publish reconnection state without inventing a robot outcome."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
-                last_run = running_run(robot)
-                if last_run is None:
+                run = self.repository.last_run(serial_number)
+                if run is None or not run.running:
                     return False
+                last_run = self.repository.draft_run(serial_number)
                 last_run["recovery_status"] = status[:32]
                 last_run["recovery_reason"] = reason[:64]
                 if robot["active_plan"] is not None:

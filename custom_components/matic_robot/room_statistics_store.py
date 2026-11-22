@@ -11,7 +11,7 @@ from typing import Any
 from homeassistant.util import dt as dt_util
 
 from .client import CleaningSessionRecord, FloorPlan
-from .plan_timing import ROTATION_FUTURE_TOLERANCE_SECONDS, _latest_timestamp
+from .plan_timing import ROTATION_FUTURE_TOLERANCE_SECONDS, latest_timestamp
 from .room_statistics import (
     NATIVE_MODES,
     NativeRoomStatistic,
@@ -60,7 +60,7 @@ def import_native_room_statistics(
     if previous_floor_id != current_floor_id:
         robot["robot_room_statistics_floor_id"] = current_floor_id
         changed = True
-    changed_at = _latest_timestamp(robot.get("robot_room_statistics_floor_changed_at"))
+    changed_at = latest_timestamp(robot.get("robot_room_statistics_floor_changed_at"))
     statistics = native_room_statistics_by_session(
         records,
         floor_plan.rooms,
@@ -85,7 +85,7 @@ def import_native_room_statistics(
         ended = stored.get("robot_last_completed")
         stored_floor = stored.get("robot_last_floor_id")
         stored_partition_hash = stored.get("robot_last_partition_hash")
-        timestamp = _latest_timestamp(ended)
+        timestamp = latest_timestamp(ended)
         if (
             prior is None
             or not isinstance(ended, str)
@@ -103,7 +103,7 @@ def import_native_room_statistics(
         if (
             session.mission_id == stored_floor
             and current_partition_hash == stored_partition_hash
-            and _latest_timestamp(session.ended_at) is not None
+            and latest_timestamp(session.ended_at) is not None
         ):
             continue
         rejected = NativeRoomStatistic(
@@ -252,7 +252,7 @@ def _apply_room_history(
         room["robot_native_mode_tombstones"] = tombstones[-64:]
         changed = True
 
-    positive_timestamp = _latest_timestamp(room.get("robot_last_completed"))
+    positive_timestamp = latest_timestamp(room.get("robot_last_completed"))
     managed = _managed_session(robot, room, floor_id, history)
     selected = max(
         screening.candidates, key=lambda item: item.statistic.timestamp, default=None
@@ -373,7 +373,7 @@ def _managed_session(
     history: tuple[NativeRoomStatistic, ...],
 ) -> NativeRoomStatistic | None:
     """Return the session in this history that a managed run accounts for."""
-    existing_timestamp = _latest_timestamp(
+    existing_timestamp = latest_timestamp(
         room.get("robot_last_completed"), room.get("robot_last_invalidated_at")
     )
     managed = next(
@@ -475,7 +475,7 @@ def _store_completion(
     else:
         room.pop("robot_last_partition_hash", None)
     changed = _store(room, updates)
-    invalid_at = _latest_timestamp(room.get("robot_last_invalidated_at"))
+    invalid_at = latest_timestamp(room.get("robot_last_invalidated_at"))
     if invalid_at is None or statistic.timestamp > invalid_at:
         for key in _INVALIDATION_KEYS:
             room.pop(key, None)

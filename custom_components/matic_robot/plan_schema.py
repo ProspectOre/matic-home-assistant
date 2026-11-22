@@ -124,17 +124,14 @@ class PlanAreaEntry(TypedDict):
     name: str
 
 
-class PreviewRoom(TypedDict):
+class PreviewRoomStep(TypedDict):
+    kind: Literal["room"]
     room_id: str
     name: str
     cleaning_mode: str
     coverage_setting: str
     cadence_reasons: list[CadenceReason]
     daily_limit: NotRequired[DailyLimit]
-
-
-class PreviewRoomStep(PreviewRoom):
-    kind: Literal["room"]
 
 
 class PreviewAreaStep(TypedDict):
@@ -173,8 +170,7 @@ class MissingRoom(TypedDict):
 class NextRunPreview(TypedDict):
     """The next run in order; a blocked preview names its `blocker`."""
 
-    rooms: list[PreviewRoom]
-    entries: NotRequired[list[PreviewRoomStep | PreviewAreaStep]]
+    entries: list[PreviewRoomStep | PreviewAreaStep]
     mission_boundaries: list[int]
     daily_limit_held_rooms: NotRequired[list[DailyLimitHeldRoom]]
     held_rooms: NotRequired[list[HeldRoom]]

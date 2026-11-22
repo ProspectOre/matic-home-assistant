@@ -15,7 +15,7 @@ from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
 from tests.client.test_coverage_receipts import history_key
@@ -153,11 +153,11 @@ async def test_executor_preserves_room_settings_and_verified_completion(
 
     robot.on_start = send
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_observation._LegOutcomeObserver.next",
+        "custom_components.matic_robot.managed_observation.LegOutcomeObserver.next",
         observe_terminal,
     )
     dock = AsyncMock()
-    await _async_execute_rooms(
+    await async_execute_rooms(
         hass,
         call,
         manager,
@@ -355,11 +355,11 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
 
     robot.on_start = send
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+        "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
         observe_boundary,
     )
     await asyncio.wait_for(
-        _async_execute_rooms(
+        async_execute_rooms(
             hass,
             call,
             manager,

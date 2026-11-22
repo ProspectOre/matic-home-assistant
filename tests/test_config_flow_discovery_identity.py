@@ -32,7 +32,7 @@ from custom_components.matic_robot.client.proto.hermes_bot_info_pb2 import (
 from custom_components.matic_robot.client.tls import ROLE_OID, validate_certificate
 from custom_components.matic_robot.config_flow import MaticRobotConfigFlow
 from custom_components.matic_robot.config_flow_discovery import (
-    _async_select_discovery_host,
+    async_select_discovery_host,
 )
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
@@ -267,7 +267,7 @@ async def test_probe_resolves_alias_but_selects_only_the_advertised_identity(
 
     monkeypatch.setattr(discovery_module, "async_fetch_peer_certificate", fetch)
 
-    assert await _async_select_discovery_host(discovery) == "192.0.2.2"
+    assert await async_select_discovery_host(discovery) == "192.0.2.2"
     assert resolve.call_args.args[:2] == ("matic-example-2.local", 16320)
 
 

@@ -44,11 +44,11 @@ async def _run(
         tour.side_effect = [tour_error, taken]
     with (
         patch(
-            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context.resolve_loaded_matic_vacuums",
             return_value=entity_ids,
         ),
         patch(
-            "custom_components.matic_robot.service_context._entry_for_entity",
+            "custom_components.matic_robot.service_context.entry_for_entity",
             side_effect=lambda _hass, entity_id: f"entry:{entity_id}",
         ),
         patch(f"{SERVICE}.check_photo_tour", side_effect=check) as checked,

@@ -9,11 +9,11 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.matic_robot.client.exceptions import MaticError
-from custom_components.matic_robot.managed_dispatch import _async_dispatch_leg_command
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_dispatch import async_dispatch_leg_command
+from custom_components.matic_robot.managed_executor import async_execute_rooms
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_observation import (
-    _async_wait_for_settled_leg_handoff,
+    async_wait_for_settled_leg_handoff,
 )
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
@@ -24,6 +24,7 @@ from tests.plans.fakes import (
     heavy_room,
     memory_manager,
     plan_room,
+    recovery_record,
     run_plan_call,
 )
 from tests.session_fakes import FakeRobot
@@ -39,7 +40,7 @@ async def test_settled_leg_handoff_waits_for_returning_robot(hass, monkeypatch) 
         "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS", 0
     )
 
-    assert await _async_wait_for_settled_leg_handoff(
+    assert await async_wait_for_settled_leg_handoff(
         robot.port(
             refresh=refresh,
             active_session=AsyncMock(return_value=None),
@@ -61,7 +62,7 @@ async def test_settled_leg_handoff_accepts_inactive_session_before_identity_clea
     )
     robot.show("returning")
 
-    assert await _async_wait_for_settled_leg_handoff(
+    assert await async_wait_for_settled_leg_handoff(
         robot.port(
             session_identity=AsyncMock(return_value=b"completed-session"),
         ),
@@ -81,7 +82,7 @@ async def test_settled_leg_handoff_tolerates_session_read_error(
     )
     robot.show("returning")
 
-    assert not await _async_wait_for_settled_leg_handoff(
+    assert not await async_wait_for_settled_leg_handoff(
         robot.port(
             active_session=AsyncMock(side_effect=MaticError("session unavailable")),
             session_identity=AsyncMock(return_value=b"completed-session"),
@@ -101,7 +102,7 @@ async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
     cancelled = asyncio.Event()
     cancelled.set()
     with pytest.raises(PlanCancelledError):
-        await _async_wait_for_settled_leg_handoff(
+        await async_wait_for_settled_leg_handoff(
             robot.port(active_session=AsyncMock(return_value=None)),
             cancelled,
             timeout_seconds=1,
@@ -109,7 +110,7 @@ async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
 
     robot.show("error")
     with pytest.raises(HomeAssistantError):
-        await _async_wait_for_settled_leg_handoff(
+        await async_wait_for_settled_leg_handoff(
             robot.port(
                 refresh=AsyncMock(side_effect=MaticError("refresh failed")),
                 active_session=AsyncMock(return_value=None),
@@ -121,7 +122,7 @@ async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
     robot.show("returning")
 
     with pytest.raises(RoomTakenOverError):
-        await _async_wait_for_settled_leg_handoff(
+        await async_wait_for_settled_leg_handoff(
             robot.port(
                 active_session=AsyncMock(return_value=None),
                 session_identity=AsyncMock(return_value=b"replacement"),
@@ -132,7 +133,7 @@ async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
         )
 
     with pytest.raises(RoomTakenOverError):
-        await _async_wait_for_settled_leg_handoff(
+        await async_wait_for_settled_leg_handoff(
             robot.port(
                 active_session=AsyncMock(return_value=None),
                 session_identity=AsyncMock(return_value=b"replacement"),
@@ -150,7 +151,7 @@ async def test_settled_leg_handoff_times_out_without_stop(hass, monkeypatch) -> 
         "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS", 0
     )
     robot.show("returning")
-    assert not await _async_wait_for_settled_leg_handoff(
+    assert not await async_wait_for_settled_leg_handoff(
         robot.port(
             active_session=AsyncMock(return_value=None),
             session_identity=AsyncMock(return_value=b"active"),
@@ -170,7 +171,7 @@ async def test_settled_leg_handoff_cancel_during_wait(hass, monkeypatch) -> None
     hass.loop.call_soon(cancel_event.set)
     robot.show("returning")
     with pytest.raises(PlanCancelledError):
-        await _async_wait_for_settled_leg_handoff(
+        await async_wait_for_settled_leg_handoff(
             robot.port(
                 active_session=AsyncMock(return_value=None),
                 session_identity=AsyncMock(return_value=b"active"),
@@ -198,7 +199,7 @@ async def test_settled_handoff_wakes_on_graceful_stop(
 
     robot.show("returning")
     waiting = asyncio.create_task(
-        _async_wait_for_settled_leg_handoff(
+        async_wait_for_settled_leg_handoff(
             robot.port(
                 active_session=AsyncMock(return_value=None), session_identity=identity
             ),
@@ -237,7 +238,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
         return True
 
     async def block_handoff(*_args, **_kwargs) -> bool:
-        recovery = manager.recovery.recovery_run("serial")
+        recovery = recovery_record(manager)
         assert recovery is not None
         assert recovery["recovery_checkpoint"]["phase"] == "handoff"
         assert recovery["recovery_checkpoint"]["leg_index"] == 1
@@ -247,17 +248,17 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             robot.show("returning")
             hass.loop.call_soon(manager.control.finish_room_event("serial").set)
             return await asyncio.wait_for(
-                _async_wait_for_settled_leg_handoff(*_args, **_kwargs), 1
+                async_wait_for_settled_leg_handoff(*_args, **_kwargs), 1
             )
         return settled is True
 
     with (
         patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             AsyncMock(side_effect=complete_first_leg),
         ) as run,
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.managed_observation.async_wait_for_settled_leg_handoff",
             AsyncMock(side_effect=block_handoff),
         ),
         patch(
@@ -265,7 +266,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             side_effect=lambda rooms, **_: [[room] for room in rooms],
         ),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -351,11 +352,11 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
                 history.return_value = (SimpleNamespace(key=b"external-completed"),)
             else:
                 history.side_effect = MaticError("history unavailable")
-            return await _async_run_leg(*args, **kwargs)
+            return await async_run_room_leg(*args, **kwargs)
         # Exercise the actual before/after-command reads for each successful
         # earlier leg, allowing its newly created native identity.
         identity.return_value = b""
-        dispatch = await _async_dispatch_leg_command(
+        dispatch = await async_dispatch_leg_command(
             robot.port(session_identity=identity),
             args[5],
             7,
@@ -377,11 +378,11 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
 
     with (
         patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             AsyncMock(side_effect=run_leg),
         ) as run,
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.managed_observation.async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
         pytest.raises(expected_exception, match=expected_message),
@@ -392,7 +393,7 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             side_effect=lambda rooms, **_: [[room] for room in rooms],
         ),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,

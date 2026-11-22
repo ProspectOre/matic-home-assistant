@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from custom_components.matic_robot.managed_observation import (
-    _async_wait_for_owned_resume,
-    _LegOutcomeObserver,
+    LegOutcomeObserver,
+    async_wait_for_owned_resume,
 )
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
@@ -29,7 +29,7 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
     manager = CleaningPlanManager(hass)
     await manager.async_load()
     await manager.ledger.async_mark_started(SERIAL, "synthetic-plan", ROOM)
-    observer = _LegOutcomeObserver(robot.port(), [ROOM], ROOM, initial_observed=True)
+    observer = LegOutcomeObserver(robot.port(), [ROOM], ROOM, initial_observed=True)
     write_started = asyncio.Event()
     allow_write = asyncio.Event()
     suspend_writes = 0
@@ -68,7 +68,7 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
 
         allow_write.set()
         await asyncio.wait_for(suspend, timeout=2)
-        await _async_wait_for_owned_resume(
+        await async_wait_for_owned_resume(
             robot.port(session_identity=AsyncMock(return_value=SESSION_IDENTITY)),
             1,
             None,

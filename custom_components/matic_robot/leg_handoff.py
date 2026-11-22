@@ -10,7 +10,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from . import managed_observation as observation
 from .client import MaticError, RobotActivity
-from .managed_run import PlanCancelledError, _PreparedRoomDispatch
+from .managed_run import PlanCancelledError, PreparedRoomDispatch
 from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
 
@@ -20,13 +20,13 @@ _LOGGER = logging.getLogger(__name__)
 async def async_dispatch_on_return(
     robot: RobotPort,
     dispatch: Callable[
-        [Callable[[bytes | None], None]], Awaitable[_PreparedRoomDispatch]
+        [Callable[[bytes | None], None]], Awaitable[PreparedRoomDispatch]
     ],
     bind_identity: Callable[[bytes | None], None],
     on_refused: Callable[[], Awaitable[None]],
     stop_taken: Callable[[], Awaitable[None]],
     shutting_down: Callable[[], bool],
-) -> _PreparedRoomDispatch | None:
+) -> PreparedRoomDispatch | None:
     """Send the next leg before the robot docks, or return None to dock first.
 
     The robot heads home whenever a mission ends, and a Smart Stop plan runs
@@ -43,7 +43,7 @@ async def async_dispatch_on_return(
     if (
         state is None
         or state.activity is not RobotActivity.RETURNING
-        or await observation._async_read_session_identity(robot.session_identity) != b""
+        or await observation.async_read_session_identity(robot.session_identity) != b""
     ):
         return None
     taken = False

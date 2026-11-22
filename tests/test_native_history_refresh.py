@@ -14,7 +14,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.matic_robot.client.cleaning_session import (
-    _native_history_collection_revision,
+    native_history_collection_revision,
 )
 from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
@@ -595,17 +595,17 @@ def test_history_revision_ignores_active_records_and_tracks_ended_revisions():
         "custom_components.matic_robot.client.cleaning_session.decode_cleaning_session",
         side_effect=lambda payload: active if payload.startswith(b"active") else ended,
     ):
-        active_revision = _native_history_collection_revision(entries)
-        ended_only_revision = _native_history_collection_revision(
+        active_revision = native_history_collection_revision(entries)
+        ended_only_revision = native_history_collection_revision(
             (HermesCollectionEntry(b"ended", b"ended-v1"),)
         )
-        active_changed = _native_history_collection_revision(
+        active_changed = native_history_collection_revision(
             (HermesCollectionEntry(b"active", b"active-v2"),)
         )
-        ended_changed = _native_history_collection_revision(
+        ended_changed = native_history_collection_revision(
             (HermesCollectionEntry(b"ended", b"ended-v2"),)
         )
 
     assert active_revision == ended_only_revision
-    assert active_changed == _native_history_collection_revision(())
+    assert active_changed == native_history_collection_revision(())
     assert ended_changed != active_revision

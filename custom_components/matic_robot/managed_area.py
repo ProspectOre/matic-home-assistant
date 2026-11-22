@@ -24,9 +24,9 @@ from .client import (
 from .const import DOMAIN
 from .managed_run import (
     PlanCancelledError,
+    PreparedRoomDispatch,
     RoomStartTimeoutError,
     RoomTakenOverError,
-    _PreparedRoomDispatch,
 )
 from .plan_model import (
     AreaLeg,
@@ -75,9 +75,7 @@ async def _async_wait_for_area_end(
     unknown_reads = 0
     while True:
         _running_area_state(robot, cancel_event)
-        identity = await observation._async_read_session_identity(
-            robot.session_identity
-        )
+        identity = await observation.async_read_session_identity(robot.session_identity)
         # A Stop or error can arrive while the identity request is in flight.
         current = _running_area_state(robot, cancel_event)
         if identity is None:
@@ -97,7 +95,7 @@ async def _async_wait_for_area_end(
         else:
             unknown_reads = 0
             if current is not None and current.activity in _HOME_OR_IDLE:
-                active = await observation._async_active_session_state(
+                active = await observation.async_active_session_state(
                     robot.active_session
                 )
                 # The robot can stop, fail or resume during this second read.
@@ -115,7 +113,7 @@ async def _async_wait_for_area_end(
 
 async def _async_wait_for_area_record(
     robot: RobotPort,
-    dispatch: _PreparedRoomDispatch,
+    dispatch: PreparedRoomDispatch,
     cancel_event: asyncio.Event,
 ) -> None:
     """Wait, bounded, for an ended area mission's own history record.
@@ -220,7 +218,7 @@ class _AreaLegRun:
     motion_token: int
     floor_is_current: Callable[[], bool] | None
     on_native_identity: Callable[[bytes | None], None]
-    checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]]
+    checkpoint_dispatch: Callable[[PreparedRoomDispatch], Awaitable[None]]
     # Whether a start may have reached the robot, so a failure must STOP it.
     dispatch_attempted: bool = False
 
@@ -258,13 +256,13 @@ class _AreaLegRun:
 
     async def async_dispatch(
         self,
-        prepared: _PreparedRoomDispatch | None,
+        prepared: PreparedRoomDispatch | None,
         *,
         floor_token: str,
         expected_identity: bytes | None,
         expected_history: frozenset[str] | None,
         expected_revision: str | None,
-    ) -> _PreparedRoomDispatch:
+    ) -> PreparedRoomDispatch:
         """Start the area, or resume a recovered dispatch, and record it started."""
         self.dispatch_attempted = prepared is not None
         dispatch = prepared
@@ -274,7 +272,7 @@ class _AreaLegRun:
                 self.dispatch_attempted = True
                 self.on_native_identity(None)
 
-            dispatch = await dispatch_control._async_dispatch_leg_command(
+            dispatch = await dispatch_control.async_dispatch_leg_command(
                 self.robot,
                 self.area,
                 self.motion_token,
@@ -300,11 +298,11 @@ class _AreaLegRun:
         return dispatch
 
     async def async_watch(
-        self, dispatch: _PreparedRoomDispatch, *, settle_history: bool
+        self, dispatch: PreparedRoomDispatch, *, settle_history: bool
     ) -> None:
         """Accept the owned start, then wait out the area's own session."""
         try:
-            await observation._async_wait_for_owned_start(
+            await observation.async_wait_for_owned_start(
                 self.robot,
                 int(self.call.data["start_timeout"]),
                 self.cancel_event,
@@ -324,7 +322,7 @@ class _AreaLegRun:
             acceptance_is_current=self.evidence_is_current,
         ):
             raise PlanCancelledError
-        budget = await managed_run._async_completion_budget(
+        budget = await managed_run.async_completion_budget(
             dispatch,
             int(self.call.data["completion_timeout"]),
             self.checkpoint_dispatch,
@@ -358,7 +356,7 @@ class _AreaLegRun:
         """Release a failed area; return its service error, or None to re-raise."""
         if isinstance(error, RoomTakenOverError):
             # A replaced task was never ours to stop.
-            if dispatch_control._shutdown_suspends_run(
+            if dispatch_control.shutdown_suspends_run(
                 self.hass, self.manager, self.serial_number
             ):
                 return None
@@ -366,17 +364,17 @@ class _AreaLegRun:
         else:
             # A graceful stop cannot upgrade a failed area once it has failed.
             finish_room_event.clear()
-            if not dispatch_control._managed_stop_fence_owned_by_run(
+            if not dispatch_control.managed_stop_fence_owned_by_run(
                 self.manager, self.serial_number, self.run_id
             ):
-                await dispatch_control._async_cleanup_managed_motion(
+                await dispatch_control.async_cleanup_managed_motion(
                     managed_user_command,
                     self.motion_token,
                     self.dispatch_attempted
-                    and managed_run._coverage_guard_cause(error) is None
+                    and managed_run.coverage_guard_cause(error) is None
                     and not _area_refused_before_start(error),
                 )
-            reason_code = managed_run._failure_reason_code(error)
+            reason_code = managed_run.failure_reason_code(error)
         await self.manager.ledger.async_mark_area_finished(
             self.serial_number, self.area, run_id=self.run_id
         )
@@ -384,7 +382,7 @@ class _AreaLegRun:
         return _area_failure_error(error, self.area)
 
 
-async def _async_run_area_leg(
+async def async_run_area_leg(
     hass: HomeAssistant,
     call: ServiceCall,
     manager: CleaningPlanManager,
@@ -396,7 +394,7 @@ async def _async_run_area_leg(
     motion_token: int,
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None,
     *,
-    prepared_dispatch: _PreparedRoomDispatch | None,
+    prepared_dispatch: PreparedRoomDispatch | None,
     finish_room_event: asyncio.Event,
     floor_is_current: Callable[[], bool] | None,
     floor_token: str,
@@ -405,7 +403,7 @@ async def _async_run_area_leg(
     expected_dispatch_revision: str | None,
     on_native_identity: Callable[[bytes | None], None],
     run_id: str,
-    checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]],
+    checkpoint_dispatch: Callable[[PreparedRoomDispatch], Awaitable[None]],
     provenance: str,
     settle_history: bool,
 ) -> bool:

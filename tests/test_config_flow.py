@@ -27,9 +27,9 @@ from custom_components.matic_robot.config_flow import (
     MaticRobotOptionsFlow,
 )
 from custom_components.matic_robot.config_flow_discovery import (
-    _async_discover_robots,
-    _async_select_discovery_host,
     _preferred_discovery_host,
+    async_discover_robots,
+    async_select_discovery_host,
 )
 from custom_components.matic_robot.const import (
     DOMAIN,
@@ -57,11 +57,11 @@ def _discovery_info(
 async def _discover(hass, monkeypatch, discoveries):
     """Run the user step's discovery progress and return the next dialog."""
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow._async_discover_robots",
+        "custom_components.matic_robot.config_flow.async_discover_robots",
         AsyncMock(return_value=discoveries),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow._async_select_discovery_host",
+        "custom_components.matic_robot.config_flow.async_select_discovery_host",
         AsyncMock(return_value="192.0.2.1"),
     )
     progress = await hass.config_entries.flow.async_init(
@@ -163,7 +163,7 @@ async def test_user_step_allows_selection_when_multiple_robots_are_found(
 
 async def test_discovery_recovery_navigation_is_failure_safe(hass, monkeypatch) -> None:
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow._async_discover_robots",
+        "custom_components.matic_robot.config_flow.async_discover_robots",
         AsyncMock(return_value=[]),
     )
     flow = MaticRobotConfigFlow()
@@ -221,7 +221,7 @@ async def test_manual_setup_uses_home_assistant_shared_zeroconf(
     monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
     monkeypatch.setattr(flow_module.asyncio, "sleep", AsyncMock())
 
-    discoveries = await _async_discover_robots(hass)
+    discoveries = await async_discover_robots(hass)
 
     assert handler is not None
     assert discoveries[0].hostname == "robot.local."
@@ -271,7 +271,7 @@ async def test_manual_discovery_discards_incomplete_records(
     monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
     monkeypatch.setattr(flow_module.asyncio, "sleep", AsyncMock())
 
-    assert await _async_discover_robots(hass) == []
+    assert await async_discover_robots(hass) == []
 
 
 async def test_manual_discovery_returns_empty_when_no_services_are_seen(
@@ -291,7 +291,7 @@ async def test_manual_discovery_returns_empty_when_no_services_are_seen(
     )
     monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
 
-    assert await _async_discover_robots(hass, discovery_seconds=0) == []
+    assert await async_discover_robots(hass, discovery_seconds=0) == []
 
 
 async def test_manual_discovery_caps_names_addresses_and_resolution_concurrency(
@@ -345,7 +345,7 @@ async def test_manual_discovery_caps_names_addresses_and_resolution_concurrency(
     monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
     monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
 
-    discoveries = await _async_discover_robots(hass, discovery_seconds=0)
+    discoveries = await async_discover_robots(hass, discovery_seconds=0)
 
     assert len(created_names) == 3
     assert len(discoveries) == 3
@@ -394,14 +394,14 @@ async def test_manual_discovery_has_one_global_resolution_deadline(
     monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
     monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
 
-    assert await _async_discover_robots(hass, discovery_seconds=0) == []
+    assert await async_discover_robots(hass, discovery_seconds=0) == []
     assert started_names == ["stale-0.service"]
     assert cancelled_names == started_names
 
 
 async def test_discovery_opens_single_action_pairing_form(hass, monkeypatch) -> None:
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow._async_select_discovery_host",
+        "custom_components.matic_robot.config_flow.async_select_discovery_host",
         AsyncMock(return_value="192.0.2.1"),
     )
     result = await hass.config_entries.flow.async_init(
@@ -502,7 +502,7 @@ async def test_discovery_probes_advertised_addresses_for_live_robot(
         asyncio.get_running_loop(), "getaddrinfo", AsyncMock(return_value=[])
     )
 
-    assert await _async_select_discovery_host(info) == "192.0.2.1"
+    assert await async_select_discovery_host(info) == "192.0.2.1"
 
 
 async def test_discovery_probes_fresh_hostname_resolution(monkeypatch) -> None:
@@ -545,7 +545,7 @@ async def test_discovery_probes_fresh_hostname_resolution(monkeypatch) -> None:
         ),
     )
 
-    assert await _async_select_discovery_host(info) == "192.0.2.3"
+    assert await async_select_discovery_host(info) == "192.0.2.3"
 
 
 async def test_discovery_falls_back_when_resolution_and_probes_fail(
@@ -570,7 +570,7 @@ async def test_discovery_falls_back_when_resolution_and_probes_fail(
         AsyncMock(side_effect=CannotConnectError("offline")),
     )
 
-    assert await _async_select_discovery_host(info) == "192.0.2.2"
+    assert await async_select_discovery_host(info) == "192.0.2.2"
 
 
 async def test_discovery_probe_timeout_falls_back_to_advertised_address(
@@ -591,7 +591,7 @@ async def test_discovery_probe_timeout_falls_back_to_advertised_address(
         asyncio.get_running_loop(), "getaddrinfo", AsyncMock(return_value=[])
     )
 
-    assert await _async_select_discovery_host(info) == "192.0.2.2"
+    assert await async_select_discovery_host(info) == "192.0.2.2"
 
 
 async def test_discovery_caps_candidate_address_probe_fanout(monkeypatch) -> None:
@@ -631,7 +631,7 @@ async def test_discovery_caps_candidate_address_probe_fanout(monkeypatch) -> Non
         ),
     )
 
-    assert await _async_select_discovery_host(info) == "192.0.2.1"
+    assert await async_select_discovery_host(info) == "192.0.2.1"
     assert len(probed) == 3
 
 
@@ -662,7 +662,7 @@ async def test_zeroconf_uses_advertised_serial_for_duplicate_protection(
     flow.async_set_unique_id = AsyncMock()
     flow._abort_if_unique_id_configured = MagicMock()
     monkeypatch.setattr(
-        flow_module, "_async_select_discovery_host", AsyncMock(return_value="192.0.2.1")
+        flow_module, "async_select_discovery_host", AsyncMock(return_value="192.0.2.1")
     )
 
     result = await flow.async_step_zeroconf(info)
@@ -879,7 +879,7 @@ async def test_pairing_wait_refreshes_discovery_and_stops_on_terminal_error(
         "step_id": "pair",
         "errors": {"base": error},
     }
-    monkeypatch.setattr(flow_module, "_async_select_discovery_host", refresh)
+    monkeypatch.setattr(flow_module, "async_select_discovery_host", refresh)
     monkeypatch.setattr(
         flow, "_async_create_or_error", AsyncMock(return_value=terminal)
     )

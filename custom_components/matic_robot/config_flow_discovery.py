@@ -38,7 +38,7 @@ def fallback_robot_name(hostname: str) -> str:
     return f"Matic (Unofficial) {hostname_suffix(hostname)}"
 
 
-def _robot_label(discovery_info: ZeroconfServiceInfo) -> str:
+def robot_label(discovery_info: ZeroconfServiceInfo) -> str:
     """Return the advertised robot name, or the hostname-based fallback."""
     advertised = decode_bot_information(
         discovery_info.properties.get("bot_information", "")
@@ -48,7 +48,7 @@ def _robot_label(discovery_info: ZeroconfServiceInfo) -> str:
     return fallback_robot_name(discovery_info.hostname)
 
 
-async def _async_discover_robots(
+async def async_discover_robots(
     hass: HomeAssistant, discovery_seconds: float = MANUAL_DISCOVERY_SECONDS
 ) -> list[ZeroconfServiceInfo]:
     """Discover Matic robots when setup is started from Add Integration."""
@@ -138,7 +138,7 @@ def _preferred_discovery_host(discovery_info: ZeroconfServiceInfo) -> str:
     )
 
 
-def _discovery_certificate_identity(
+def discovery_certificate_identity(
     discovery_info: ZeroconfServiceInfo,
 ) -> tuple[str, str | None]:
     """Bind a conflict-renamed mDNS address to its advertised robot identity."""
@@ -163,12 +163,12 @@ def _discovery_certificate_identity(
     return hostname, advertised.serial_number
 
 
-async def _async_select_discovery_host(
+async def async_select_discovery_host(
     discovery_info: ZeroconfServiceInfo,
 ) -> str:
     """Select the first advertised address that proves the robot's identity."""
     hostname = discovery_info.hostname.rstrip(".")
-    expected_hostname, expected_serial = _discovery_certificate_identity(discovery_info)
+    expected_hostname, expected_serial = discovery_certificate_identity(discovery_info)
     port = discovery_info.port or DEFAULT_PORT
     try:
         async with asyncio.timeout(DISCOVERY_RESOLVE_TIMEOUT_SECONDS):

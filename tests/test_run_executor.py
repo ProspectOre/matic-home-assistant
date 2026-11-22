@@ -9,8 +9,8 @@ from homeassistant.core import ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.managed_observation import _LegOutcomeObserver
+from custom_components.matic_robot.managed_executor import async_execute_rooms
+from custom_components.matic_robot.managed_observation import LegOutcomeObserver
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import credit_rooms, memory_manager, plan_room, run_plan_call
@@ -35,10 +35,10 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=fake_leg),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -99,10 +99,10 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=fake_leg),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -145,10 +145,10 @@ async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> 
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=fake_leg),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -185,10 +185,10 @@ async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=fake_leg),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -239,9 +239,9 @@ async def test_execute_rooms_skips_every_room_once_cancellation_is_set(hass) -> 
     )
     room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "quick")
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg", AsyncMock()
+        "custom_components.matic_robot.managed_leg.async_run_room_leg", AsyncMock()
     ) as run:
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,
@@ -282,13 +282,13 @@ async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
     command = AsyncMock()
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
+            "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
             side_effect=delayed_check,
         ),
-        patch("custom_components.matic_robot.managed_leg._async_run_leg") as run,
+        patch("custom_components.matic_robot.managed_leg.async_run_room_leg") as run,
     ):
         task = asyncio.create_task(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 call,
                 manager,
@@ -308,7 +308,7 @@ async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
                 async with manager.control.external_motion("serial"):
                     pass
             with pytest.raises(ServiceValidationError, match="already running"):
-                await _async_execute_rooms(
+                await async_execute_rooms(
                     hass,
                     call,
                     manager,
@@ -351,13 +351,13 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
     robot.on_start = dispatch
     if multi_room:
         monkeypatch.setattr(
-            _LegOutcomeObserver,
+            LegOutcomeObserver,
             "next",
             fail_after_replacement,
         )
     else:
         monkeypatch.setattr(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             fail_after_replacement,
         )
     rooms = [ROOM]
@@ -375,7 +375,7 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
         },
     )
     with pytest.raises(RuntimeError, match="unexpected observer failure"):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,

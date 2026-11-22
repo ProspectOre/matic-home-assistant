@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 _MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
 
 
-def _map_session_key(runtime: MaticRuntimeData) -> str | None:
+def map_session_key(runtime: MaticRuntimeData) -> str | None:
     """Return a browser-safe identity for one verified SLAM coordinate frame."""
     identity = runtime.slam_map.mission_identity
     floor_plan = runtime.session.floor.value
@@ -65,7 +65,7 @@ def observe_trail(runtime: MaticRuntimeData) -> None:
             str(session.info.serial_number)
         ),
         native_active=session.state.value.session_active,
-        map_key=_map_session_key(runtime),
+        map_key=map_session_key(runtime),
         point=position[:2] if position is not None else None,
         observed_at=pose.observed_at if pose is not None else None,
     )
@@ -114,7 +114,7 @@ def pose_projection(
             scene_view.scene_epoch(entry_id) if scene_view is not None else None
         ),
         "map_floor_coherent": coherent,
-        "map_session_key": _map_session_key(runtime) if coherent else None,
+        "map_session_key": map_session_key(runtime) if coherent else None,
         "pose_age_seconds": round(age, 3) if age is not None else None,
         # The robot's own time of this pose, which the live trail keeps.
         "observed_at": (
@@ -236,7 +236,7 @@ def catalog_entry_projection(
         "selected_floor_ordinal": selected_floor_ordinal,
         "map_floor_ordinal": map_floor_ordinal,
         "map_session_verified": session_verified,
-        "map_session_key": _map_session_key(runtime) if session_verified else None,
+        "map_session_key": map_session_key(runtime) if session_verified else None,
         "map_block_reason": map_block_reason,
         "runner_locked": runtime.cleaning_plans.control.lock(serial_number).locked(),
         "stop_settle_pending": runtime.cleaning_plans.control.stop_pending(

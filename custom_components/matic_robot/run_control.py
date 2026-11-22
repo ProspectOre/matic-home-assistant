@@ -25,14 +25,12 @@ from . import native_history, plan_storage, plan_timing
 from .const import DOMAIN
 from .plan_model import (
     PlanStopDecision,
-    _has_frozen_stop_policy,
-    _managed_stop_policy,
+    managed_stop_policy,
 )
 from .plan_repository import (
     PlanRepository,
 )
 from .plan_schema import SmartStopPhase
-from .run_machine import recovery_run
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -350,10 +348,7 @@ class RunControl:
         """Transfer motion ownership to an admitted independent command."""
         actor = self.actor(serial_number)
         replaced = False
-        if (
-            self.cancel(serial_number)
-            or recovery_run(self.repository.robot(serial_number)) is not None
-        ):
+        if self.cancel(serial_number) or self._recovering(serial_number):
             actor.cancel_event.set()
             dispatch = self.managed_stop_dispatch_transaction.get()
             if dispatch is None or dispatch[0] != serial_number:
@@ -755,17 +750,23 @@ class RunControl:
         """Return the graceful-stop signal for the current managed run."""
         return self.actor(serial_number).finish_room_event
 
+    def _recovering(self, serial_number: str) -> bool:
+        """Whether the stored run runs with a checkpoint a restart resumes."""
+        run = self.repository.last_run(serial_number)
+        return run is not None and run.live_checkpoint is not None
+
     def smart_stop_phase(self, serial_number: str) -> SmartStopPhase | None:
         """Return where the running run's accepted Smart Stop stands, else None.
 
         Smart Stop is pending while the checkpoint holds the after-room intent
         and the finish signal is set, until another command replaces the run.
         """
-        robot = self.repository.robot(serial_number)
-        run = recovery_run(robot)
+        run = self.repository.last_run(serial_number)
+        checkpoint = run.live_checkpoint if run is not None else None
         if (
             run is None
-            or run["recovery_checkpoint"].get("stop_intent") != "after_room"
+            or checkpoint is None
+            or checkpoint.stop_intent != "after_room"
             or not self.finish_room_event(serial_number).is_set()
             or self.cancellation_reason(serial_number) == "motion_replaced"
         ):
@@ -773,7 +774,7 @@ class RunControl:
         active = self.repository.active_plan(serial_number)
         if active is None:
             return "returning_to_dock"
-        if active.run_id != run["run_id"]:
+        if active.run_id != run.run_id:
             return None
         if active.status == "verifying":
             return "verifying_completion"
@@ -827,7 +828,7 @@ class RunControl:
                 self.cancellation_event(serial_number).set()
                 actor.cancellation_reason = "managed_stop"
                 return PlanStopDecision("immediate")
-            if recovery_run(self.repository.robot(serial_number)) is not None:
+            if self._recovering(serial_number):
                 self.cancellation_event(serial_number).set()
                 actor.cancellation_reason = "managed_stop"
                 return PlanStopDecision("immediate")
@@ -863,10 +864,10 @@ class RunControl:
             if last_run is not None and last_run.run_id == active.run_id
             else None
         )
-        finish_current_room, threshold = active.stop_policy or _managed_stop_policy(
-            checkpoint
-            if _has_frozen_stop_policy(checkpoint)
-            else robot["plans"].get(active.plan_id, {})
+        finish_current_room, threshold = (
+            active.stop_policy
+            or (checkpoint.stop_policy if checkpoint is not None else None)
+            or managed_stop_policy(robot["plans"].get(active.plan_id, {}))
         )
         if not finish_current_room:
             fence_new_motion()
@@ -879,7 +880,7 @@ class RunControl:
             self.cancellation_event(serial_number).clear()
             self.finish_room_event(serial_number).set()
             return PlanStopDecision("after_room", None, threshold)
-        progress = plan_timing._room_timing(robot, active, dt_util.utcnow())[
+        progress = plan_timing.room_timing(robot, active, dt_util.utcnow())[
             "estimated_percent"
         ]
         if progress is not None and progress < threshold:

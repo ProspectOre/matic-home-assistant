@@ -19,11 +19,11 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.native_history import (
-    _reconcile_pending_native_history,
-    _record_native_completion,
+    reconcile_pending_native_history,
+    record_native_completion,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom, PlanStopDecision
-from custom_components.matic_robot.plan_timing import _compatible_duration_history
+from custom_components.matic_robot.plan_timing import compatible_duration_history
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import memory_manager, plan_room
 
@@ -78,19 +78,19 @@ def test_native_history_reconciliation_preserves_frozen_duration_settings() -> N
     )
 
     original_pending = deepcopy(robot["pending_native_reconciliation"])
-    assert _reconcile_pending_native_history(robot, floor_plan, [native_record])
+    assert reconcile_pending_native_history(robot, floor_plan, [native_record])
 
     completed = robot["rotations"]["away"]["rooms"][room_id]
     assert completed["cleaning_mode"] == "vacuum"
     assert completed["coverage_setting"] == "quick"
-    assert _compatible_duration_history(
+    assert compatible_duration_history(
         robot,
         room_id,
         {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
     ) == [30]
     profiles = deepcopy(completed["duration_profiles"])
     robot["pending_native_reconciliation"] = original_pending
-    assert _reconcile_pending_native_history(robot, floor_plan, [native_record])
+    assert reconcile_pending_native_history(robot, floor_plan, [native_record])
     assert completed["duration_profiles"] == profiles
     assert completed["completed_runs"] == 1
 
@@ -126,7 +126,7 @@ def test_native_history_reconciliation_preserves_frozen_duration_settings() -> N
             "plan_room_cadence": deepcopy(cadence_records),
             "pending_native_reconciliation": conflicting_marker,
         }
-        assert _reconcile_pending_native_history(
+        assert reconcile_pending_native_history(
             conflicting_robot, floor_plan, [native_record]
         )
         conflicting_completed = conflicting_robot["rotations"]["away"]["rooms"][room_id]
@@ -137,7 +137,7 @@ def test_native_history_reconciliation_preserves_frozen_duration_settings() -> N
         for mode in ("vacuum", "mop"):
             for coverage in ("quick", "standard", "heavy_duty"):
                 assert (
-                    _compatible_duration_history(
+                    compatible_duration_history(
                         conflicting_robot,
                         room_id,
                         {"cleaning_mode": mode, "coverage_setting": coverage},
@@ -163,11 +163,11 @@ def test_native_history_reconciliation_preserves_frozen_duration_settings() -> N
         "rooms": {},
         "pending_native_reconciliation": legacy_marker,
     }
-    assert _reconcile_pending_native_history(legacy_robot, floor_plan, [native_record])
+    assert reconcile_pending_native_history(legacy_robot, floor_plan, [native_record])
     legacy_completed = legacy_robot["rotations"]["away"]["rooms"][room_id]
     assert legacy_completed["cleaning_mode"] == "vacuum"
     assert legacy_completed["coverage_setting"] == "quick"
-    assert _compatible_duration_history(
+    assert compatible_duration_history(
         legacy_robot,
         room_id,
         {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
@@ -180,7 +180,7 @@ def test_native_history_reconciliation_preserves_frozen_duration_settings() -> N
             key: value for key, value in legacy_marker.items() if key != "cadence_state"
         },
     }
-    assert _reconcile_pending_native_history(unknown_robot, floor_plan, [native_record])
+    assert reconcile_pending_native_history(unknown_robot, floor_plan, [native_record])
     unknown_completed = unknown_robot["rotations"]["away"]["rooms"][room_id]
     assert "cleaning_mode" not in unknown_completed
     assert "coverage_setting" not in unknown_completed
@@ -188,7 +188,7 @@ def test_native_history_reconciliation_preserves_frozen_duration_settings() -> N
     assert unknown_completed["duration_profiles"] == {}
     assert "duration_history_seconds" not in unknown_completed
     assert (
-        _compatible_duration_history(
+        compatible_duration_history(
             unknown_robot,
             room_id,
             {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
@@ -230,7 +230,7 @@ def test_native_completion_retains_separate_duration_tiers_when_settings_change(
     }
     room = CleaningRoom(room_id, "Kitchen", "mop", "quick")
 
-    _record_native_completion(
+    record_native_completion(
         robot,
         "away",
         room,
@@ -244,12 +244,12 @@ def test_native_completion_retains_separate_duration_tiers_when_settings_change(
     assert completed["coverage_setting"] == "quick"
     assert "last_cancelled_duration_seconds" not in completed
     assert "last_unverified_duration_seconds" not in completed
-    assert _compatible_duration_history(
+    assert compatible_duration_history(
         robot,
         room_id,
         {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
     ) == ([90] if previous_mode == "vacuum" else [])
-    assert _compatible_duration_history(
+    assert compatible_duration_history(
         robot,
         room_id,
         {
@@ -257,7 +257,7 @@ def test_native_completion_retains_separate_duration_tiers_when_settings_change(
             "coverage_setting": previous_coverage,
         },
     ) == [90]
-    assert _compatible_duration_history(
+    assert compatible_duration_history(
         robot,
         room_id,
         {"cleaning_mode": "mop", "coverage_setting": "quick"},
@@ -290,7 +290,7 @@ def test_native_completion_does_not_qualify_legacy_unscoped_duration_samples() -
         "rooms": {},
     }
 
-    _record_native_completion(
+    record_native_completion(
         robot,
         "away",
         CleaningRoom(room_id, "Kitchen", "mop", "quick"),
@@ -304,7 +304,7 @@ def test_native_completion_does_not_qualify_legacy_unscoped_duration_samples() -
     assert "coverage_setting" not in completed
     assert "duration_history_seconds" not in completed
     assert (
-        _compatible_duration_history(
+        compatible_duration_history(
             robot,
             room_id,
             {"cleaning_mode": "mop", "coverage_setting": "quick"},
@@ -334,7 +334,7 @@ def test_native_completion_without_frozen_settings_retains_prior_qualified_tier(
     }
     floor_room = Room(room_id, "Kitchen", "protocol-kitchen", b"kitchen", ())
 
-    _record_native_completion(
+    record_native_completion(
         robot,
         "away",
         floor_room,
@@ -348,7 +348,7 @@ def test_native_completion_without_frozen_settings_retains_prior_qualified_tier(
     assert "coverage_setting" not in completed
     assert completed["last_duration_seconds"] == 30
     assert "duration_history_seconds" not in completed
-    assert _compatible_duration_history(
+    assert compatible_duration_history(
         robot,
         room_id,
         {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
@@ -556,7 +556,7 @@ def test_duration_profiles_bound_each_supported_tier_without_mixing() -> None:
         mode, coverage = key.split(":")
         room = CleaningRoom("room", "Room", mode, coverage)
         for offset in range(10):
-            _record_native_completion(
+            record_native_completion(
                 robot,
                 "daily",
                 room,
@@ -571,7 +571,7 @@ def test_duration_profiles_bound_each_supported_tier_without_mixing() -> None:
         mode, coverage = key.split(":")
         profile = record["duration_profiles"][key]
         assert profile["duration_samples"] == 10
-        assert _compatible_duration_history(
+        assert compatible_duration_history(
             robot, "room", {"cleaning_mode": mode, "coverage_setting": coverage}
         ) == list(range(index * 100 + 3, index * 100 + 10))
 
@@ -633,7 +633,7 @@ def test_duration_profile_repair_keeps_only_known_legacy_settings() -> None:
     repaired = deepcopy(robot)
     plan_state.parse_robot(robot)
     assert robot == repaired
-    plan_timing_module._admit_room_settings(
+    plan_timing_module.admit_room_settings(
         unknown, CleaningRoom("room", "Room", "vacuum", "quick")
     )
     assert unknown["duration_profiles"] == {}
@@ -660,13 +660,13 @@ def test_authoritative_duration_profiles_never_resurrect_scalar_history(
         "duration_samples": 3,
         "duration_profiles": profiles,
     }
-    plan_timing_module._normalize_duration_profiles(record)
+    plan_timing_module.normalize_duration_profiles(record)
     assert record["duration_profiles"] == {}
-    plan_timing_module._admit_room_settings(
+    plan_timing_module.admit_room_settings(
         record, CleaningRoom("room", "Room", "vacuum", "quick")
     )
     assert "duration_history_seconds" not in record
-    assert plan_timing_module._normalize_duration_profiles(record) is False
+    assert plan_timing_module.normalize_duration_profiles(record) is False
 
 
 def test_duration_profile_sanitizer_bounds_and_rejects_invalid_values() -> None:
@@ -690,12 +690,12 @@ def test_duration_profile_sanitizer_bounds_and_rejects_invalid_values() -> None:
             "unknown:unknown": {"duration_history_seconds": [20] * 3},
         }
     }
-    assert plan_timing_module._normalize_duration_profiles(record)
+    assert plan_timing_module.normalize_duration_profiles(record)
     assert record["duration_profiles"] == {
         "vacuum:quick": {"duration_history_seconds": [20, 30], "duration_samples": 2}
     }
     assert (
-        plan_timing_module._duration_profile_key(
+        plan_timing_module.duration_profile_key(
             {"cleaning_mode": "unknown", "coverage_setting": "quick"}
         )
         is None
@@ -717,7 +717,7 @@ def test_late_duration_completion_preserves_a_different_active_tier() -> None:
         "active_plan": {"plan_id": "daily", "room_id": "room"},
     }
     prior = CleaningRoom("room", "Room", "mop", "heavy_duty")
-    _record_native_completion(
+    record_native_completion(
         robot,
         "daily",
         prior,

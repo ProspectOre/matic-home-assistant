@@ -138,7 +138,7 @@ def _valid_anchors(value: Any) -> bool:
     if (
         not isinstance(value, list)
         or not value
-        or len(value) > geometry._MAX_TRANSLATION_ROOM_ANCHORS
+        or len(value) > geometry.MAX_TRANSLATION_ROOM_ANCHORS
     ):
         return False
     associations = 0
@@ -169,8 +169,8 @@ def _valid_anchors(value: Any) -> bool:
         associations += len(keys)
         points += len(polygon)
         if (
-            associations > geometry._MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS
-            or points > geometry._MAX_ROOM_FRAME_POINTS
+            associations > geometry.MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS
+            or points > geometry.MAX_ROOM_FRAME_POINTS
         ):
             return False
         try:
@@ -189,7 +189,7 @@ def _walls_digest(binding: Mapping[str, Any]) -> str:
     occupancy = binding["local_occupancy"]
     segments = binding["local_segments_mm"]
     digest = hashlib.sha256()
-    digest.update(geometry._SCOPED_FINGERPRINT_DOMAIN)
+    digest.update(geometry.SCOPED_FINGERPRINT_DOMAIN)
     digest.update(struct.pack(">H", _WALLS))
     digest.update(bytes.fromhex(binding["area_shape_sha256"]))
     digest.update(struct.pack(">I", len(occupancy)))

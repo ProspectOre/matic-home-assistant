@@ -642,7 +642,7 @@ def test_robot_normalization_repairs_cadence_records_without_inventing_progress(
         },
     }
 
-    changed = plan_state_module._normalize_robot(robot)
+    changed = plan_state_module.normalize_robot(robot)
 
     assert changed is True
     assert robot["plan_room_cadence"] == {
@@ -727,7 +727,7 @@ def test_robot_normalization_drops_nonmapping_cadence_checkpoint() -> None:
         }
     }
 
-    assert plan_state_module._normalize_robot(robot)
+    assert plan_state_module.normalize_robot(robot)
     assert "cadence_by_room" not in robot["last_run"]["recovery_checkpoint"]
 
 

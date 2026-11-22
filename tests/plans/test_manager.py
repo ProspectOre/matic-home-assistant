@@ -11,11 +11,11 @@ from homeassistant.exceptions import ServiceValidationError
 import custom_components.matic_robot.plans as plans_module
 from custom_components.matic_robot.client.models import FloorPlan
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.managed_run import PlanCancelledError
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.service_context import _entry_for_entity
+from custom_components.matic_robot.service_context import entry_for_entity
 from tests.plans.fakes import memory_manager, plan_room, run_plan_call
 from tests.session_fakes import FakeRobot
 
@@ -232,11 +232,11 @@ async def test_config_unload_waits_for_managed_runner(hass) -> None:
     robot = FakeRobot()
     robot.show("idle")
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=wait_for_cancel),
     ):
         task = asyncio.create_task(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 run_plan_call(hass),
                 manager,
@@ -336,7 +336,7 @@ def test_entry_lookup_rejects_missing_registry_entry() -> None:
         ),
         pytest.raises(ServiceValidationError, match="unavailable"),
     ):
-        _entry_for_entity(SimpleNamespace(), "vacuum.matic")
+        entry_for_entity(SimpleNamespace(), "vacuum.matic")
 
 
 async def test_plan_manager_initialization_is_shared_before_storage_load(hass) -> None:

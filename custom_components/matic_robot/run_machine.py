@@ -18,7 +18,8 @@ from enum import StrEnum
 from typing import Any
 
 from .client import is_sha256_hex
-from .plan_model import AreaLeg, CleaningRoom, checkpoint_legs, stored_count
+from .plan_model import AreaLeg, stored_count
+from .plan_records import LastRun, RecoveryCheckpoint
 
 # Reason codes of a run whose every room and area has a result.
 RUN_SETTLED_REASONS = frozenset({"all_rooms_verified", "all_rooms_settled"})
@@ -49,14 +50,15 @@ class Run:
     ended: str | None = None
 
     @classmethod
-    def from_checkpoint(cls, checkpoint: Mapping[str, Any]) -> Run:
+    def from_checkpoint(cls, checkpoint: RecoveryCheckpoint) -> Run:
         """Resume from the checkpoint restart recovery validated."""
+        assert checkpoint.phase is not None and checkpoint.leg_index is not None
         return cls(
-            RunPhase(checkpoint["phase"]),
-            checkpoint["leg_index"],
-            frozenset(checkpoint.get("completed_room_ids", [])),
-            frozenset(checkpoint.get("finished_area_legs", [])),
-            frozenset(checkpoint.get("settled_room_ids", [])),
+            RunPhase(checkpoint.phase),
+            checkpoint.leg_index,
+            checkpoint.completed_room_ids,
+            checkpoint.finished_area_legs,
+            checkpoint.settled_room_ids,
         )
 
     def all_settled(
@@ -164,7 +166,7 @@ class Restarted:
     or ends it with a reason code when the checkpoint cannot authorize more.
     """
 
-    record: Mapping[str, Any]
+    record: LastRun
 
 
 type RunEvent = (
@@ -198,6 +200,12 @@ class CheckpointWrite:
         checkpoint.update(self.fields)
         for key in self.drop:
             checkpoint.pop(key, None)
+
+    def applied(self, checkpoint: RecoveryCheckpoint) -> RecoveryCheckpoint:
+        """Return ``checkpoint`` with this write's fields set and dropped."""
+        stored = checkpoint.stored()
+        self.apply(stored)
+        return RecoveryCheckpoint.parse(stored)
 
 
 def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
@@ -290,37 +298,6 @@ def count_room(run: dict[str, Any], room_id: str) -> bool:
     return True
 
 
-def stored_run(robot: Mapping[str, Any], run_id: str | None) -> dict[str, Any] | None:
-    """Return the stored record of run ``run_id``, running or finished."""
-    run = robot.get("last_run")
-    return run if isinstance(run, dict) and run.get("run_id") == run_id else None
-
-
-def running_run(
-    robot: Mapping[str, Any], run_id: str | None = None
-) -> dict[str, Any] | None:
-    """Return the stored run while it runs; with ``run_id``, only that run."""
-    run = robot.get("last_run") if run_id is None else stored_run(robot, run_id)
-    if isinstance(run, dict) and run.get("outcome") == "running":
-        return run
-    return None
-
-
-def run_checkpoint(robot: Mapping[str, Any], run_id: str) -> dict[str, Any] | None:
-    """Return the recovery checkpoint of the running run ``run_id``."""
-    run = running_run(robot, run_id)
-    checkpoint = run.get("recovery_checkpoint") if run is not None else None
-    return checkpoint if isinstance(checkpoint, dict) else None
-
-
-def recovery_run(robot: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Return the running run when it has a checkpoint to recover from."""
-    run = running_run(robot)
-    if run is not None and isinstance(run.get("recovery_checkpoint"), dict):
-        return run
-    return None
-
-
 def stored_instant(value: Any) -> datetime | None:
     """Return a checkpointed time, or None when it is unreadable or naive."""
     try:
@@ -330,7 +307,7 @@ def stored_instant(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def _restarted(record: Mapping[str, Any]) -> Run:
+def _restarted(record: LastRun) -> Run:
     """Resume a stored run, or end it, checking in the order recovery always has.
 
     Only an accepted, verifying or handoff checkpoint, or a dispatch with its
@@ -338,18 +315,19 @@ def _restarted(record: Mapping[str, Any]) -> Run:
     ``mixed_settings`` predates 0.5 and is unverified. A malformed record
     raises, as it always has.
     """
-    checkpoint = record["recovery_checkpoint"]
+    checkpoint = record.checkpoint
+    assert checkpoint is not None
     unverified = Run(ended="restart_checkpoint_unverified")
     stop_requested = Run(ended="restart_stop_requested")
-    if checkpoint.get("stop_intent") in {"immediate", "not_running"}:
+    if checkpoint.stop_intent in {"immediate", "not_running"}:
         return stop_requested
-    phase = checkpoint.get("phase")
+    phase = checkpoint.phase
     mixed_dispatch = phase == RunPhase.DISPATCHING and is_sha256_hex(
-        checkpoint.get("mixed_initial_session_hash")
+        checkpoint.mixed_initial_session_hash
     )
     if (
-        checkpoint.get("version") != 1
-        or checkpoint.get("mixed_settings") is not True
+        checkpoint.version != 1
+        or not checkpoint.mixed_settings
         or (
             phase not in {RunPhase.ACCEPTED, RunPhase.VERIFYING, RunPhase.HANDOFF}
             and not mixed_dispatch
@@ -358,35 +336,33 @@ def _restarted(record: Mapping[str, Any]) -> Run:
         return unverified
     verifying = phase == RunPhase.VERIFYING
     handoff = phase == RunPhase.HANDOFF
-    if handoff and checkpoint.get("stop_intent") == "after_room":
+    if handoff and checkpoint.stop_intent == "after_room":
         # The preceding leg is already credited. A persisted graceful stop
         # must not wait for native settlement or resume the queue.
         return stop_requested
-    if verifying and (
-        stored_instant(checkpoint.get("verification_deadline", "")) is None
-    ):
+    if verifying and stored_instant(checkpoint.verification_deadline or "") is None:
         return unverified
-    rooms = [CleaningRoom(**room) for room in checkpoint["rooms"]]
+    rooms = checkpoint.cleaning_rooms()
     room_ids = {room.room_id for room in rooms}
-    legs = checkpoint_legs(checkpoint)
+    legs = checkpoint.legs()
     area_legs = {index for index, leg in enumerate(legs) if isinstance(leg, AreaLeg)}
     saved = Run(
-        completed_room_ids=frozenset(checkpoint.get("completed_room_ids", [])),
-        settled_room_ids=frozenset(checkpoint.get("settled_room_ids", [])),
-        finished_area_legs=frozenset(checkpoint.get("finished_area_legs", [])),
+        completed_room_ids=checkpoint.completed_room_ids,
+        settled_room_ids=checkpoint.settled_room_ids,
+        finished_area_legs=checkpoint.finished_area_legs,
     )
     if (
         (rooms or area_legs)
         and saved.all_settled(room_ids, area_legs)
-        and len(room_ids) == len(rooms) == record["room_count"]
-        and record["completed_room_count"] == len(saved.completed_room_ids)
+        and len(room_ids) == len(rooms) == record.room_count
+        and record.completed_room_count == len(saved.completed_room_ids)
     ):
         # Room results and area finishes are saved before the checkpoint
         # records them, so a crash before finalization keeps the completion.
         return Run(ended=saved.end_reason)
-    leg_index = checkpoint.get("leg_index")
+    leg_index = checkpoint.leg_index
     if (
-        not isinstance(leg_index, int)
+        leg_index is None
         or leg_index < 0
         or leg_index >= len(legs)
         or (
@@ -411,19 +387,17 @@ def _restarted(record: Mapping[str, Any]) -> Run:
         # never part of a mixed room dispatch.
         return unverified
     if not is_sha256_hex(
-        checkpoint.get(
-            "mixed_initial_session_hash" if mixed_dispatch else "native_identity_hash"
-        )
+        checkpoint.mixed_initial_session_hash
+        if mixed_dispatch
+        else checkpoint.native_identity_hash
     ):
         return unverified
     if not mixed_dispatch and not handoff:
         # A handoff has no accepted dispatch for its next leg yet.
-        if stored_instant(checkpoint["dispatched_at"]) is None:
+        if stored_instant(checkpoint.dispatched_at) is None:
             return unverified
-        deadline = checkpoint.get("completion_deadline")
-        if not verifying and (
-            not isinstance(deadline, str) or stored_instant(deadline) is None
-        ):
+        deadline = checkpoint.completion_deadline
+        if not verifying and (deadline is None or stored_instant(deadline) is None):
             return unverified
     return Run.from_checkpoint(checkpoint)
 

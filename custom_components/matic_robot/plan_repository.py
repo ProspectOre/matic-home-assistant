@@ -65,7 +65,7 @@ def _merge(target: dict[str, Any], source: dict[str, Any]) -> None:
         target[key] = value
 
 
-class _MetadataLockLease:
+class MetadataLockLease:
     """Track precisely which transaction locks are still owned by a worker."""
 
     def __init__(self) -> None:
@@ -96,7 +96,7 @@ class PlanRepository:
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
-        self.store = plan_storage._CleaningPlanStore(
+        self.store = plan_storage.CleaningPlanStore(
             hass,
             plan_storage.STORAGE_VERSION,
             plan_storage.STORAGE_KEY,
@@ -173,13 +173,29 @@ class PlanRepository:
         """Return the stored last run as ``robot`` would give it, parsed."""
         return stored_last_run(self.robot(serial_number))
 
+    def run_record(self, serial_number: str, run_id: str) -> LastRun | None:
+        """Return the stored record of run ``run_id``, running or finished."""
+        run = self.last_run(serial_number)
+        return run if run is not None and run.run_id == run_id else None
+
+    def draft_run(self, serial_number: str) -> dict[str, Any]:
+        """Return the stored last run for the open commit to edit.
+
+        A writer calls it once ``last_run`` found the run it changes. Outside
+        ``commit`` it raises, so no reader holds the stored record.
+        """
+        robot = self.robot(serial_number)
+        if self.open_draft is None or robot is not self.open_draft[1]:
+            raise RuntimeError("a stored run is edited only inside a commit")
+        return cast(dict[str, Any], robot["last_run"])
+
     def _live(self, serial_number: str) -> dict[str, Any]:
         """Return the committed robot, adding an empty one if it is new."""
         robots = self.data["robots"]
         robot = robots.get(serial_number)
         if robot is None:
             robot = {}
-            plan_state._normalize_robot(robot)
+            plan_state.normalize_robot(robot)
             if serial_number not in self.removed_robots:
                 robots[serial_number] = robot
         return cast(dict[str, Any], robot)
@@ -210,7 +226,7 @@ class PlanRepository:
             live = robots.get(serial_number)
             if live is None:
                 live = {}
-                plan_state._normalize_robot(live)
+                plan_state.normalize_robot(live)
             base = dict(live)
             draft = deepcopy(live)
             token = _DRAFT.set(draft)
@@ -220,7 +236,7 @@ class PlanRepository:
             finally:
                 self.open_draft = None
                 _DRAFT.reset(token)
-            plan_state._normalize_robot(draft)
+            plan_state.normalize_robot(draft)
             changed = {
                 key
                 for key in base.keys() | draft.keys()
@@ -274,7 +290,7 @@ class PlanRepository:
     async def async_save_fences(self, serial_number: str) -> None:
         """Save a robot with the fence fields memory holds, then notify."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.commit(serial_number, always=True):
                 return serial_number not in self.removed_robots
 
@@ -309,7 +325,7 @@ class PlanRepository:
         unload that starts while it waits lets it finish.
         """
 
-        async def commit(_lease: _MetadataLockLease) -> _MetadataResult | None:
+        async def commit(_lease: MetadataLockLease) -> _MetadataResult | None:
             async with self.commit(serial_number):
                 if serial_number in self.removed_robots:
                     return None
@@ -340,7 +356,7 @@ class PlanRepository:
     ) -> None:
         """Own an admitted Area metadata commit independently of its waiter."""
 
-        async def persist(_lease: _MetadataLockLease) -> None:
+        async def persist(_lease: MetadataLockLease) -> None:
             async with self.commit(serial_number, user=True) as robot:
                 # The caller's synchronous guard and mutation share this
                 # commit. No await may separate them.
@@ -409,7 +425,7 @@ class PlanRepository:
     async def async_run_owned_metadata(
         self,
         serial_number: str,
-        operation: Callable[[_MetadataLockLease], Coroutine[Any, Any, _MetadataResult]],
+        operation: Callable[[MetadataLockLease], Coroutine[Any, Any, _MetadataResult]],
         *,
         domain_locks: Sequence[asyncio.Lock] = (),
         notify: bool = False,
@@ -420,7 +436,7 @@ class PlanRepository:
         reject_on_admission_close: bool = False,
     ) -> _MetadataResult | None:
         """Admit mutation after cancellable locks, then own it through settlement."""
-        lease = _MetadataLockLease()
+        lease = MetadataLockLease()
         effective_allow_closed = allow_closed and not register_before_lock_wait
         if self.metadata_write_rejected(
             serial_number,

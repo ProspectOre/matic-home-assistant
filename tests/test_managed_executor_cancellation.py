@@ -10,8 +10,8 @@ from homeassistant.util import dt as dt_util
 
 import custom_components.matic_robot.managed_observation as managed_observation_module
 from custom_components.matic_robot.client.commands import UserCommand
-from custom_components.matic_robot.managed_leg import _async_run_leg
-from custom_components.matic_robot.managed_run import _PreparedRoomDispatch
+from custom_components.matic_robot.managed_leg import async_run_room_leg
+from custom_components.matic_robot.managed_run import PreparedRoomDispatch
 from custom_components.matic_robot.plan_model import CleaningRoom
 from tests.plans.fakes import memory_manager
 from tests.session_fakes import FakeRobot, run_step
@@ -47,7 +47,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
     identity_read_cancelled = asyncio.Event()
 
     original_wait_for_room_outcome = (
-        managed_observation_module._async_wait_for_room_outcome
+        managed_observation_module.async_wait_for_room_outcome
     )
 
     async def observe_room_waiter(*args, **kwargs):
@@ -55,7 +55,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
         return await original_wait_for_room_outcome(*args, **kwargs)
 
     monkeypatch.setattr(
-        managed_observation_module, "_async_wait_for_room_outcome", observe_room_waiter
+        managed_observation_module, "async_wait_for_room_outcome", observe_room_waiter
     )
     # The room waiter refreshes status on this period; the test waits for one.
     monkeypatch.setattr(managed_observation_module, "ROOM_STATUS_REFRESH_SECONDS", 0.01)
@@ -128,7 +128,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
 
     with pytest.raises(ServiceValidationError) as raised:
         await asyncio.wait_for(
-            _async_run_leg(
+            async_run_room_leg(
                 hass,
                 call,
                 manager,
@@ -142,7 +142,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
                 ),
                 motion_token,
                 managed_user_command=send_managed_command,
-                prepared_dispatch=_PreparedRoomDispatch(
+                prepared_dispatch=PreparedRoomDispatch(
                     (room,),
                     frozenset(),
                     dispatched_at,

@@ -13,21 +13,27 @@ from homeassistant.util import dt as dt_util
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import (
-    _async_execute_rooms,
+    async_execute_rooms,
     async_finish_plan_run,
 )
 from custom_components.matic_robot.managed_run import (
-    _async_completion_budget,
-    _PreparedRoomDispatch,
+    PreparedRoomDispatch,
+    async_completion_budget,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom, leg_groups
+from custom_components.matic_robot.plan_records import LastRun
 from custom_components.matic_robot.run_machine import (
     Restarted,
     Run,
     RunPhase,
     transition,
 )
-from tests.plans.fakes import credit_rooms, memory_manager, save_run_checkpoint
+from tests.plans.fakes import (
+    credit_rooms,
+    memory_manager,
+    recovery_record,
+    save_run_checkpoint,
+)
 from tests.session_fakes import FakeRobot, robot_port
 
 
@@ -73,11 +79,13 @@ def _release_0_6_checkpoint(phase: str) -> dict:
 def test_a_release_0_6_checkpoint_resumes(phase, resumed) -> None:
     """Recovery reads what release/0.6 saved; the pinned run saves the same keys."""
     record = {
+        "run_id": "run",
+        "plan_id": "plan",
         "room_count": 2,
         "completed_room_count": 0,
         "recovery_checkpoint": _release_0_6_checkpoint(phase),
     }
-    assert transition(Run(), Restarted(record))[0] == resumed
+    assert transition(Run(), Restarted(LastRun.parse(record)))[0] == resumed
 
 
 @pytest.mark.parametrize("history_state", ["available", "error"])
@@ -88,7 +96,7 @@ async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_
     seen = []
 
     async def leg(*args, **kwargs):
-        saved = manager.recovery.recovery_run("serial")
+        saved = recovery_record(manager)
         assert saved["recovery_checkpoint"]["phase"] == "dispatching"
         if args[5] == [room2]:
             expected = hashlib.sha256(b"new").hexdigest()
@@ -99,25 +107,22 @@ async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_
             # the durable runner must wait for this settled handoff.
             entry.robot.show("idle")
             kwargs["on_native_identity"](b"new")
-        dispatch = _PreparedRoomDispatch(
+        dispatch = PreparedRoomDispatch(
             tuple(args[5]),
             frozenset({b"old"}),
             dt_util.utcnow(),
             native_identity=b"new",
         )
         await kwargs["checkpoint_dispatch"](dispatch)
-        assert (
-            manager.recovery.recovery_run("serial")["recovery_checkpoint"]["phase"]
-            == "starting"
-        )
-        await _async_completion_budget(dispatch, 100, kwargs["checkpoint_dispatch"])
-        seen.append(manager.recovery.recovery_run("serial")["recovery_checkpoint"])
+        assert recovery_record(manager)["recovery_checkpoint"]["phase"] == "starting"
+        await async_completion_budget(dispatch, 100, kwargs["checkpoint_dispatch"])
+        seen.append(recovery_record(manager)["recovery_checkpoint"])
         credit_rooms(args, kwargs, args[5])
         return True
 
     with (
         patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             side_effect=leg,
         ),
         patch(
@@ -129,7 +134,7 @@ async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_
             ),
         ),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,
@@ -181,7 +186,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
     )
     await save_run_checkpoint(manager, checkpoint)
     run = manager.recovery.recovery_run("serial")
-    prepared = _PreparedRoomDispatch(
+    prepared = PreparedRoomDispatch(
         (room,), frozenset(), dt_util.utcnow(), native_identity=b"synthetic-session"
     )
 
@@ -193,9 +198,9 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg", side_effect=leg
+        "custom_components.matic_robot.managed_leg.async_run_room_leg", side_effect=leg
     ) as runner:
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,
@@ -226,18 +231,18 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
         await save(serial_number, run_id, checkpoint)
 
     async def leg(*args, **kwargs):
-        dispatch = _PreparedRoomDispatch(
+        dispatch = PreparedRoomDispatch(
             tuple(args[5]), frozenset({b"before"}), dt_util.utcnow(), None, b"session"
         )
         await kwargs["checkpoint_dispatch"](dispatch)
-        await _async_completion_budget(dispatch, 100, kwargs["checkpoint_dispatch"])
+        await async_completion_budget(dispatch, 100, kwargs["checkpoint_dispatch"])
         credit_rooms(args, kwargs, args[5])
         return True
 
     with (
         patch.object(manager.recovery, "async_set_recovery_checkpoint", record),
         patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             side_effect=leg,
         ),
         patch(
@@ -246,11 +251,11 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
         ),
         patch(
             "custom_components.matic_robot.managed_observation."
-            "_async_wait_for_settled_leg_handoff",
+            "async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             ServiceCall(
                 hass,
@@ -336,4 +341,4 @@ async def test_plan_finished_reports_its_own_end_once_another_run_is_stored(
         "terminal_activity": "unknown",
         "completed_room_count": 0,
     }
-    assert manager.recovery.recovery_run("serial")["run_id"] == "run"
+    assert recovery_record(manager)["run_id"] == "run"

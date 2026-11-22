@@ -153,7 +153,11 @@ def _plans_runtime() -> Any:
                 {"room_id": "room-3", "name": "Den", "sensor": "binary_sensor.den"}
             ],
         },
-        "rooms_only": {"plan_id": "rooms_only", "rooms": [kitchen_step]},
+        "rooms_only": {
+            "plan_id": "rooms_only",
+            "rooms": [kitchen_step],
+            "entries": [{"kind": "room", **kitchen_step}],
+        },
         "capped": {
             "rooms": [],
             "entries": [],
@@ -497,20 +501,6 @@ PLANS: dict[str, Any] = {
             "occupancy_aware": False,
             "occupancy_sensors": {"room-1": "binary_sensor.synthetic"},
             "next_run_preview": {
-                "rooms": [
-                    {
-                        "room_id": "room-1",
-                        "name": "Kitchen",
-                        "cleaning_mode": "vacuum",
-                        "coverage_setting": "standard",
-                        "cadence_reasons": ["mop_due"],
-                        "daily_limit": {
-                            "limit": 2,
-                            "completed_today": 1,
-                            "reached": False,
-                        },
-                    }
-                ],
                 "entries": [
                     {
                         "kind": "room",
@@ -600,15 +590,6 @@ PLANS: dict[str, Any] = {
             "occupancy_aware": False,
             "occupancy_sensors": {},
             "next_run_preview": {
-                "rooms": [
-                    {
-                        "room_id": "room-1",
-                        "name": "Kitchen",
-                        "cleaning_mode": "vacuum",
-                        "coverage_setting": "standard",
-                        "cadence_reasons": [],
-                    }
-                ],
                 "entries": [
                     {
                         "kind": "room",
@@ -653,7 +634,6 @@ PLANS: dict[str, Any] = {
             "occupancy_aware": False,
             "occupancy_sensors": {},
             "next_run_preview": {
-                "rooms": [],
                 "entries": [],
                 "mission_boundaries": [],
                 "blocker": "daily_limit_reached",
@@ -715,7 +695,7 @@ PLANS: dict[str, Any] = {
             "occupancy_aware": False,
             "occupancy_sensors": {},
             "next_run_preview": {
-                "rooms": [],
+                "entries": [],
                 "mission_boundaries": [],
                 "blocker": "plan_disabled",
             },

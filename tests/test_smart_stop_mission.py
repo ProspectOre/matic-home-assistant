@@ -25,7 +25,7 @@ from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
 )
 from custom_components.matic_robot.leg_finish import async_end_after_current_room
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.native_completion import leg_room_results
 from custom_components.matic_robot.robot_commands import PlanStart, RobotCommands
 from tests.client.test_coverage_receipts import history_key
@@ -316,7 +316,7 @@ async def _run(hass, make_robot, *, smart_stop: bool = True):
     error = None
     try:
         await asyncio.wait_for(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 call,
                 manager,
