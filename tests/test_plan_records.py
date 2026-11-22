@@ -21,6 +21,21 @@ def test_target_names_the_room_before_the_area() -> None:
 
 
 @pytest.mark.parametrize(
+    "record",
+    [
+        {"plan_id": "plan"},
+        {"plan_id": "plan", "room_id": None, "area_id": 3},
+        {"room_id": "room"},
+    ],
+    ids=["no target", "malformed target", "no plan"],
+)
+def test_a_record_without_a_plan_and_target_is_no_active_plan(record) -> None:
+    assert ActivePlan.parse(record) is None
+    robot = {"active_plan": dict(record)}
+    assert stored_active_plan(robot) is None
+
+
+@pytest.mark.parametrize(
     ("stored", "elapsed"),
     [(30, 30), (2.5, 2.5), (-1, 0), (float("nan"), 0), ("30", 0)],
     ids=["int", "float", "negative", "nan", "text"],

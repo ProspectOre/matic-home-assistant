@@ -57,22 +57,37 @@ class ActivePlan:
     elapsed_seconds: int | float
     segment_started: str | None
     stop_policy: tuple[bool, int] | None
+    # The room, else the custom area; the one rule for both.
+    target: RunTarget
     _stored: Mapping[str, Any] = field(repr=False, compare=False)
 
     @classmethod
-    def parse(cls, record: Mapping[str, Any]) -> ActivePlan:
+    def parse(cls, record: Mapping[str, Any]) -> ActivePlan | None:
+        """Read a stored active plan; None unless it names a plan and a target."""
+        plan_id = record.get("plan_id")
+        room_id = _text(record, "room_id")
+        area_id = _text(record, "area_id")
+        if not isinstance(plan_id, str):
+            return None
+        target: RunTarget
+        if room_id is not None:
+            target = {"kind": "room", "id": room_id, "name": _text(record, "room")}
+        elif area_id is not None:
+            target = {"kind": "area", "id": area_id, "name": _text(record, "area")}
+        else:
+            return None
         elapsed = record.get("active_elapsed_seconds", 0)
         if not isinstance(elapsed, int | float) or not (
             math.isfinite(elapsed) and elapsed >= 0
         ):
             elapsed = 0
         return cls(
-            plan_id=record["plan_id"],
+            plan_id=plan_id,
             plan_name=_text(record, "plan_name"),
             run_id=_text(record, "run_id"),
-            room_id=_text(record, "room_id"),
+            room_id=room_id,
             room=_text(record, "room"),
-            area_id=_text(record, "area_id"),
+            area_id=area_id,
             area=_text(record, "area"),
             status=_text(record, "status"),
             suspend_reason=_text(record, "suspend_reason"),
@@ -81,16 +96,9 @@ class ActivePlan:
             elapsed_seconds=elapsed,
             segment_started=_text(record, "active_segment_started"),
             stop_policy=_stop_policy(record),
+            target=target,
             _stored=MappingProxyType(dict(record)),
         )
-
-    @property
-    def target(self) -> RunTarget:
-        """Name the room, else the custom area; the one rule for both."""
-        if self.room_id is not None:
-            return {"kind": "room", "id": self.room_id, "name": self.room}
-        assert self.area_id is not None  # plan_state drops a plan with neither
-        return {"kind": "area", "id": self.area_id, "name": self.area}
 
     def published(self) -> dict[str, Any]:
         """Return a copy of the stored form, which history publishes."""

@@ -26,6 +26,7 @@ from .plan_model import (
     normalize_run_provenance,
     stored_count,
 )
+from .plan_records import ActivePlan
 from .plan_timing import (
     _latest_timestamp,
     _normalize_duration_profiles,
@@ -305,12 +306,7 @@ def _normalize_active_plan(robot: dict[str, Any]) -> bool:
     if active is None:
         if "active_plan" in robot:
             return False
-    elif (
-        isinstance(active, dict)
-        and isinstance(active.get("plan_id"), str)
-        # A plan's custom area is active by its area ID, not a room.
-        and isinstance(active.get("room_id", active.get("area_id")), str)
-    ):
+    elif isinstance(active, dict) and ActivePlan.parse(active) is not None:
         return False
     robot["active_plan"] = None
     return True
