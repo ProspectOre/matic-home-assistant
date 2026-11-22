@@ -765,6 +765,10 @@ async def _async_credit_verified_rooms(
     run, restarted = recovery.run, recovery.restarted
     manager, serial_number = recovery.manager, recovery.serial_number
     skipped = set(manager.ledger.skipped_room_ids(serial_number, run["run_id"]))
+
+    def still_owned() -> bool:
+        return not recovery.lost_ownership() and recovery.completion_is_current()
+
     for room in leg:
         if room.room_id in restarted.completed_room_ids | restarted.settled_room_ids:
             continue
@@ -779,9 +783,7 @@ async def _async_credit_verified_rooms(
                 completed_at=completed_at,
                 duration_seconds=duration,
                 verified_coverage_receipt=verified_coverage,
-                completion_is_current=lambda: (
-                    not recovery.lost_ownership() and recovery.completion_is_current()
-                ),
+                completion_is_current=still_owned,
             ):
                 return "restart_recovery_superseded"
             counted = manager.recovery.counted_room_ids(serial_number, run["run_id"])
@@ -789,19 +791,22 @@ async def _async_credit_verified_rooms(
             rejoined.robot.confirm_room_completed(room.name)
             result, fields = "completed", {"reason_code": "verified_completion"}
         elif room.room_id in unreachable | skipped:
-            if recovery.lost_ownership() or not recovery.completion_is_current():
+            owner_skipped = room.room_id in skipped
+            if not await manager.ledger.async_mark_settled(
+                serial_number,
+                run["plan_id"],
+                room,
+                "skipped" if owner_skipped else "unreachable",
+                run_id=run["run_id"],
+                completion_is_current=still_owned,
+            ):
                 return "restart_recovery_superseded"
-            if room.room_id in skipped:
-                await manager.ledger.async_mark_skipped(
-                    serial_number, run["plan_id"], room, run_id=run["run_id"]
-                )
-                result, fields = "skipped", {"reason_code": "owner_skipped"}
-            else:
-                await manager.ledger.async_mark_unreachable(
-                    serial_number, run["plan_id"], room, run_id=run["run_id"]
-                )
-                result = "skipped"
-                fields = {"reason_code": "room_unreachable", "cause": "robot"}
+            result = "skipped"
+            fields = (
+                {"reason_code": "owner_skipped"}
+                if owner_skipped
+                else {"reason_code": "room_unreachable", "cause": "robot"}
+            )
             restarted, write = transition(restarted, RoomSettled(room.room_id))
             write.apply(recovery.checkpoint)
             await manager.recovery.async_set_recovery_checkpoint(
