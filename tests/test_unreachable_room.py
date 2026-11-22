@@ -1,8 +1,9 @@
-"""A dispatched room the robot cannot reach is settled from native history.
+"""A dispatched room the robot cannot reach or finish is settled from history.
 
 The OEM app (1.183.1) titles a ``Finished`` stop reason "Area inaccessible"
-when the requested room stayed unattempted. That record, and only that
-record, settles the room as unreachable so the plan can continue.
+when the requested room stayed unattempted or was only partly cleaned. That
+record, and only that record, settles the room without credit so the plan
+can continue.
 """
 
 import asyncio
@@ -27,7 +28,7 @@ from custom_components.matic_robot.managed_observation import (
     _classify_native_identity,
 )
 from custom_components.matic_robot.native_completion import (
-    match_single_room_unreachable,
+    match_single_room_robot_ended,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.robot_commands import PlanStart
@@ -94,32 +95,41 @@ def test_identity_signals_are_one_rule() -> None:
     assert _classify_native_identity(b"other", owned) is NativeTaskSignal.REPLACED
 
 
+def _robot_ended(records, **window):
+    return tuple(
+        kind for _record, kind in match_single_room_robot_ended(records, **window)
+    )
+
+
 @pytest.mark.parametrize(
     ("status", "options", "baseline", "expected"),
     [
-        ("unattempted", {}, frozenset(), True),
-        # The robot reached the room: not unreachable.
-        ("partial", {}, frozenset(), False),
-        ("completed", {}, frozenset(), False),
+        ("unattempted", {}, frozenset(), ("unreachable",)),
+        # The robot reached the room and gave up on the rest of it.
+        ("partial", {}, frozenset(), ("partly_cleaned",)),
+        # A completed room is a completion, not a robot-ended room.
+        ("completed", {}, frozenset(), ()),
         # A stop by the owner or the robot is not an inaccessible area.
-        ("unattempted", {"stop_reason": "stopped"}, frozenset(), False),
-        ("unattempted", {"stop_reason": "bot_cancelled"}, frozenset(), False),
-        ("unattempted", {"stop_reason": None}, frozenset(), False),
+        ("unattempted", {"stop_reason": "stopped"}, frozenset(), ()),
+        ("partial", {"stop_reason": "stopped"}, frozenset(), ()),
+        ("unattempted", {"stop_reason": "bot_cancelled"}, frozenset(), ()),
+        ("partial", {"stop_reason": "bot_cancelled"}, frozenset(), ()),
+        ("unattempted", {"stop_reason": None}, frozenset(), ()),
         # Another room in the same record is not this dispatch.
-        ("unattempted", {"extra_rooms": ("Hall",)}, frozenset(), False),
+        ("unattempted", {"extra_rooms": ("Hall",)}, frozenset(), ()),
         # A record that existed before dispatch is not this mission.
-        ("unattempted", {}, frozenset({b"new"}), False),
+        ("unattempted", {}, frozenset({b"new"}), ()),
         # A mission queued long before its dispatch still ends inside it.
-        ("unattempted", {"started_offset": -7200}, frozenset(), True),
+        ("unattempted", {"started_offset": -7200}, frozenset(), ("unreachable",)),
     ],
 )
-def test_unreachable_match_requires_finished_unattempted_single_room(
+def test_robot_ended_match_requires_a_finished_unfinished_single_room(
     status, options, baseline, expected
 ) -> None:
     # Build the record when the test runs: collection can precede it by minutes.
     session = _session("Kitchen", status, **options)
     now = dt_util.utcnow()
-    matches = match_single_room_unreachable(
+    matches = _robot_ended(
         (CleaningSessionRecord(b"new", session),),
         room_name="Kitchen",
         cleaning_mode="vacuum",
@@ -127,33 +137,55 @@ def test_unreachable_match_requires_finished_unattempted_single_room(
         now=now + timedelta(seconds=1),
         baseline=baseline,
     )
-    assert bool(matches) is expected
+    assert matches == expected
 
 
-def test_unreachable_match_rejects_a_mixed_mode_that_was_reached() -> None:
+@pytest.mark.parametrize(
+    ("vacuum", "mop", "expected"),
+    [
+        ("unattempted", "unattempted", ("unreachable",)),
+        ("unattempted", "partial", ("partly_cleaned",)),
+        ("completed", "unattempted", ("partly_cleaned",)),
+        ("completed", "partial", ("partly_cleaned",)),
+        # Every mode completed is left to the completion matcher.
+        ("completed", "completed", ()),
+        # A status the decoder could not read proves nothing.
+        ("partial", None, ()),
+    ],
+)
+def test_robot_ended_match_reads_every_requested_mode(vacuum, mop, expected) -> None:
     now = dt_util.utcnow()
-    base = _session("Kitchen", "unattempted")
     session = replace(
-        base,
+        _session("Kitchen", "unattempted"),
         mode_results=(
-            CleaningModeResult("Kitchen", "vacuum", "unattempted", 0),
-            CleaningModeResult("Kitchen", "mop", "partial", 30),
+            CleaningModeResult("Kitchen", "vacuum", vacuum, 0),
+            CleaningModeResult("Kitchen", "mop", mop, 0),
         ),
     )
-    assert not match_single_room_unreachable(
-        (CleaningSessionRecord(b"new", session),),
-        room_name="Kitchen",
-        cleaning_mode="vacuum_and_mop",
-        dispatched_at=now - timedelta(seconds=5),
-        now=now + timedelta(seconds=1),
+    assert (
+        _robot_ended(
+            (CleaningSessionRecord(b"new", session),),
+            room_name="Kitchen",
+            cleaning_mode="vacuum_and_mop",
+            dispatched_at=now - timedelta(seconds=5),
+            now=now + timedelta(seconds=1),
+        )
+        == expected
     )
 
 
 class _Robot:
     """Synthetic robot whose first mission cannot reach its room."""
 
-    def __init__(self, hass, first_end: Callable[[], CleaningSession] | bytes) -> None:
+    def __init__(
+        self,
+        hass,
+        first_end: Callable[[], CleaningSession] | bytes,
+        *,
+        enters_room: bool = False,
+    ) -> None:
         self.hass = hass
+        self.enters_room = enters_room
         self.fake = FakeRobot()
         self.fake.on_start = self.send_command
         self.identity: bytes = b""
@@ -173,8 +205,11 @@ class _Robot:
         self.session_key = history_key(command.session_id)
         index = len(self.dispatches)
         if index == 1:
-            # The robot accepts the mission and drives, but never enters the room.
-            self.fake.show("cleaning", current_area=None)
+            # The robot accepts the mission and either never enters the room
+            # or starts cleaning it and gives up partway.
+            self.fake.show(
+                "cleaning", current_area=KITCHEN.name if self.enters_room else None
+            )
             self.hass.async_create_task(self._give_up(), eager_start=False)
         else:
             self.fake.show("cleaning", current_area=STUDY.name)
@@ -280,12 +315,52 @@ async def test_unreachable_room_is_skipped_and_the_plan_moves_on(hass) -> None:
     kitchen = robot_store["rotations"]["test-plan"]["rooms"]["room-kitchen"]
     assert kitchen["last_result"] == "unreachable"
     assert "last_completed" not in kitchen  # No credit: the room stays due.
+    # Unattempted work gives back the room's turn in the rotation.
+    assert "last_opportunity" not in kitchen
     last_run = manager.repository.last_run("serial")
     assert last_run is not None
     assert {
         room["name"]: room["result"] for room in run_rooms(robot_store, last_run)
     } == {
         "Kitchen": "unreachable",
+        "Study": "completed",
+    }
+
+
+async def test_partly_cleaned_room_is_settled_and_the_plan_moves_on(hass) -> None:
+    # Issue #566: the robot cleaned part of the room, then docked on its own.
+    robot = _Robot(hass, lambda: _session("Kitchen", "partial"), enters_room=True)
+    manager, events, error = await _run_plan(hass, robot)
+
+    assert error is None
+    assert len(robot.dispatches) == 2
+    skipped = _events(events, "room_skipped")
+    assert [(e["room_id"], e["reason_code"], e["cause"]) for e in skipped] == [
+        ("room-kitchen", "room_partly_cleaned", "robot")
+    ]
+    assert not _events(events, "room_interrupted")
+    assert [e["room_id"] for e in _events(events, "room_completed")] == ["room-study"]
+    (finished,) = _events(events, "plan_finished")
+    assert (finished["outcome"], finished["reason_code"]) == (
+        "completed",
+        "all_rooms_settled",
+    )
+    assert finished["completed_room_count"] == 1
+
+    robot_store = manager.repository.robot("serial")
+    kitchen = robot_store["rotations"]["test-plan"]["rooms"]["room-kitchen"]
+    assert kitchen["last_result"] == "partly_cleaned"
+    assert kitchen["partly_cleaned_runs"] == 1
+    assert "unreachable_runs" not in kitchen
+    assert "last_completed" not in kitchen  # No credit: the room stays due.
+    # Partial work changes the room's place in the rotation.
+    assert "last_opportunity" in kitchen
+    last_run = manager.repository.last_run("serial")
+    assert last_run is not None
+    assert {
+        room["name"]: room["result"] for room in run_rooms(robot_store, last_run)
+    } == {
+        "Kitchen": "partial",
         "Study": "completed",
     }
 
@@ -355,9 +430,9 @@ def test_unreachable_match_bounds_mode_window_and_ambiguity() -> None:
         "now": now + timedelta(seconds=1),
     }
     # No requested mode means no mode can prove the room unattempted.
-    assert not match_single_room_unreachable((record,), cleaning_mode=None, **window)
+    assert not _robot_ended((record,), cleaning_mode=None, **window)
     # A record that ended before this dispatch belongs to an earlier mission.
-    assert not match_single_room_unreachable(
+    assert not _robot_ended(
         (record,),
         cleaning_mode="vacuum",
         **{**window, "dispatched_at": now + timedelta(seconds=1)},
@@ -365,10 +440,6 @@ def test_unreachable_match_bounds_mode_window_and_ambiguity() -> None:
     # Two candidates are ambiguous; the matcher stops at two.
     other = CleaningSessionRecord(b"other", record.session)
     assert (
-        len(
-            match_single_room_unreachable(
-                (record, other, record), cleaning_mode="vacuum", **window
-            )
-        )
+        len(_robot_ended((record, other, record), cleaning_mode="vacuum", **window))
         == 2
     )

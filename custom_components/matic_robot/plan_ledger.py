@@ -40,6 +40,7 @@ from .coverage_accounting import (
     verified_room_coverage,
 )
 from .native_cadence import import_native_cadence
+from .native_completion import RobotEndedRoom
 from .plan_cadence import (
     PlanCadence,
 )
@@ -105,11 +106,12 @@ def _settle_room_record(
     run_id: str,
     settled_at: str,
 ) -> None:
-    """Close a skipped or unreachable room without credit, giving back its turn."""
+    """Close a room without credit; only work the robot did keeps its turn."""
     record["last_result"] = result
     record[f"last_{result}"] = settled_at
     record[f"{result}_runs"] = stored_count(record, f"{result}_runs") + 1
-    _restore_opportunity(record, global_room, run_id=run_id)
+    if result != "partly_cleaned":
+        _restore_opportunity(record, global_room, run_id=run_id)
 
 
 def _restore_opportunity(
@@ -1571,12 +1573,12 @@ class PlanLedger:
         serial_number: str,
         plan_id: str,
         room: CleaningRoom,
-        result: Literal["skipped", "unreachable"],
+        result: Literal["skipped"] | RobotEndedRoom,
         *,
         run_id: str | None,
         completion_is_current: Callable[[], bool],
     ) -> bool:
-        """Close a skipped or unreachable room without credit, keeping it due."""
+        """Close a skipped, unreachable or partly cleaned room without credit."""
 
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)

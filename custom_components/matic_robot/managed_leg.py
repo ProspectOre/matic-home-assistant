@@ -42,6 +42,7 @@ from .managed_run import (
     RoomStoppedInPlaceError,
     RoomTakenOverError,
 )
+from .native_completion import RobotEndedRoom
 from .plan_model import CleaningRoom
 from .plans import CleaningPlanManager
 from .robot_port import RobotPort
@@ -151,7 +152,8 @@ class _LegRun:
     observed_ids: set[str] = field(default_factory=set)
     # Room id to the robot's (ended_at, duration_seconds) for its credit.
     credited: dict[str, tuple[str | None, int | None]] = field(default_factory=dict)
-    unreachable: set[str] = field(default_factory=set)
+    # Room id to how the robot left a room it finished its mission short of.
+    robot_ended: dict[str, RobotEndedRoom] = field(default_factory=dict)
     completion_sessions: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -485,11 +487,11 @@ class _LegRun:
                     allow_active_cleaning=mission_ended,
                     on_verified_session=self.completion_sessions.append,
                     skipped_room_ids=self.withheld_room_ids(),
-                    on_unreached=self.unreachable.add,
+                    on_robot_ended=self.robot_ended.update,
                 )
                 or {}
             )
-            return bool(self.credited or self.unreachable)
+            return bool(self.credited or self.robot_ended)
         room = self.leg[0]
         evidence: list[tuple[str, int]] = []
         verdict = await observation.async_adjudicate_room_end(
@@ -509,7 +511,9 @@ class _LegRun:
         if verdict is observation.NativeRoomVerdict.COMPLETED:
             self.credited[room.room_id] = evidence[-1] if evidence else (None, None)
         if verdict is observation.NativeRoomVerdict.UNREACHABLE:
-            self.unreachable.add(room.room_id)
+            self.robot_ended[room.room_id] = "unreachable"
+        if verdict is observation.NativeRoomVerdict.PARTLY_CLEANED:
+            self.robot_ended[room.room_id] = "partly_cleaned"
         return verdict is not observation.NativeRoomVerdict.UNVERIFIED
 
     def late_marker(self, credited_ids: Collection[str] = ()) -> Any:
@@ -792,7 +796,7 @@ class _LegRun:
     async def async_settle_uncredited(
         self,
         room: CleaningRoom,
-        result: Literal["skipped", "unreachable"],
+        result: Literal["skipped"] | RobotEndedRoom,
         **fields: str,
     ) -> None:
         """Settle a room without credit, as a credit would, while the run owns it."""
@@ -826,7 +830,7 @@ class _LegRun:
         # A one-room leg reads the owner's skips only when history left it due.
         skipped = (
             self.skipped_room_ids()
-            if len(credited) < len(self.leg) and not (self.single and self.unreachable)
+            if len(credited) < len(self.leg) and not (self.single and self.robot_ended)
             else ()
         )
         marker = None if self.single else self.late_marker(tuple(credited))
@@ -866,14 +870,12 @@ class _LegRun:
                     reason_code="managed_cancelled",
                     cause="finish_current_room_or_stop",
                 )
-            elif room.room_id in self.unreachable:
-                # The robot finished its mission without reaching the room.
-                # Settle it without credit so it stays due; the run goes on.
+            elif ended := self.robot_ended.get(room.room_id):
+                # The robot finished its mission without reaching or finishing
+                # the room. Settle it without credit so it stays due; the run
+                # goes on.
                 await self.async_settle_uncredited(
-                    room,
-                    "unreachable",
-                    reason_code="room_unreachable",
-                    cause="robot",
+                    room, ended, reason_code=f"room_{ended}", cause="robot"
                 )
             else:
                 if self.single:
@@ -906,7 +908,7 @@ class _LegRun:
         return all(
             room.room_id in credited
             or room.room_id in skipped
-            or room.room_id in self.unreachable
+            or room.room_id in self.robot_ended
             for room in self.leg
         )
 

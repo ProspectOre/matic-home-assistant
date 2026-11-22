@@ -72,24 +72,28 @@ records without IDs match only a unique room name on a single known floor.
 history twice never counts work twice, and a newer partial clean does not erase
 an older completed one.
 
-## Rooms the robot could not reach
+## Rooms the robot could not reach or finish
 
 When a plan sends the robot to a room it cannot enter, such as one behind a
-closed door, the robot leaves it out. The integration reads the record of the
-clean it started: a record that finished with every requested mode of a room
-**unattempted** means that room was unreachable. The Matic app shows a
-single-room record like that as **Area inaccessible**. A room the plan took out
-of the queue for Smart Stop, or the owner skipped, is not unreachable.
+closed door, the robot leaves it out. When it gets in but cannot cover the
+whole floor, it cleans what it can and moves on. The integration reads the
+record of the clean it started. In a record that finished, a room with every
+requested mode **unattempted** was unreachable; a room with some mode attempted
+but not every requested mode **completed** was partly cleaned. The Matic app
+shows a single-room record like either one as **Area inaccessible**. A room the
+plan took out of the queue for Smart Stop, or the owner skipped, is neither.
 
-The room closes as **Couldn't reach** without credit and stays due, and the
-plan moves on to the next room. `matic_robot_room_skipped` fires with
-`reason_code: room_unreachable` and `cause: robot`. A run whose other rooms
-all completed ends `completed` with `reason_code: all_rooms_settled`, the same
-as a run with an owner-skipped room.
+The room closes as **Couldn't reach** or **Partly done** without credit and
+stays due, and the plan moves on to the next room. A partly cleaned room keeps
+its turn in the rotation, as partial work always does; an unreachable one gets
+it back. `matic_robot_room_skipped`
+fires with `reason_code: room_unreachable` or `room_partly_cleaned` and
+`cause: robot`. A run whose other rooms all completed ends `completed` with
+`reason_code: all_rooms_settled`, the same as a run with an owner-skipped room.
 
 Any other ending still ends the plan with `reason_code: native_task_ended`: a
-clean the user or the robot cancelled, one with no stop reason, or one where
-the robot got into the room. Only a different active task is reported as
+clean the user or the robot cancelled, or one with no stop reason. Only a
+different active task is reported as
 `native_task_taken_over`. [Protocol notes](protocol-notes.md#cleaning-history-coverage_session_history)
 has the fields behind this.
 
