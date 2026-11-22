@@ -22,6 +22,7 @@ from .plan_run import (
     PlanRun,
     active_plan,
     expect_finished,
+    recovery_record,
     state_becomes,
 )
 from .sim_mission import SimFloor, parse_coverage_command
@@ -70,9 +71,9 @@ async def _docked(plan: PlanRun) -> dict[str, object]:
 
 
 def _stored_outcome(plan: PlanRun) -> object:
-    ledger = plan.entry.runtime_data.cleaning_plans.ledger
+    repository = plan.entry.runtime_data.cleaning_plans.repository
     assert plan.run_id is not None
-    run = ledger.run_record(plan.robot.serial_number, plan.run_id)
+    run = repository.run_record(plan.robot.serial_number, plan.run_id)
     assert run is not None
     return run.outcome
 
@@ -275,7 +276,7 @@ async def test_restart_while_smart_stop_verifies_finishes_then_docks(
     plans = plan.entry.runtime_data.cleaning_plans
     async with asyncio.timeout(10):
         # Recovery resumes the history read the restart interrupted.
-        while (plans.recovery.recovery_run(robot.serial_number) or {}).get(
+        while (recovery_record(plans, robot.serial_number) or {}).get(
             "recovery_reason"
         ) != "native_end_previously_observed":
             await plan.poll()

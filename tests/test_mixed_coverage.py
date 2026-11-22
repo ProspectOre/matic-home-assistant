@@ -55,7 +55,7 @@ from custom_components.matic_robot.plan_model import (
     CleaningRoom,
 )
 from custom_components.matic_robot.robot_commands import RobotCommands
-from tests.plans.fakes import memory_manager
+from tests.plans.fakes import memory_manager, recovery_record
 from tests.session_fakes import FakeRobot, managed_clean_rooms
 from tests.wire_builders import _field, _varint_field
 
@@ -1944,7 +1944,7 @@ async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):
     )
 
     assert (
-        manager.recovery.recovery_run("synthetic-serial")["recovery_checkpoint"][
+        recovery_record(manager, "synthetic-serial")["recovery_checkpoint"][
             "mixed_initial_session_hash"
         ]
         == session_hash

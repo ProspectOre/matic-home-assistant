@@ -35,10 +35,10 @@ from .plan_model import (
     AreaLeg,
     CleaningRoom,
     PlanLeg,
-    normalize_run_provenance,
     plan_legs,
     run_entries,
 )
+from .plan_records import LastRun, RecoveryCheckpoint
 from .plans import CleaningPlanManager
 from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
@@ -79,7 +79,7 @@ class _PlanRun:
     robot: RobotPort
     floor_token: str
     run_id: str
-    recovery: dict[str, Any] | None
+    recovery: LastRun | None
     cadence_by_room: Mapping[str, Mapping[str, Any]] | None
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None
     mapped_room_names: tuple[str, ...]
@@ -102,7 +102,7 @@ class _PlanRun:
     finish_current_room_threshold: int = field(init=False)
     started_at: str = field(init=False)
     provenance: str = field(init=False)
-    checkpoint: dict[str, Any] = field(init=False)
+    checkpoint: RecoveryCheckpoint = field(init=False)
     run: Run = field(init=False)
     # Whether plan_started was fired, so plan_finished must follow.
     run_started: bool = field(init=False)
@@ -121,17 +121,19 @@ class _PlanRun:
         self.finish_current_room, self.finish_current_room_threshold = (
             manager.cadence.prepared_run_stop_policy(self.serial_number, self.run_id)
         )
-        self.started_at = (
-            str(recovery["started_at"]) if recovery else dt_util.utcnow().isoformat()
-        )
         self.run_started = recovery is not None
-        self.provenance = (
-            normalize_run_provenance(recovery["provenance"])
-            if recovery
-            else dispatch_control._run_provenance(self.call)
-        )
-        self.checkpoint = deepcopy(recovery["recovery_checkpoint"]) if recovery else {}
-        self.run = Run.from_checkpoint(self.checkpoint) if recovery else Run()
+        if recovery is None:
+            self.started_at = dt_util.utcnow().isoformat()
+            self.provenance = dispatch_control._run_provenance(self.call)
+            self.checkpoint = RecoveryCheckpoint.parse({})
+            self.run = Run()
+        else:
+            assert recovery.checkpoint is not None
+            assert recovery.started_at is not None
+            self.started_at = recovery.started_at
+            self.provenance = recovery.provenance
+            self.checkpoint = recovery.checkpoint
+            self.run = Run.from_checkpoint(self.checkpoint)
         self.outer_command = dispatch_control._guard_native_commands(
             self.managed_user_command,
             manager,
@@ -161,10 +163,10 @@ class _PlanRun:
     async def advance(self, event: RunEvent) -> CheckpointWrite:
         """Move the run and apply its write to the durable checkpoint."""
         self.run, write = transition(self.run, event)
-        write.apply(self.checkpoint)
+        self.checkpoint = write.applied(self.checkpoint)
         if write.save:
             await self.manager.recovery.async_set_recovery_checkpoint(
-                self.serial_number, self.run_id, self.checkpoint
+                self.serial_number, self.run_id, self.checkpoint.stored()
             )
         return write
 
@@ -217,18 +219,16 @@ class _PlanRun:
         )
         self.validate_new_run()
         checkpoint = self.checkpoint
-        if checkpoint.get("stop_intent") == "after_room":
+        if checkpoint.stop_intent == "after_room":
             self.finish_room_event.set()
         recovered = self.recovery is not None
-        entries = checkpoint.get("entries") if recovered else run_entries(self.entries)
+        entries = checkpoint.entries if recovered else run_entries(self.entries)
         self.legs = plan_legs(
             self.rooms,
             entries,
             # A Smart Stop run 0.5 started ran each room as its own mission;
             # a recovered one keeps that grouping.
-            single_room_missions=(
-                recovered and checkpoint.get("single_room_missions") is True
-            ),
+            single_room_missions=recovered and checkpoint.single_room_missions,
         )
         if not recovered:
             self.run_started = True
@@ -291,7 +291,7 @@ class _PlanRun:
         self, entries: list[dict[str, str]] | None
     ) -> None:
         """Store what restart recovery needs to resume a new run."""
-        self.checkpoint = {
+        checkpoint = {
             "version": 1,
             "mixed_settings": True,
             # A Smart Stop now ends the mission after its current room
@@ -306,13 +306,14 @@ class _PlanRun:
             "finish_current_room_threshold": self.finish_current_room_threshold,
         }
         if entries is not None:
-            self.checkpoint["entries"] = entries
+            checkpoint["entries"] = entries
         if self.cadence_by_room is not None:
-            self.checkpoint["cadence_by_room"] = deepcopy(
+            checkpoint["cadence_by_room"] = deepcopy(
                 {key: dict(value) for key, value in self.cadence_by_room.items()}
             )
+        self.checkpoint = RecoveryCheckpoint.parse(checkpoint)
         await self.manager.recovery.async_set_recovery_checkpoint(
-            self.serial_number, self.run_id, self.checkpoint
+            self.serial_number, self.run_id, checkpoint
         )
 
     async def async_run_legs(self) -> None:
@@ -344,7 +345,7 @@ class _PlanRun:
                 # treating the prior verifying leg as the only recoverable work.
                 revision = await self.robot.handoff_revision()
                 handoff_keys = await self.robot.history_keys(
-                    handoff=True, session_hash=self.checkpoint.get("session_hash")
+                    handoff=True, session_hash=self.checkpoint.session_hash
                 )
                 await self.advance(LegVerified(index + 1, handoff_keys, revision))
 
@@ -354,13 +355,13 @@ class _PlanRun:
         A room leg starts while the robot returns when it can; otherwise
         the robot must settle before the next dispatch.
         """
-        handoff_history = self.checkpoint.get("handoff_history")
-        if not isinstance(handoff_history, list):
+        handoff_history = self.checkpoint.handoff_history
+        if handoff_history is None:
             # No durable evidence boundary means we cannot prove that an
             # intervening native mission did not complete.
             return None
         history = frozenset(handoff_history)
-        revision = self.checkpoint.get("handoff_revision")
+        revision = self.checkpoint.handoff_revision
         await self.advance(HandoffEntered(index))
         if self.finish_room_event.is_set():
             return None
@@ -437,7 +438,9 @@ class _PlanRun:
         self.native_identity = b""
         if revision is None:
             revision = await self.robot.handoff_revision()
-            self.checkpoint["handoff_revision"] = revision
+            self.checkpoint = CheckpointWrite(
+                {"handoff_revision": revision}, save=False
+            ).applied(self.checkpoint)
         if self.finish_room_event.is_set():
             # Honor a graceful finish request before dispatching a new
             # settings-boundary leg.
@@ -787,7 +790,7 @@ async def async_finish_plan_run(
             entity_id=entity_id,
             context=context,
         )
-        run = manager.ledger.run_record(serial_number, started["run_id"])
+        run = manager.repository.run_record(serial_number, started["run_id"])
         if run is not None:
             stored = run.published()
             end.update({key: stored[key] for key in _STORED_END if key in stored})
@@ -821,7 +824,7 @@ async def _async_execute_rooms(
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
     mapped_room_names: tuple[str, ...] = (),
     floor_is_current: Callable[[], bool] | None = None,
-    recovery: dict[str, Any] | None = None,
+    recovery: LastRun | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
     validate_prepared_run: Callable[[], None] | None = None,
@@ -847,25 +850,17 @@ async def _async_execute_rooms(
         raise managed_run.validation_error(
             "A managed Matic cleaning plan is already running", "plan_already_running"
         )
-    run_id = str(recovery["run_id"]) if recovery else uuid4().hex
-    saved = recovery.get("recovery_checkpoint") if recovery else None
-    saved = saved if isinstance(saved, Mapping) else {}
-    threshold = saved.get("finish_current_room_threshold")
+    run_id = recovery.run_id if recovery else uuid4().hex
+    saved = recovery.checkpoint if recovery else None
     manager.cadence.reserve_prepared_run(
         serial_number,
         str(call.data["plan_id"]),
         run_id,
         (room.room_id for room in rooms),
         cadence_by_room,
-        finish_current_room=(
-            saved["finish_current_room"]
-            if isinstance(saved.get("finish_current_room"), bool)
-            else None
-        ),
+        finish_current_room=saved.finish_current_room if saved else None,
         finish_current_room_threshold=(
-            threshold
-            if isinstance(threshold, int) and not isinstance(threshold, bool)
-            else None
+            saved.finish_current_room_threshold if saved else None
         ),
     )
     try:

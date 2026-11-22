@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from custom_components.matic_robot.plan_records import LastRun, RecoveryCheckpoint
 from custom_components.matic_robot.run_machine import (
     AreaFinished,
     CheckpointWrite,
@@ -159,16 +160,18 @@ def test_a_verified_leg_hands_off_to_the_next(history, stored, revision) -> None
 
 def test_a_run_resumes_from_its_checkpoint() -> None:
     assert Run.from_checkpoint(
-        {
-            "phase": "verifying",
-            "leg_index": 2,
-            "completed_room_ids": ["a"],
-            "finished_area_legs": [1],
-        }
+        RecoveryCheckpoint.parse(
+            {
+                "phase": "verifying",
+                "leg_index": 2,
+                "completed_room_ids": ["a"],
+                "finished_area_legs": [1],
+            }
+        )
     ) == Run(RunPhase.VERIFYING, 2, frozenset({"a"}), frozenset({1}))
-    assert Run.from_checkpoint({"phase": "handoff", "leg_index": 1}) == Run(
-        RunPhase.HANDOFF, 1
-    )
+    assert Run.from_checkpoint(
+        RecoveryCheckpoint.parse({"phase": "handoff", "leg_index": 1})
+    ) == Run(RunPhase.HANDOFF, 1)
 
 
 ROOMS = [
@@ -199,6 +202,8 @@ def _stored(phase: str, leg_index: int = 0, **changes) -> dict:
         **changes,
     }
     return {
+        "run_id": "run",
+        "plan_id": "plan",
         "room_count": 2,
         "completed_room_count": leg_index,
         "recovery_checkpoint": checkpoint,
@@ -237,7 +242,7 @@ def _stored(phase: str, leg_index: int = 0, **changes) -> dict:
 )
 def test_a_restarted_run_resumes_only_from_a_resumable_phase(record, resumed) -> None:
     """Only an accepted, verifying, handoff or mixed dispatch can go on."""
-    assert transition(Run(), Restarted(record)) == (
+    assert transition(Run(), Restarted(LastRun.parse(record))) == (
         resumed,
         CheckpointWrite({}, save=False),
     )
@@ -269,7 +274,7 @@ def test_a_restarted_run_resumes_only_from_a_resumable_phase(record, resumed) ->
     ],
 )
 def test_a_restarted_run_ends_when_its_checkpoint_cannot_go_on(record, reason) -> None:
-    run, _ = transition(Run(), Restarted(record))
+    run, _ = transition(Run(), Restarted(LastRun.parse(record)))
     assert run.ended == ("restart_checkpoint_unverified" if reason == "un" else reason)
 
 
@@ -277,8 +282,8 @@ def test_a_restarted_run_rejects_an_unreadable_record() -> None:
     """A malformed record raises, and recovery ends the run as unavailable."""
     record = _stored("accepted")
     del record["recovery_checkpoint"]["dispatched_at"]
-    with pytest.raises(KeyError):
-        transition(Run(), Restarted(record))
+    with pytest.raises(TypeError):
+        transition(Run(), Restarted(LastRun.parse(record)))
 
 
 def test_a_settled_room_is_saved_with_the_next_position() -> None:

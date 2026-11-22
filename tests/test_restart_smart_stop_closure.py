@@ -7,6 +7,7 @@ import pytest
 
 from custom_components.matic_robot import restart
 from custom_components.matic_robot.plan_model import CleaningRoom
+from custom_components.matic_robot.plan_records import LastRun, RecoveryCheckpoint
 from custom_components.matic_robot.run_machine import RunPhase
 
 
@@ -15,10 +16,10 @@ def _entry(cancellation: str | None, stop_pending: bool) -> SimpleNamespace:
         cancellation_reason=lambda _serial: cancellation,
         stop_pending=lambda _serial: stop_pending,
     )
-    ledger = SimpleNamespace(run_record=lambda _serial, _run_id: None)
+    repository = SimpleNamespace(run_record=lambda _serial, _run_id: None)
     return SimpleNamespace(
         runtime_data=SimpleNamespace(
-            cleaning_plans=SimpleNamespace(control=control, ledger=ledger)
+            cleaning_plans=SimpleNamespace(control=control, repository=repository)
         )
     )
 
@@ -49,8 +50,13 @@ async def test_recovered_smart_stop_closes_at_the_dock_only_when_unclaimed(
             hass,
             _entry(cancellation, stop_pending),
             "serial",
-            {"run_id": "run-1"},
-            checkpoint,
+            LastRun.parse(
+                {
+                    "run_id": "run-1",
+                    "plan_id": "plan",
+                    "recovery_checkpoint": checkpoint,
+                }
+            ),
             "restart_remaining_queue_unverified",
         )
 
@@ -68,8 +74,10 @@ def test_recovery_withholds_owner_skips_and_unstarted_smart_stop_rooms(
     """Owner skips always count; rooms never started count only on a Smart Stop."""
     rooms = [CleaningRoom(room, room, "vacuum", "standard") for room in "abc"]
     recovery = SimpleNamespace(
-        run={"run_id": "run-1"},
-        checkpoint={"stop_intent": stop_intent, "started_room_ids": ["b"]},
+        run=LastRun.parse({"run_id": "run-1", "plan_id": "plan"}),
+        checkpoint=RecoveryCheckpoint.parse(
+            {"stop_intent": stop_intent, "started_room_ids": ["b"]}
+        ),
         serial_number="serial",
         manager=SimpleNamespace(
             ledger=SimpleNamespace(skipped_room_ids=lambda _serial, _run_id: {"a"})

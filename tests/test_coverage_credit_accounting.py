@@ -38,7 +38,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.client.test_coverage_receipts import history_key
-from tests.plans.fakes import memory_manager
+from tests.plans.fakes import memory_manager, recovery_record
 
 SESSION = UUID(int=72)
 ROOM_ID = "room-a"
@@ -348,9 +348,7 @@ async def test_mixed_dispatch_receipt_binds_only_its_vacuum_rooms(hass):
         room_ids=[ROOM_ID, "room-b"],
         session_id=SESSION,
     )
-    stored = manager.recovery.recovery_run("serial")["recovery_checkpoint"][
-        "coverage_evidence"
-    ]
+    stored = recovery_record(manager)["recovery_checkpoint"]["coverage_evidence"]
     assert stored["room_regions"] == {ROOM_ID: REGION_HASH}
     assert manager.recovery.coverage_receipt("serial", "run-1") == receipt
 

@@ -13,7 +13,13 @@ from homeassistant.exceptions import ServiceValidationError
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
 
 from .hermes_sim import Phase, SimulatedRobot
-from .plan_run import VACUUM, PlanRun, expect_finished, firmware_snapshot_saved
+from .plan_run import (
+    VACUUM,
+    PlanRun,
+    expect_finished,
+    firmware_snapshot_saved,
+    recovery_record,
+)
 
 ROOMS = {ATTR_ENTITY_ID: VACUUM, "rooms": [{"room": "Kitchen"}, {"room": "Study"}]}
 
@@ -82,7 +88,7 @@ async def test_unload_stops_a_background_run_and_restart_recovers_it(
     assert plans.control.actor(serial).run_task is None
     assert not plans.control.lock(serial).locked()
     # Home Assistant kept the run for recovery, as for an awaited run.
-    assert plans.recovery.recovery_run(serial)["run_id"] == run_id
+    assert recovery_record(plans, serial)["run_id"] == run_id
     assert await hass.config_entries.async_setup(plan.entry.entry_id)
     assert len(plan.coverage_commands()) == 1
 
@@ -115,7 +121,7 @@ async def test_a_run_the_robot_has_outlives_its_cancelled_caller(
     async with asyncio.timeout(10):
         # The robot has the run once its dispatch is saved.
         while "session_hash" not in (
-            (plans.recovery.recovery_run(serial) or {}).get("recovery_checkpoint", {})
+            (recovery_record(plans, serial) or {}).get("recovery_checkpoint", {})
         ):
             await plan.poll()
     await plan.poll()

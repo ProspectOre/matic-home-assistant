@@ -27,7 +27,7 @@ from .hermes_sim import (
     Phase,
     SimulatedRobot,
 )
-from .plan_run import PlanRun, active_plan, expect_finished
+from .plan_run import PlanRun, active_plan, expect_finished, recovery_record
 
 
 async def test_all_rooms_verify_from_native_history(
@@ -219,7 +219,7 @@ async def test_restart_resumes_a_tracked_run_by_its_own_session(
     robot.finish_room()
     await plan.poll()
     plans = plan.entry.runtime_data.cleaning_plans
-    run = plans.recovery.recovery_run(robot.serial_number)
+    run = recovery_record(plans, robot.serial_number)
     assert run is not None and robot.session is not None
     checkpoint = run["recovery_checkpoint"]
     assert checkpoint["phase"] == "accepted"

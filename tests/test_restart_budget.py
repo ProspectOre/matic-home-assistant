@@ -19,6 +19,7 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
+from tests.plans.fakes import recovery_record
 from tests.session_fakes import FakeRobot, direct_state
 from tests.wire_builders import _session_identity
 
@@ -208,9 +209,7 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
             await async_recover_managed_run(hass, entry, "serial")
     resume.assert_awaited_once()
     assert (
-        manager.recovery.recovery_run("serial")["recovery_checkpoint"][
-            "completion_deadline"
-        ]
+        recovery_record(manager)["recovery_checkpoint"]["completion_deadline"]
         == deadline
     )
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
