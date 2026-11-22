@@ -33,11 +33,11 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
+    PreparedRoomDispatch,
     RoomRunOutcome,
-    _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import (
     CleaningRoom,
@@ -274,22 +274,22 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
     robot.show("returning")
     verifier = AsyncMock(return_value=True)
     dispatched_at = dt_util.utcnow() - timedelta(seconds=60)
-    dispatch = _PreparedRoomDispatch((room,), frozenset(), dispatched_at)
+    dispatch = PreparedRoomDispatch((room,), frozenset(), dispatched_at)
     checkpoint_dispatch = await _dispatch_callback(
         manager, floor, (room,), receipt, "executor-run"
     )
 
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
-        completed = await _async_run_leg(
+        completed = await async_run_room_leg(
             hass,
             _call(hass),
             manager,
@@ -361,15 +361,15 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
     verifier = AsyncMock(return_value=True)
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
-        completed = await _async_run_leg(
+        completed = await async_run_room_leg(
             hass,
             _call(hass),
             manager,
@@ -383,7 +383,7 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
                 session_identity=robot.accepting,
             ),
             manager.control.begin_managed_motion("serial"),
-            prepared_dispatch=_PreparedRoomDispatch(
+            prepared_dispatch=PreparedRoomDispatch(
                 (room,), frozenset(), dt_util.utcnow() - timedelta(seconds=60)
             ),
             floor_is_current=lambda: True,
@@ -425,7 +425,7 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
     async def return_from_leg(*_args, **_kwargs):
         return (RoomRunOutcome.HANDOFF_CANDIDATE, None)
 
-    verify_history = managed_observation_module._async_verify_leg_completion
+    verify_history = managed_observation_module.async_verify_leg_completion
 
     async def verify_once(reader, baseline, rooms, dispatched_at, **kwargs):
         return await verify_history(
@@ -434,16 +434,16 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
 
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch.object(
             managed_observation_module,
-            "_async_verify_leg_completion",
+            "async_verify_leg_completion",
             side_effect=verify_once,
         ),
     ):
-        completed = await _async_run_leg(
+        completed = await async_run_room_leg(
             hass,
             _call(hass),
             manager,
@@ -457,7 +457,7 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
                 session_identity=robot.accepting,
             ),
             manager.control.begin_managed_motion("serial"),
-            prepared_dispatch=_PreparedRoomDispatch(
+            prepared_dispatch=PreparedRoomDispatch(
                 ROOMS, frozenset(), dt_util.utcnow() - timedelta(seconds=60)
             ),
             floor_is_current=lambda: True,
@@ -528,7 +528,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
         manager, floor, rooms, receipt, run_id
     )
     robot.show("returning")
-    room_verifier = managed_observation_module._async_verify_leg_completion
+    room_verifier = managed_observation_module.async_verify_leg_completion
 
     async def verify_leg_once(reader, baseline, verify_rooms, when, **kwargs):
         return await room_verifier(
@@ -537,14 +537,14 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
 
     overrides = [
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
             AsyncMock(return_value=RobotActivity.CLEANING),
         )
     ]
     if path == "room":
         overrides.append(
             patch(
-                "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+                "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
                 AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
             )
         )
@@ -552,14 +552,14 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
         overrides.append(
             patch.object(
                 managed_observation_module,
-                "_async_verify_leg_completion",
+                "async_verify_leg_completion",
                 side_effect=verify_leg_once,
             )
         )
     try:
         with overrides[0], overrides[1]:
             if path == "room":
-                await _async_run_leg(
+                await async_run_room_leg(
                     hass,
                     _call(hass),
                     manager,
@@ -574,7 +574,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
                     ),
                     motion_token,
                     cancel_event=cancel_event,
-                    prepared_dispatch=_PreparedRoomDispatch(
+                    prepared_dispatch=PreparedRoomDispatch(
                         rooms, frozenset(), dispatched_at
                     ),
                     floor_is_current=lambda: current_floor,
@@ -584,7 +584,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
                     advance=run_step,
                 )
             else:
-                await _async_run_leg(
+                await async_run_room_leg(
                     hass,
                     _call(hass),
                     manager,
@@ -599,7 +599,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
                     ),
                     motion_token,
                     cancel_event=cancel_event,
-                    prepared_dispatch=_PreparedRoomDispatch(
+                    prepared_dispatch=PreparedRoomDispatch(
                         rooms, frozenset(), dispatched_at
                     ),
                     floor_is_current=lambda: current_floor,
@@ -651,15 +651,15 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
     async def execute_room():
         with (
             patch(
-                "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+                "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
                 AsyncMock(return_value=RobotActivity.CLEANING),
             ),
             patch(
-                "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+                "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
                 AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
             ),
         ):
-            return await _async_run_leg(
+            return await async_run_room_leg(
                 hass,
                 _call(hass),
                 manager,
@@ -673,7 +673,7 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
                     session_identity=robot.accepting,
                 ),
                 7,
-                prepared_dispatch=_PreparedRoomDispatch(
+                prepared_dispatch=PreparedRoomDispatch(
                     (room,), frozenset(), dispatch_time
                 ),
                 floor_is_current=lambda: floor_is_current,

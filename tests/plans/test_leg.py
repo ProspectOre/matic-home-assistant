@@ -18,13 +18,13 @@ from custom_components.matic_robot.client.models import (
     RobotActivity,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_dispatch import _async_dispatch_leg_command
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_dispatch import async_dispatch_leg_command
+from custom_components.matic_robot.managed_executor import async_execute_rooms
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
+    PreparedRoomDispatch,
     RoomRunOutcome,
-    _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.robot_commands import CleanRooms
@@ -47,7 +47,7 @@ async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
     robot = FakeRobot()
     rooms = [plan_room("Kitchen", "room-kitchen"), plan_room("Office", "room-office")]
 
-    dispatch = await _async_dispatch_leg_command(
+    dispatch = await async_dispatch_leg_command(
         robot.port(session_identity=robot.accepting), rooms, 7, floor_token="a" * 64
     )
 
@@ -66,7 +66,7 @@ async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
 async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
     robot = FakeRobot()
 
-    dispatch = await _async_dispatch_leg_command(
+    dispatch = await async_dispatch_leg_command(
         robot.port(session_identity=robot.accepting),
         [plan_room("Kitchen", "room-kitchen")],
         7,
@@ -89,7 +89,7 @@ async def test_leg_dispatch_allows_stale_completed_identity(hass) -> None:
 
     robot.on_start = accept
 
-    dispatch = await _async_dispatch_leg_command(
+    dispatch = await async_dispatch_leg_command(
         robot.port(session_identity=identity),
         [plan_room("Dining Room", "room-dining")],
         7,
@@ -146,11 +146,11 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             leg_outcome,
         ),
     ):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -189,7 +189,7 @@ async def test_partial_mixed_dispatch_preserves_its_transmitted_stop(hass) -> No
         CleaningRoom("room-office", "Office", "mop", "optimal"),
     ]
     with pytest.raises(HomeAssistantError):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -223,10 +223,10 @@ async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) ->
 
     confirmed: list[str] = []
     recorded: list[str] = []
-    prepared = _PreparedRoomDispatch(
+    prepared = PreparedRoomDispatch(
         tuple(rooms), frozenset(), dt_util.utcnow() - timedelta(seconds=1)
     )
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -250,7 +250,7 @@ async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) ->
     assert recorded == ["room-kitchen", "room-office"]
 
     with pytest.raises(ValueError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             leg_manager(),
@@ -259,7 +259,7 @@ async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) ->
             rooms,
             robot.port(session_identity=robot.accepting),
             7,
-            prepared_dispatch=_PreparedRoomDispatch(
+            prepared_dispatch=PreparedRoomDispatch(
                 (rooms[0],), frozenset(), dt_util.utcnow()
             ),
             floor_token="floor",
@@ -276,7 +276,7 @@ async def test_leg_start_timeout_marks_failure_and_stops(hass) -> None:
     sender = AsyncMock()
 
     with pytest.raises(ServiceValidationError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass, start_timeout=0),
             manager,
@@ -332,7 +332,7 @@ async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
             ),
         )
 
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -393,7 +393,7 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
             ),
         )
 
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,
@@ -427,7 +427,7 @@ async def test_leg_completion_timeout_fails(hass) -> None:
     robot.on_start = send_command
 
     with pytest.raises(ServiceValidationError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass, completion_timeout=0),
             manager,
@@ -457,7 +457,7 @@ async def test_leg_matic_error_dispatch_fails(hass) -> None:
     robot.on_start = send_command
 
     with pytest.raises(ServiceValidationError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -484,7 +484,7 @@ async def test_leg_replaced_dispatch_cancels(hass) -> None:
     robot.on_start = send_command
 
     with pytest.raises(PlanCancelledError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -521,7 +521,7 @@ async def test_leg_cancellation_records_history(hass, reason: str | None) -> Non
     robot.on_start = send_command
 
     with pytest.raises(PlanCancelledError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -571,7 +571,7 @@ async def test_leg_error_state_raises_robot_error(hass) -> None:
     robot.on_start = send_command
 
     with pytest.raises(ServiceValidationError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -600,7 +600,7 @@ async def test_leg_takeover_during_verification_interrupts(hass) -> None:
     manager.ledger.async_mark_verifying = AsyncMock(side_effect=takeover)
 
     with pytest.raises(ServiceValidationError):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -626,7 +626,7 @@ async def test_leg_without_history_reader_credits_nothing(hass) -> None:
 
     robot.on_start = kitchen_leg_ends(hass, robot)
 
-    completed = await _async_run_leg(
+    completed = await async_run_room_leg(
         hass,
         run_plan_call(hass),
         manager,

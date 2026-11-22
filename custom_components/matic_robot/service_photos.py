@@ -75,7 +75,7 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
         """Run the tour's stops with every selected robot in turn."""
         stops = [TourStop(**stop) for stop in call.data["stops"]]
         entries = [
-            context._entry_for_entity(hass, entity_id) for entity_id in entity_ids
+            context.entry_for_entity(hass, entity_id) for entity_id in entity_ids
         ]
         report = call.data["report_failures"]
         # Viewpoints are per robot: refuse a stop any robot lacks before one moves.
@@ -124,7 +124,7 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
     ) -> ServiceResponse:
         """Save a viewpoint from the given spot, or where the robot stands."""
         entity_id = _one_robot(entity_ids)
-        entry = context._entry_for_entity(hass, entity_id)
+        entry = context.entry_for_entity(hass, entity_id)
         floor_plan = current_floor_plan(entry)
         if "x" in call.data:
             x, y = call.data["x"], call.data["y"]
@@ -165,7 +165,7 @@ def register_photo_services(runtime: ServiceRuntime) -> None:
 
     async def async_delete_viewpoint(call: ServiceCall, entity_ids: list[str]) -> None:
         """Delete a viewpoint from the selected robot."""
-        entry = context._entry_for_entity(hass, _one_robot(entity_ids))
+        entry = context.entry_for_entity(hass, _one_robot(entity_ids))
         await entry.runtime_data.viewpoints.async_delete(call.data["viewpoint"])
 
     register_robot_action(

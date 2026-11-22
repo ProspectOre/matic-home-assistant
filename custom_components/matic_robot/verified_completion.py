@@ -20,7 +20,7 @@ from homeassistant.util import dt as dt_util
 from . import daily_room_limit
 from .cadence_accounting import apply_verified_cadence
 from .plan_model import CleaningRoom, stored_count
-from .plan_timing import _record_duration_sample
+from .plan_timing import record_duration_sample
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +77,7 @@ def record_verified_completion(
     )
     duration = completion.duration_seconds
     if duration is not None:
-        _record_duration_sample(
+        record_duration_sample(
             rotation_record, completion.settings, duration, completion.completed_at
         )
     rotation_record["last_completed"] = completion.completed_at

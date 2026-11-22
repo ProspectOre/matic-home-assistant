@@ -15,7 +15,7 @@ from custom_components.matic_robot.client.models import (
     FloorPlan,
     Room,
 )
-from custom_components.matic_robot.plan_timing import _latest_timestamp
+from custom_components.matic_robot.plan_timing import latest_timestamp
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import memory_manager, plan_room, rotation_order
 
@@ -573,7 +573,7 @@ def test_latest_rotation_timestamp_rejects_untrusted_values() -> None:
     now = dt_util.parse_datetime("2026-01-03T00:00:00+00:00")
     assert now is not None
     assert (
-        _latest_timestamp(
+        latest_timestamp(
             None,
             123,
             "invalid",
@@ -584,7 +584,7 @@ def test_latest_rotation_timestamp_rejects_untrusted_values() -> None:
         is None
     )
     assert (
-        _latest_timestamp(
+        latest_timestamp(
             "2026-01-01T00:00:00+00:00",
             "2026-01-02T00:00:00+00:00",
             now=now,
@@ -598,7 +598,7 @@ def test_latest_rotation_timestamp_rejects_untrusted_values() -> None:
         "custom_components.matic_robot.plans.dt_util.parse_datetime",
         return_value=invalid_datetime,
     ):
-        assert _latest_timestamp("synthetic", now=now) is None
+        assert latest_timestamp("synthetic", now=now) is None
 
 
 async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> None:

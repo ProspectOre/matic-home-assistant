@@ -30,15 +30,15 @@ from .plan_model import (
     PlanDisabledError,
     PlanRoomMissingError,
     PlanRoomsHeldError,
-    _rotation_details,
-    _rotation_sort_key,
-    _RotationCandidate,
+    RotationCandidate,
     missing_plan_rooms,
     plan_area_fingerprint,
     plan_entries,
     plan_setting,
     resolve_rooms,
     room_cadence_identity,
+    rotation_details,
+    rotation_sort_key,
 )
 from .plan_repository import (
     PlanRepository,
@@ -116,7 +116,7 @@ class ExecutionPlanner:
         )
         candidates = self.rotation_candidates(serial_number, plan["id"], targets)
         if use_intelligent:
-            candidates.sort(key=_rotation_sort_key)
+            candidates.sort(key=rotation_sort_key)
         ordered_targets = [candidate.room for candidate in candidates]
 
         effective, cadence = self.cadence.resolve_cadence(
@@ -157,7 +157,7 @@ class ExecutionPlanner:
                 for target in ordered_targets
             ],
             **({"area_count": area_count} if area_count else {}),
-            "rotation": _rotation_details(candidates, intelligent=use_intelligent),
+            "rotation": rotation_details(candidates, intelligent=use_intelligent),
             "room_count": len(effective),
             **({"held_rooms": held} if held else {}),
             **self._missing_rooms(serial_number, plan, room_map, missing),
@@ -255,17 +255,17 @@ class ExecutionPlanner:
         serial_number: str,
         plan_id: str,
         rooms: Sequence[CleaningRoom | AreaLeg],
-    ) -> list[_RotationCandidate]:
+    ) -> list[RotationCandidate]:
         """Build the shared trusted keys used by ordering and diagnostics."""
         robot = self.repository.robot(serial_number)
         rotation = robot["rotations"].get(plan_id)
         now = dt_util.utcnow()
         reset_values = robot["rotation_resets"]
-        reset_at = plan_timing._latest_timestamp(
+        reset_at = plan_timing.latest_timestamp(
             reset_values.get(plan_id) if isinstance(reset_values, Mapping) else None,
             now=now,
         )
-        candidates: list[_RotationCandidate] = []
+        candidates: list[RotationCandidate] = []
         for index, room in enumerate(rooms):
             is_area = isinstance(room, AreaLeg)
             key = room.area_id if isinstance(room, AreaLeg) else room.room_id
@@ -283,12 +283,12 @@ class ExecutionPlanner:
                     if global_record.get("fingerprint") == room.fingerprint
                     else {}
                 )
-            local_opportunity = plan_timing._latest_timestamp_value(
+            local_opportunity = plan_timing.latest_timestamp_value(
                 record.get("last_opportunity"),
                 record.get("last_completed"),
                 now=now,
             )
-            global_opportunity = plan_timing._latest_timestamp_value(
+            global_opportunity = plan_timing.latest_timestamp_value(
                 global_record.get("last_opportunity"),
                 global_record.get("last_completed"),
                 now=now,
@@ -313,7 +313,7 @@ class ExecutionPlanner:
                 source = "global"
             result_record = global_record if is_area and source == "global" else record
             last_result = result_record.get("last_result")
-            completion_values = plan_timing._latest_timestamp_value(
+            completion_values = plan_timing.latest_timestamp_value(
                 record.get("last_completed"),
                 global_record.get("last_completed"),
                 now=now,
@@ -328,7 +328,7 @@ class ExecutionPlanner:
             if is_area and completion_values is not None:
                 completion_record = (
                     record
-                    if plan_timing._latest_timestamp(
+                    if plan_timing.latest_timestamp(
                         record.get("last_completed"), now=now
                     )
                     == completion_values[0]
@@ -337,7 +337,7 @@ class ExecutionPlanner:
                 if completion_record.get("completion_basis") == "owned_session_ended":
                     completion_basis = "owned_session_ended"
             candidates.append(
-                _RotationCandidate(
+                RotationCandidate(
                     index=index,
                     room=room,
                     effective_timestamp=effective[0] if effective else None,

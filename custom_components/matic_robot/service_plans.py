@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from . import MaticConfigEntry
 
 
-def _validated_area_command(
+def validated_area_command(
     area: dict[str, Any],
     floor_plan: FloorPlan | None,
     cleaning_mode: object,
@@ -87,7 +87,7 @@ def _room_cadence_identities(floor_plan: FloorPlan) -> dict[str, str]:
     }
 
 
-def _plan_cadence_bindings(
+def plan_cadence_bindings(
     entry: MaticConfigEntry,
 ) -> tuple[str | None, dict[str, str]]:
     """Read current map bindings when the typed config entry is available."""
@@ -100,7 +100,7 @@ def _plan_cadence_bindings(
     return plan_floor_token(floor_plan), _room_cadence_identities(floor_plan)
 
 
-def _saved_plan_preview(
+def saved_plan_preview(
     manager: CleaningPlanManager,
     serial_number: str,
     entry: MaticConfigEntry,
@@ -135,7 +135,7 @@ def _saved_plan_preview(
     return floor_plan, preview, token
 
 
-def _plan_occupancy_holds(
+def plan_occupancy_holds(
     hass: HomeAssistant,
     manager: CleaningPlanManager,
     serial_number: str,
@@ -152,7 +152,7 @@ def _plan_occupancy_holds(
     return occupancy_holds(hass, entity_id, plan, room_map)
 
 
-def _saved_plan_execution(
+def saved_plan_execution(
     manager: CleaningPlanManager,
     serial_number: str,
     floor_plan: FloorPlan,
@@ -163,7 +163,7 @@ def _saved_plan_execution(
     plan = manager.catalog.plan(serial_number, str(preview["plan_id"]))
     raw_rooms = preview.get("rooms")
     # A plan of custom areas alone runs with no rooms.
-    if not isinstance(raw_rooms, list) or not (raw_rooms or _preview_has_area(preview)):
+    if not isinstance(raw_rooms, list) or not (raw_rooms or preview_has_area(preview)):
         raise ValueError("plan has no rooms")
     if any(not isinstance(room, Mapping) for room in raw_rooms):
         raise ValueError("plan contains an invalid room")
@@ -184,7 +184,7 @@ def _saved_plan_execution(
     return plan, rooms, cadence_by_room
 
 
-def _preview_has_area(preview: Mapping[str, Any]) -> bool:
+def preview_has_area(preview: Mapping[str, Any]) -> bool:
     """Report whether an authoritative preview includes a custom area."""
     entries = preview.get("entries")
     return isinstance(entries, list) and any(
@@ -192,7 +192,7 @@ def _preview_has_area(preview: Mapping[str, Any]) -> bool:
     )
 
 
-def _unknown_plan_error(err: KeyError) -> ServiceValidationError:
+def unknown_plan_error(err: KeyError) -> ServiceValidationError:
     """Name the plan a catalog lookup did not find."""
     return validation_error(
         f"Unknown Matic cleaning plan: {err.args[0]}",
@@ -201,7 +201,7 @@ def _unknown_plan_error(err: KeyError) -> ServiceValidationError:
     )
 
 
-def _plan_request_error(err: ValueError) -> ServiceValidationError:
+def plan_request_error(err: ValueError) -> ServiceValidationError:
     """Translate a rejected plan or room sequence without exposing its text."""
     if isinstance(err, PlanAreaLimitError):
         return validation_error(
@@ -251,7 +251,7 @@ def _plan_request_error(err: ValueError) -> ServiceValidationError:
     return validation_error("The plan request cannot run", "invalid_plan")
 
 
-def _resolve_saved_plan(
+def resolve_saved_plan(
     manager: CleaningPlanManager, serial_number: str, reference: str
 ) -> dict[str, Any]:
     """Resolve a plan reference and produce a localized action error."""
@@ -265,7 +265,7 @@ def _resolve_saved_plan(
         ) from err
 
 
-def _normalize_saved_room(
+def normalize_saved_room(
     room: dict[str, Any],
     room_map: dict[str, str],
     kept: Mapping[str, Mapping[str, Any]] | None = None,
@@ -280,7 +280,7 @@ def _normalize_saved_room(
     stored = (kept or {}).get(identifier := str(raw["room"]))
     if stored is not None:
         room_map = {**room_map, identifier: identifier}
-    raw["room_id"] = _resolve_room_id(identifier, room_map)
+    raw["room_id"] = resolve_room_id(identifier, room_map)
     resolved = resolve_rooms([raw], room_map)[0]
     normalized = {
         "room_id": resolved.room_id,
@@ -318,7 +318,7 @@ def _same_room_settings(room: Mapping[str, Any], stored: Mapping[str, Any]) -> b
         return False
 
 
-def _normalize_saved_area(
+def normalize_saved_area(
     manager: CleaningPlanManager,
     serial_number: str,
     entry: MaticConfigEntry,
@@ -333,7 +333,7 @@ def _normalize_saved_area(
             "unknown_area",
             {"area": str(item["area"])},
         ) from err
-    _floor_plan, _circles, mode, coverage = _validated_area_command(
+    _floor_plan, _circles, mode, coverage = validated_area_command(
         area,
         _current_floor_plan(entry),
         item.get("cleaning_mode"),
@@ -347,7 +347,7 @@ def _normalize_saved_area(
     }
 
 
-def _resolve_room_id(identifier: str, room_map: Mapping[str, str]) -> str:
+def resolve_room_id(identifier: str, room_map: Mapping[str, str]) -> str:
     """Resolve one live room ID or unambiguous display name."""
     try:
         room_id, _room_name = resolve_room_reference(identifier, room_map)

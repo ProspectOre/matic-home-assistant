@@ -14,7 +14,7 @@ from .wire import (
 
 _TELEMETRY_TEXT_MAX_BYTES = 512
 TELEMETRY_NESTED_MAX_BYTES = 64 * 1024
-_TELEMETRY_NESTED_MAX_FIELDS = 256
+TELEMETRY_NESTED_MAX_FIELDS = 256
 
 
 def bounded_fields(
@@ -39,7 +39,7 @@ def telemetry_fields(payload: bytes) -> tuple[WireField, ...]:
     return bounded_fields(
         payload,
         max_bytes=TELEMETRY_NESTED_MAX_BYTES,
-        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+        max_fields=TELEMETRY_NESTED_MAX_FIELDS,
     )
 
 
@@ -48,7 +48,7 @@ def telemetry_bytes(
     number: int,
     *,
     max_bytes: int = TELEMETRY_NESTED_MAX_BYTES,
-    max_fields: int = _TELEMETRY_NESTED_MAX_FIELDS,
+    max_fields: int = TELEMETRY_NESTED_MAX_FIELDS,
 ) -> bytes:
     """Read a required bytes field after enforcing its message budgets."""
     values = field_bytes(
@@ -64,7 +64,7 @@ def telemetry_varint(
     number: int,
     *,
     max_bytes: int = TELEMETRY_NESTED_MAX_BYTES,
-    max_fields: int = _TELEMETRY_NESTED_MAX_FIELDS,
+    max_fields: int = TELEMETRY_NESTED_MAX_FIELDS,
 ) -> int:
     """Read a required varint after enforcing its message budgets."""
     return field_varint(

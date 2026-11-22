@@ -19,11 +19,11 @@ from .client import (
     MaticError,
 )
 from .llm_common import (
-    _READ_ONLY,
-    _ROBOT_FIELD,
-    _entry_name,
-    _error,
-    _MaticTool,
+    READ_ONLY,
+    ROBOT_FIELD,
+    MaticTool,
+    entry_name,
+    tool_error,
 )
 from .run_history import MAX_HISTORY_ROOMS
 from .slam_run_history_view import RUNS_NATIVE_READ_SECONDS
@@ -50,7 +50,7 @@ _ACTIVITY_FIELDS = (
 )
 
 
-class MaticGetNativeHistoryTool(_MaticTool):
+class MaticGetNativeHistoryTool(MaticTool):
     """Return bounded cleaning records the robot keeps."""
 
     name = "MaticGetNativeHistory"
@@ -61,10 +61,10 @@ class MaticGetNativeHistoryTool(_MaticTool):
         "`cleaning_mode` to judge a vacuum-only, mop-only or vacuum-and-mop run "
         "correctly."
     )
-    annotations = _READ_ONLY
+    annotations = READ_ONLY
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Optional("limit", default=5): probatio.All(
                 probatio.Coerce(int),
                 probatio.Range(min=1, max=MAX_NATIVE_HISTORY_RESULTS),
@@ -88,7 +88,7 @@ class MaticGetNativeHistoryTool(_MaticTool):
                 await entry.runtime_data.client.async_get_cleaning_session_records()
             )
         except MaticError as err:
-            raise _error("llm_history_unavailable") from err
+            raise tool_error("llm_history_unavailable") from err
         ordered = sorted(
             records,
             key=lambda item: item.session.ended_at or item.session.started_at or "",
@@ -126,7 +126,7 @@ class MaticGetNativeHistoryTool(_MaticTool):
         return llm.ToolResult(
             data={
                 "read_only": True,
-                "robot": _entry_name(entry),
+                "robot": entry_name(entry),
                 "completion_authority": (
                     "With cleaning_mode, room completed and duration_seconds apply "
                     "to that completion_scope. Without it, per-mode records "
@@ -202,7 +202,7 @@ def _bounded_native_room_evidence(
     return evidence, remaining_items, remaining_bytes, len(ordered_rooms)
 
 
-class MaticGetActivityTool(_MaticTool):
+class MaticGetActivityTool(MaticTool):
     """Read the robot's bounded command record without a network request."""
 
     name = "MaticGetActivity"
@@ -213,10 +213,10 @@ class MaticGetActivityTool(_MaticTool):
         "it to find who asked the robot to stop or dock; the Matic app, buttons "
         "on the robot and the robot's own actions are not recorded here."
     )
-    annotations = _READ_ONLY
+    annotations = READ_ONLY
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Optional("kind", default="commands"): probatio.In(
                 ("all", "commands", "states", "stream")
             ),
@@ -247,9 +247,9 @@ class MaticGetActivityTool(_MaticTool):
         first, last = observations[0], observations[-1]
         session = last["observation_session"]
         if "before_sequence" in args and "observation_session" not in args:
-            raise _error("llm_activity_session_required")
+            raise tool_error("llm_activity_session_required")
         if args.get("observation_session", session) != session:
-            raise _error("llm_activity_restarted")
+            raise tool_error("llm_activity_restarted")
         kind = args["kind"]
         prefixes = {
             "commands": "command_",
@@ -273,7 +273,7 @@ class MaticGetActivityTool(_MaticTool):
                 JsonObjectType,
                 {
                     "read_only": True,
-                    "robot": _entry_name(entry),
+                    "robot": entry_name(entry),
                     "retention": (
                         "current integration load; oldest observations evicted"
                     ),
@@ -320,7 +320,7 @@ def _activity_observation(item: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-class MaticGetRunHistoryTool(_MaticTool):
+class MaticGetRunHistoryTool(MaticTool):
     """Return recent runs and why each Home Assistant run ended."""
 
     name = "MaticGetRunHistory"
@@ -331,10 +331,10 @@ class MaticGetRunHistoryTool(_MaticTool):
         "in the Matic app or by a robot schedule come from the robot's history. "
         "Use it to answer why the last clean stopped."
     )
-    annotations = _READ_ONLY
+    annotations = READ_ONLY
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Optional("limit", default=5): probatio.All(
                 probatio.Coerce(int),
                 probatio.Range(min=1, max=MAX_RUN_HISTORY_RESULTS),
@@ -364,7 +364,7 @@ class MaticGetRunHistoryTool(_MaticTool):
         return llm.ToolResult(
             data={
                 "read_only": True,
-                "robot": _entry_name(entry),
+                "robot": entry_name(entry),
                 "robot_history": robot_history,
                 "ending_meaning": (
                     "finished: the run ended normally; outcome and room results "

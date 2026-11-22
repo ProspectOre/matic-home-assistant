@@ -52,7 +52,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
     hass.services.async_register(
         DOMAIN,
         "firmware_investigator",
-        context._require_matic_admin(
+        context.require_matic_admin(
             hass, partial(_async_firmware_investigator, hass, firmware_tracker)
         ),
         schema=cv.make_entity_service_schema(
@@ -66,7 +66,7 @@ def register_firmware_services(runtime: ServiceRuntime) -> None:
     hass.services.async_register(
         DOMAIN,
         "firmware_notification",
-        context._require_matic_control(
+        context.require_matic_control(
             hass,
             partial(_async_firmware_notification, hass, firmware_tracker),
             allow_unavailable=True,
@@ -141,7 +141,7 @@ async def _async_firmware_notification(
 
 
 def _firmware_entry(hass: HomeAssistant, call: ServiceCall) -> MaticConfigEntry:
-    entity_ids = context._resolve_loaded_matic_vacuums(
+    entity_ids = context.resolve_loaded_matic_vacuums(
         hass, call.data, require_available=False
     )
     if len(entity_ids) != 1:
@@ -149,7 +149,7 @@ def _firmware_entry(hass: HomeAssistant, call: ServiceCall) -> MaticConfigEntry:
             "Firmware actions require exactly one Matic robot",
             "single_robot_required",
         )
-    return context._entry_for_entity(hass, entity_ids[0])
+    return context.entry_for_entity(hass, entity_ids[0])
 
 
 async def _async_inspect_endpoint(
@@ -161,7 +161,7 @@ async def _async_inspect_endpoint(
             "Hermes endpoint inspection requires exactly one Matic robot",
             "single_robot_required",
         )
-    entry = context._entry_for_entity(hass, entity_ids[0])
+    entry = context.entry_for_entity(hass, entity_ids[0])
     endpoint_name = call.data["endpoint"]
     endpoint = HERMES_ENDPOINT_MAP[endpoint_name]
     values = await entry.runtime_data.client.async_inspect_endpoint(
@@ -196,7 +196,7 @@ async def _async_firmware_snapshot(
             "Firmware snapshots require exactly one Matic robot",
             "single_robot_required",
         )
-    entry = context._entry_for_entity(hass, entity_ids[0])
+    entry = context.entry_for_entity(hass, entity_ids[0])
     occurrence_generation = firmware_tracker.occurrence_generation(entry.entry_id)
     snapshot = await async_build_firmware_snapshot(entry.runtime_data.session)
     comparison = await firmware_tracker.async_record_snapshot(

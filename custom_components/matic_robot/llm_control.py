@@ -17,7 +17,7 @@ from homeassistant.util.json import JsonObjectType
 
 from .client import CleaningMode
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
-from .llm_common import _ROBOT_FIELD, _error, _MaticTool, _resolve_plan_id
+from .llm_common import ROBOT_FIELD, MaticTool, resolve_plan_id, tool_error
 from .plan_model import plan_setting, resolve_room_reference
 from .robot_controls import RobotControls
 from .slam_view_data import catalog_entry_projection
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from . import MaticConfigEntry
 
 
-class MaticRunPlanTool(_MaticTool):
+class MaticRunPlanTool(MaticTool):
     """Run a saved plan exactly as Matic Map's Run plan does."""
 
     name = "MaticRunPlan"
@@ -39,7 +39,7 @@ class MaticRunPlanTool(_MaticTool):
     annotations = llm.ToolAnnotations(destructive=False, open_world=False)
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Optional("plan"): probatio.All(
                 cv.string, probatio.Length(min=1, max=128)
             ),
@@ -53,13 +53,13 @@ class MaticRunPlanTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(
+        robot = PanelRobot(
             hass, self.resolve_entry(hass, llm_context, args.get("robot"))
         )
         if reason := robot.start_block_reason():
             return await _async_refusal(hass, llm_context, "common", reason)
         manager = robot.entry.runtime_data.cleaning_plans
-        plan_id = _resolve_plan_id(manager, robot.serial_number, args.get("plan"))
+        plan_id = resolve_plan_id(manager, robot.serial_number, args.get("plan"))
         try:
             plan = manager.catalog.plan(robot.serial_number, plan_id)
         except KeyError:
@@ -82,7 +82,7 @@ class MaticRunPlanTool(_MaticTool):
                 return_response=True,
             )
         except HomeAssistantError as err:
-            return await _async_service_refusal(hass, llm_context, err)
+            return await async_service_refusal(hass, llm_context, err)
         return await _async_start_run(
             hass,
             llm_context,
@@ -92,7 +92,7 @@ class MaticRunPlanTool(_MaticTool):
         )
 
 
-class MaticCleanRoomsTool(_MaticTool):
+class MaticCleanRoomsTool(MaticTool):
     """Clean named rooms exactly as Matic Map's Clean rooms does."""
 
     name = "MaticCleanRooms"
@@ -106,7 +106,7 @@ class MaticCleanRoomsTool(_MaticTool):
     annotations = llm.ToolAnnotations(destructive=False, open_world=False)
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Required("rooms"): probatio.All(
                 cv.ensure_list,
                 [probatio.All(cv.string, probatio.Length(min=1, max=128))],
@@ -125,7 +125,7 @@ class MaticCleanRoomsTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(
+        robot = PanelRobot(
             hass, self.resolve_entry(hass, llm_context, args.get("robot"))
         )
         if reason := robot.start_block_reason():
@@ -153,7 +153,7 @@ class MaticCleanRoomsTool(_MaticTool):
                 ),
             )
         except HomeAssistantError as err:
-            return await _async_service_refusal(hass, llm_context, err)
+            return await async_service_refusal(hass, llm_context, err)
         if preview["blocker"] or not preview["rooms"]:
             return await _async_refusal(
                 hass, llm_context, "common", "v4_reason_room_preview_blocked"
@@ -167,7 +167,7 @@ class MaticCleanRoomsTool(_MaticTool):
         )
 
 
-class MaticStopCleaningTool(_MaticTool):
+class MaticStopCleaningTool(MaticTool):
     """Stop cleaning exactly as Matic Map's Stop does."""
 
     name = "MaticStopCleaning"
@@ -180,7 +180,7 @@ class MaticStopCleaningTool(_MaticTool):
     annotations = llm.ToolAnnotations(
         destructive=False, idempotent=True, open_world=False
     )
-    parameters = llm.Tool.parameters.extend(_ROBOT_FIELD)
+    parameters = llm.Tool.parameters.extend(ROBOT_FIELD)
 
     @override
     async def async_run(
@@ -189,7 +189,7 @@ class MaticStopCleaningTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(
+        robot = PanelRobot(
             hass, self.resolve_entry(hass, llm_context, args.get("robot"))
         )
         if not robot.connected:
@@ -211,11 +211,11 @@ class MaticStopCleaningTool(_MaticTool):
                 context=llm_context.context,
             )
         except HomeAssistantError as err:
-            return await _async_service_refusal(hass, llm_context, err)
+            return await async_service_refusal(hass, llm_context, err)
         return llm.ToolResult(data={"stop_sent": True})
 
 
-class MaticResetScheduleTool(_MaticTool):
+class MaticResetScheduleTool(MaticTool):
     """Reset schedule progress exactly as Matic Map's plan editor does."""
 
     name = "MaticResetSchedule"
@@ -229,7 +229,7 @@ class MaticResetScheduleTool(_MaticTool):
     annotations = llm.ToolAnnotations(idempotent=True, open_world=False)
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Optional("plan"): probatio.All(
                 cv.string, probatio.Length(min=1, max=128)
             ),
@@ -249,14 +249,14 @@ class MaticResetScheduleTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
         if args["scope"] == "room" and "room" not in args:
-            raise _error("llm_room_required")
-        robot = _PanelRobot(
+            raise tool_error("llm_room_required")
+        robot = PanelRobot(
             hass, self.resolve_entry(hass, llm_context, args.get("robot"))
         )
         if reason := robot.edit_block_reason():
             return await _async_refusal(hass, llm_context, "common", reason)
         manager = robot.entry.runtime_data.cleaning_plans
-        plan_id = _resolve_plan_id(manager, robot.serial_number, args.get("plan"))
+        plan_id = resolve_plan_id(manager, robot.serial_number, args.get("plan"))
         try:
             plan = manager.catalog.plan(robot.serial_number, plan_id)
         except KeyError:
@@ -282,7 +282,7 @@ class MaticResetScheduleTool(_MaticTool):
                     args["room"], room_map
                 )
             except ValueError as err:
-                raise _error("llm_room_unknown", room=args["room"]) from err
+                raise tool_error("llm_room_unknown", room=args["room"]) from err
         try:
             await hass.services.async_call(
                 DOMAIN,
@@ -293,7 +293,7 @@ class MaticResetScheduleTool(_MaticTool):
                 return_response=True,
             )
         except HomeAssistantError as err:
-            return await _async_service_refusal(hass, llm_context, err)
+            return await async_service_refusal(hass, llm_context, err)
         return llm.ToolResult(
             data={
                 "reset": True,
@@ -304,7 +304,7 @@ class MaticResetScheduleTool(_MaticTool):
         )
 
 
-class MaticGoToRoomTool(_MaticTool):
+class MaticGoToRoomTool(MaticTool):
     """Send the robot to a room with the Go to room action."""
 
     name = "MaticGoToRoom"
@@ -317,7 +317,7 @@ class MaticGoToRoomTool(_MaticTool):
     annotations = llm.ToolAnnotations(destructive=False, open_world=False)
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Required("room"): probatio.All(
                 cv.string, probatio.Length(min=1, max=128)
             ),
@@ -331,7 +331,7 @@ class MaticGoToRoomTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(
+        robot = PanelRobot(
             hass, self.resolve_entry(hass, llm_context, args.get("robot"))
         )
         if refusal := await _async_navigation_refusal(hass, llm_context, robot):
@@ -345,11 +345,11 @@ class MaticGoToRoomTool(_MaticTool):
                 context=llm_context.context,
             )
         except HomeAssistantError as err:
-            return await _async_service_refusal(hass, llm_context, err)
+            return await async_service_refusal(hass, llm_context, err)
         return llm.ToolResult(data={"sent": True, "room": args["room"]})
 
 
-class MaticSendToSinkTool(_MaticTool):
+class MaticSendToSinkTool(MaticTool):
     """Send the robot to its saved sink location for a water refill."""
 
     name = "MaticSendToSink"
@@ -361,7 +361,7 @@ class MaticSendToSinkTool(_MaticTool):
         "to tell the user."
     )
     annotations = llm.ToolAnnotations(destructive=False, open_world=False)
-    parameters = llm.Tool.parameters.extend(_ROBOT_FIELD)
+    parameters = llm.Tool.parameters.extend(ROBOT_FIELD)
 
     @override
     async def async_run(
@@ -370,7 +370,7 @@ class MaticSendToSinkTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(
+        robot = PanelRobot(
             hass, self.resolve_entry(hass, llm_context, args.get("robot"))
         )
         if refusal := await _async_navigation_refusal(hass, llm_context, robot):
@@ -380,12 +380,12 @@ class MaticSendToSinkTool(_MaticTool):
             if commands.reachable:
                 await commands.async_sink_summon()
         except HomeAssistantError as err:
-            return await _async_service_refusal(hass, llm_context, err)
+            return await async_service_refusal(hass, llm_context, err)
         return llm.ToolResult(data={"sent": True})
 
 
 async def _async_navigation_refusal(
-    hass: HomeAssistant, llm_context: llm.LLMContext, robot: _PanelRobot
+    hass: HomeAssistant, llm_context: llm.LLMContext, robot: PanelRobot
 ) -> llm.ToolResult | None:
     """Refuse navigation the robot's action would refuse or could not place."""
     if not robot.connected:
@@ -403,7 +403,7 @@ async def _async_navigation_refusal(
     return None
 
 
-class _PanelRobot:
+class PanelRobot:
     """The robot facts Matic Map's action strip decides from (`state.ts`)."""
 
     def __init__(self, hass: HomeAssistant, entry: MaticConfigEntry) -> None:
@@ -413,7 +413,7 @@ class _PanelRobot:
             VACUUM_DOMAIN, DOMAIN, f"{self.serial_number}_vacuum"
         )
         if entity_id is None:
-            raise _error("llm_robot_unavailable")
+            raise tool_error("llm_robot_unavailable")
         self.entity_id = entity_id
         state = hass.states.get(entity_id)
         # `activityForVacuum` and `robotConnected` in `hass-adapter.ts`.
@@ -486,11 +486,11 @@ async def _async_start_run(
             DOMAIN, service, data, blocking=True, context=llm_context.context
         )
     except HomeAssistantError as err:
-        return await _async_service_refusal(hass, llm_context, err)
+        return await async_service_refusal(hass, llm_context, err)
     return llm.ToolResult(data={"started": True, **started})
 
 
-async def _async_service_refusal(
+async def async_service_refusal(
     hass: HomeAssistant, llm_context: llm.LLMContext, err: HomeAssistantError
 ) -> llm.ToolResult:
     """Relay an action's translated refusal, never raw exception text."""

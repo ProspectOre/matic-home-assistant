@@ -141,7 +141,7 @@ class MaticSlamSceneView(HomeAssistantView):
 
     def current_revision(self, entry_id: str, runtime: MaticRuntimeData) -> int:
         """Return a monotonic revision covering SLAM and floor-plan changes."""
-        key = _scene_snapshot_key(runtime)
+        key = scene_snapshot_key(runtime)
         return self._revision_for_key(entry_id, key)
 
     def scene_epoch(self, entry_id: str) -> str:
@@ -154,7 +154,7 @@ class MaticSlamSceneView(HomeAssistantView):
 
     def available_revision(self, entry_id: str, runtime: MaticRuntimeData) -> int:
         """Return the newest safe scene a newly opened panel can receive now."""
-        key = _scene_snapshot_key(runtime)
+        key = scene_snapshot_key(runtime)
         cached = self._cache.get(entry_id)
         if cached is not None and _scene_snapshot_is_publishable(
             runtime,
@@ -209,7 +209,7 @@ class MaticSlamSceneView(HomeAssistantView):
             self.clear_entry(entry_id)
             return None
         epoch = self._epochs.get(entry_id, 0)
-        key = _scene_snapshot_key(runtime)
+        key = scene_snapshot_key(runtime)
         cached = self._cache.get(entry_id)
         if cached is not None and cached.key == key:
             return cached
@@ -471,7 +471,7 @@ def _scene_snapshot_is_publishable(
     )
 
 
-def _scene_snapshot_key(runtime: MaticRuntimeData) -> _SceneKey:
+def scene_snapshot_key(runtime: MaticRuntimeData) -> _SceneKey:
     """Return the complete private identity of the currently renderable scene."""
     return (
         runtime.slam_map.revision,

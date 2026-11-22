@@ -19,7 +19,7 @@ from custom_components.matic_robot.client.models import (
     RobotActivity,
 )
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
     RoomRunOutcome,
@@ -50,10 +50,10 @@ async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
         raise PlanCancelledError
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=suspended_leg),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -88,10 +88,10 @@ async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
         raise PlanCancelledError
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=suspended_leg),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -117,10 +117,10 @@ async def test_finish_current_room_uses_normalized_cancelled_outcome(hass) -> No
         return False
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=stopped_leg),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -161,7 +161,7 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
 
     robot.on_start = reject_dispatch
     with pytest.raises(ServiceValidationError):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -278,11 +278,11 @@ async def test_unload_waits_for_terminal_save_and_always_clears_run_scope(
 
     manager.repository.store = SimpleNamespace(async_save=AsyncMock(side_effect=save))
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(return_value=False),
     ):
         run = asyncio.create_task(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 run_plan_call(hass),
                 manager,
@@ -323,7 +323,7 @@ async def test_initial_save_failure_still_retires_the_run(
     hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
     set_run_id = MagicMock()
     with pytest.raises(OSError, match="synthetic initial storage failure"):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,
@@ -440,17 +440,17 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
         if scenario in {"interrupted", "takeover"}
         else nullcontext(),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             side_effect=native_outcome,
         ),
     ):
         # The run is its own task, which unload waits for.
         await hass.async_create_task(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 run_plan_call(hass),
                 manager,
@@ -536,11 +536,11 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
     with (
         nullcontext() if terminal == "stop" else pytest.raises(ServiceValidationError),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_run._async_completion_budget",
+            "custom_components.matic_robot.managed_run.async_completion_budget",
             side_effect=begin_observing_next_room,
         ),
         patch.object(
@@ -554,7 +554,7 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
         ),
     ):
         execution = asyncio.create_task(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 run_plan_call(hass),
                 manager,

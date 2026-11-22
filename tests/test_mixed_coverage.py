@@ -1982,14 +1982,14 @@ async def test_runner_passes_each_rooms_mode_and_setting(
     robot = FakeRobot()
 
     from custom_components.matic_robot.managed_dispatch import (
-        _async_dispatch_leg_command,
+        async_dispatch_leg_command,
     )
 
     rooms = [
         CleaningRoom("one", "One", mode1.value, setting1.value),
         CleaningRoom("two", "Two", mode2.value, setting2.value),
     ]
-    await _async_dispatch_leg_command(
+    await async_dispatch_leg_command(
         robot.port(session_identity=robot.accepting), rooms, 1, floor_token="floor"
     )
     [command] = robot.started

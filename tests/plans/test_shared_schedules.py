@@ -309,7 +309,7 @@ async def test_delete_shared_room_schedule_respects_run_ownership(
             assert not manager.cadence.prepared_runs["serial"].shared_schedule_rooms
     else:
         manager.cadence.pending_cadence_mutations["serial"] = {
-            object(): plan_cadence_module._CadenceMutation(
+            object(): plan_cadence_module.CadenceMutation(
                 "shared",
                 frozenset({"room-kitchen"}),
                 frozenset({"room-kitchen"}),

@@ -19,7 +19,7 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.service_plans import (
-    _validated_area_command,
+    validated_area_command,
 )
 from tests import legacy_bindings
 
@@ -62,7 +62,7 @@ def test_small_single_room_frame_shift_stays_reviewable(offset):
         is binding.AreaBindingStatus.GEOMETRY_CHANGED
     )
     with pytest.raises(ServiceValidationError) as error:
-        _validated_area_command(area, changed, None, None)
+        validated_area_command(area, changed, None, None)
     assert error.value.translation_key == "area_map_changed"
     assert area == before
 
@@ -257,7 +257,7 @@ def test_frame_snapshot_and_matching_are_bounded():
     floor = _floor()
     area = _area(floor)
     with (
-        patch.object(binding_geometry, "_MAX_ROOM_FRAME_POINTS", 3),
+        patch.object(binding_geometry, "MAX_ROOM_FRAME_POINTS", 3),
     ):
         assert (
             binding.area_binding_status(area, floor)
@@ -268,7 +268,7 @@ def test_frame_snapshot_and_matching_are_bounded():
     changed = _floor(((0.002, 0), (10, 0), (10, 10), (0.002, 10)))
     with patch.object(
         binding_geometry,
-        "_room_frame_matches",
+        "room_frame_matches",
         side_effect=binding.GeometryTooComplex("bounded"),
     ):
         assert (
@@ -280,7 +280,7 @@ def test_frame_snapshot_and_matching_are_bounded():
 def test_degenerate_landmarks_do_not_establish_a_frame():
     saved = {"boundary_mm": [[0, 0], [1, 0], [2, 0]]}
     current = {"boundary_mm": [[0, 0], [1, 1], [2, 0]]}
-    assert not binding_geometry._room_frame_matches(
+    assert not binding_geometry.room_frame_matches(
         saved, current, RoomGeometryIndex([])
     )
 
@@ -295,7 +295,7 @@ def test_room_frame_landmark_work_is_charged_before_scan():
     room_geometry = RoomGeometryIndex([])
     room_geometry._query_work_remaining = 1
     with pytest.raises(binding.GeometryTooComplex):
-        binding_geometry._room_frame_matches(saved, current, room_geometry)
+        binding_geometry.room_frame_matches(saved, current, room_geometry)
 
 
 def test_room_frame_area_scan_exhausts_budget_before_integer_geometry():
@@ -316,4 +316,4 @@ def test_room_frame_area_scan_exhausts_budget_before_integer_geometry():
         create=True,
     ):
         with pytest.raises(binding.GeometryTooComplex):
-            binding_geometry._room_frame_matches(saved, current, room_geometry)
+            binding_geometry.room_frame_matches(saved, current, room_geometry)

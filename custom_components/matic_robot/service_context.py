@@ -91,7 +91,7 @@ def register_robot_action(
     """
 
     def require_loaded_robots(data: dict[str, Any]) -> dict[str, Any]:
-        _resolve_loaded_matic_vacuums(hass, data)
+        resolve_loaded_matic_vacuums(hass, data)
         return data
 
     async def async_call(entities: list[Entity], call: ServiceCall) -> Any:
@@ -111,7 +111,7 @@ def register_robot_action(
     )
 
 
-def _require_matic_control[ServiceResult](
+def require_matic_control[ServiceResult](
     hass: HomeAssistant,
     handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
     *,
@@ -127,7 +127,7 @@ def _require_matic_control[ServiceResult](
             if user is None:
                 raise UnknownUser(context=call.context)
             if not user.is_admin:
-                for entity_id in _resolve_loaded_matic_vacuums(
+                for entity_id in resolve_loaded_matic_vacuums(
                     hass, call.data, require_available=not allow_unavailable
                 ):
                     if not user.permissions.check_entity(entity_id, POLICY_CONTROL):
@@ -141,7 +141,7 @@ def _require_matic_control[ServiceResult](
     return async_authorized
 
 
-def _require_matic_admin[ServiceResult](
+def require_matic_admin[ServiceResult](
     hass: HomeAssistant,
     handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
 ) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]]:
@@ -150,7 +150,7 @@ def _require_matic_admin[ServiceResult](
     @wraps(handler)
     async def async_authorized(call: ServiceCall) -> ServiceResult:
         await _async_require_admin(
-            hass, call, lambda: _resolve_loaded_matic_vacuums(hass, call.data)
+            hass, call, lambda: resolve_loaded_matic_vacuums(hass, call.data)
         )
         return await handler(call)
 
@@ -176,7 +176,7 @@ async def _async_require_admin(
         )
 
 
-def _saved_plan_context(
+def saved_plan_context(
     hass: HomeAssistant,
     entity_ids: list[str],
     *,
@@ -190,7 +190,7 @@ def _saved_plan_context(
             "single_robot_required",
         )
     entity_id = entity_ids[0]
-    entry = _entry_for_entity(hass, entity_id)
+    entry = entry_for_entity(hass, entity_id)
     session = entry.runtime_data.session
     floor_plan = (
         _current_floor_plan(entry) if require_current_floor else session.floor.value
@@ -208,7 +208,7 @@ def _saved_plan_context(
     return entity_id, entry, serial_number, room_map
 
 
-def _resolve_loaded_matic_vacuums(
+def resolve_loaded_matic_vacuums(
     hass: HomeAssistant, data: Mapping[str, Any], *, require_available: bool = True
 ) -> list[str]:
     """Resolve every target form and reject missing or unloaded robots."""
@@ -257,7 +257,7 @@ def _resolve_loaded_matic_vacuums(
     return entity_ids
 
 
-def _entry_for_entity(hass: HomeAssistant, entity_id: str) -> MaticConfigEntry:
+def entry_for_entity(hass: HomeAssistant, entity_id: str) -> MaticConfigEntry:
     """Return the loaded typed Matic config entry behind a vacuum entity."""
     registry_entry = er.async_get(hass).async_get(entity_id)
     if registry_entry is None or registry_entry.config_entry_id is None:

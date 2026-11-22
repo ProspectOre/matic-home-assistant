@@ -311,7 +311,7 @@ def plan_entries(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
-def _stored_entries(plan: object) -> list[Mapping[str, Any]]:
+def stored_entries(plan: object) -> list[Mapping[str, Any]]:
     """Read stored entries leniently for cleanup that must never fail."""
     entries = plan.get("entries") if isinstance(plan, Mapping) else None
     if not isinstance(entries, list):
@@ -462,7 +462,7 @@ def leg_boundaries(legs: Sequence[PlanLeg]) -> list[int]:
 
 
 @dataclass(frozen=True, slots=True)
-class _RotationCandidate:
+class RotationCandidate:
     """One room or area's trusted rotation key and selection metadata."""
 
     index: int
@@ -539,7 +539,7 @@ class AreaBindingUpgradeResult:
     pending: bool
 
 
-def _is_manual_room_sequence_plan_id(plan_id: object) -> bool:
+def is_manual_room_sequence_plan_id(plan_id: object) -> bool:
     """Identify the private namespace used by unsaved one-time room runs."""
     return isinstance(plan_id, str) and (
         plan_id == MANUAL_ROOM_SEQUENCE_PLAN_ID
@@ -547,7 +547,7 @@ def _is_manual_room_sequence_plan_id(plan_id: object) -> bool:
     )
 
 
-def _next_manual_room_sequence_plan_id(
+def next_manual_room_sequence_plan_id(
     plans: Mapping[str, Any], reserved_ids: Iterable[str] = ()
 ) -> str:
     """Choose an internal ID that cannot shadow a saved plan or live reservation."""
@@ -564,7 +564,7 @@ def _next_manual_room_sequence_plan_id(
         suffix += 1
 
 
-def _rotation_sort_key(candidate: _RotationCandidate) -> tuple[bool, float, int]:
+def rotation_sort_key(candidate: RotationCandidate) -> tuple[bool, float, int]:
     """Return the stable priority key used by intelligent rotation."""
     return (
         candidate.effective_timestamp is not None,
@@ -575,8 +575,8 @@ def _rotation_sort_key(candidate: _RotationCandidate) -> tuple[bool, float, int]
     )
 
 
-def _rotation_details(
-    candidates: Sequence[_RotationCandidate], *, intelligent: bool
+def rotation_details(
+    candidates: Sequence[RotationCandidate], *, intelligent: bool
 ) -> list[dict[str, Any]]:
     """Explain the same mixed order used by the execution preview."""
     details = []
@@ -615,7 +615,7 @@ def _rotation_details(
     return details
 
 
-def _bounded_stop_threshold(value: object) -> int:
+def bounded_stop_threshold(value: object) -> int:
     """Normalize a persisted room-finish threshold to its supported range."""
     try:
         return max(0, min(100, int(cast(Any, value))))
@@ -623,17 +623,17 @@ def _bounded_stop_threshold(value: object) -> int:
         return PLAN_SETTING_DEFAULTS["finish_current_room_threshold"]
 
 
-def _managed_stop_policy(value: object) -> tuple[bool, int]:
+def managed_stop_policy(value: object) -> tuple[bool, int]:
     """Read one saved or frozen managed-run stop policy."""
     if not isinstance(value, Mapping):
         value = {}
     return (
         bool(plan_setting(value, "finish_current_room")),
-        _bounded_stop_threshold(plan_setting(value, "finish_current_room_threshold")),
+        bounded_stop_threshold(plan_setting(value, "finish_current_room_threshold")),
     )
 
 
-def _has_frozen_stop_policy(value: object) -> bool:
+def has_frozen_stop_policy(value: object) -> bool:
     """Whether a stored run record carries the stop policy its run froze."""
     return (
         isinstance(value, Mapping)

@@ -38,10 +38,10 @@ from .plan_model import (
 )
 from .plan_records import stored_active_plan, stored_last_run
 from .plan_timing import (
-    _admit_room_settings,
-    _duration_profile_key,
-    _duration_profiles,
-    _latest_timestamp,
+    admit_room_settings,
+    duration_profile_key,
+    duration_profiles,
+    latest_timestamp,
 )
 from .room_statistics import native_statistics_have_ambiguous_floor
 from .room_statistics_store import import_native_room_statistics
@@ -60,7 +60,7 @@ def _daily_session_hash(key: bytes) -> str:
     )
 
 
-def _import_daily_native_uncertainty(
+def import_daily_native_uncertainty(
     robot: dict[str, Any],
     floor_plan: FloorPlan,
     records: Iterable[CleaningSessionRecord],
@@ -107,7 +107,7 @@ def _import_daily_native_uncertainty(
                 for room in rooms_by_name.get(native_room_key(name), ())
             }
         for room in reported_rooms:
-            if daily_room_limit._time(session.ended_at) is None:
+            if daily_room_limit.parse_time(session.ended_at) is None:
                 changed = (
                     daily_room_limit.record_unknown_completion_time(
                         robot,
@@ -151,7 +151,7 @@ OEM_STOP_RECONCILIATION_SECONDS = 12 * 60
 OEM_STOP_FENCE_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 
 
-def _validated_native_reconciliation(
+def validated_native_reconciliation(
     value: object, *, create_expiry: bool = False
 ) -> dict[str, Any] | None:
     """Validate the small durable marker used to recover a late native stop."""
@@ -232,7 +232,7 @@ def _validated_native_reconciliation(
         if "rooms" in value:
             rooms = validated_grouped_rooms(
                 {**result, "rooms": value["rooms"]},
-                validate_room=_validated_native_reconciliation,
+                validate_room=validated_native_reconciliation,
                 max_rooms=MAX_ROOM_SEQUENCE_SIZE,
             )
             if rooms is None:
@@ -241,7 +241,7 @@ def _validated_native_reconciliation(
     return result
 
 
-def _native_completion_settings(
+def native_completion_settings(
     pending: Mapping[str, Any], room: Room | CleaningRoom
 ) -> CleaningRoom | None:
     """Return only settings frozen by this marker or its exact run checkpoint."""
@@ -267,10 +267,10 @@ def _native_completion_settings(
     return None
 
 
-def _attach_cadence_state(robot: dict[str, Any], pending: dict[str, Any]) -> None:
+def attach_cadence_state(robot: dict[str, Any], pending: dict[str, Any]) -> None:
     """Freeze the dispatched schedule into its exact late-history marker."""
     for child in pending.get("rooms", []):
-        _attach_cadence_state(robot, child)
+        attach_cadence_state(robot, child)
     run = stored_last_run(robot)
     if (
         run is None
@@ -307,7 +307,7 @@ def _native_reconciliation_key(pending: Mapping[str, Any]) -> str:
     return digest.hexdigest()
 
 
-def _native_reconciliation_was_committed(
+def native_reconciliation_was_committed(
     robot: Mapping[str, Any], pending: Mapping[str, Any]
 ) -> bool:
     """Check dispatch-scoped deduplication, never a room's unrelated history."""
@@ -315,7 +315,7 @@ def _native_reconciliation_was_committed(
     return isinstance(keys, list) and _native_reconciliation_key(pending) in keys
 
 
-def _remember_native_reconciliation(
+def remember_native_reconciliation(
     robot: dict[str, Any], pending: Mapping[str, Any]
 ) -> None:
     """Retain a bounded completion receipt alongside native plan history."""
@@ -329,12 +329,12 @@ def _remember_native_reconciliation(
         del keys[:-NATIVE_COMPLETION_DEDUP_MAX_KEYS]
 
 
-def _native_reconciliation_expired(pending: Mapping[str, Any]) -> bool:
+def native_reconciliation_expired(pending: Mapping[str, Any]) -> bool:
     """Return whether a durable late-completion marker passed its fixed window."""
-    return _native_reconciliation_remaining_seconds(pending) <= 0
+    return native_reconciliation_remaining_seconds(pending) <= 0
 
 
-def _stop_fence_remaining_seconds(value: object) -> float | None:
+def stop_fence_remaining_seconds(value: object) -> float | None:
     """Return remaining wall-clock fence time from one stored absolute expiry."""
     if not isinstance(value, str):
         return None
@@ -344,7 +344,7 @@ def _stop_fence_remaining_seconds(value: object) -> float | None:
     return (expires_at - dt_util.utcnow()).total_seconds()
 
 
-def _native_reconciliation_remaining_seconds(
+def native_reconciliation_remaining_seconds(
     pending: Mapping[str, Any],
 ) -> float:
     """Return wall-clock seconds left for durable stop reconciliation."""
@@ -367,7 +367,7 @@ def native_marker_on_floor(
     )
 
 
-def _reconcile_pending_native_history(
+def reconcile_pending_native_history(
     robot: dict[str, Any],
     floor_plan: FloorPlan,
     records: Iterable[CleaningSessionRecord],
@@ -376,12 +376,12 @@ def _reconcile_pending_native_history(
     verified_coverage_receipt: CoverageReceipt | None = None,
 ) -> bool:
     """Apply exactly one retained native completion to a pending plan room."""
-    pending = _validated_native_reconciliation(
+    pending = validated_native_reconciliation(
         robot.get("pending_native_reconciliation")
     )
     if pending is None:
         return False
-    if _native_reconciliation_expired(pending):
+    if native_reconciliation_expired(pending):
         robot.pop("pending_native_reconciliation", None)
         return True
     if not native_marker_on_floor(pending, floor_plan):
@@ -390,7 +390,7 @@ def _reconcile_pending_native_history(
         changed = False
         records = tuple(records)
         for child in pending["rooms"]:
-            if _native_reconciliation_was_committed(robot, child):
+            if native_reconciliation_was_committed(robot, child):
                 continue
             changed |= _reconcile_native_room_history(
                 robot,
@@ -401,7 +401,7 @@ def _reconcile_pending_native_history(
                 verified_coverage_receipt=verified_coverage_receipt,
             )
         if all(
-            _native_reconciliation_was_committed(robot, child)
+            native_reconciliation_was_committed(robot, child)
             for child in pending["rooms"]
         ):
             robot.pop("pending_native_reconciliation", None)
@@ -420,7 +420,7 @@ def _reconcile_pending_native_history(
     return changed
 
 
-def _native_marker_matches(
+def native_marker_matches(
     records: Iterable[CleaningSessionRecord], pending: Mapping[str, Any]
 ) -> tuple[NativeRoomCompletion, ...]:
     """Match the settings and identity frozen by a validated marker."""
@@ -448,18 +448,18 @@ def _reconcile_native_room_history(
     )
     if room is None:
         return False
-    matches = _native_marker_matches(records, pending)
+    matches = native_marker_matches(records, pending)
     if len(matches) != 1:
         return False
-    if _native_reconciliation_was_committed(robot, pending):
+    if native_reconciliation_was_committed(robot, pending):
         # A prior write may have committed the room before the pending marker
         # was removed. Clear that stale marker without adding history or
         # cadence credit a second time.
-        _repair_native_reconciled_run(robot, pending, pending["plan_id"])
+        repair_native_reconciled_run(robot, pending, pending["plan_id"])
         if on_reconciled is not None:
             on_reconciled(pending)
         return True
-    room_settings = _native_completion_settings(pending, room)
+    room_settings = native_completion_settings(pending, room)
     try:
         completion_identity = room_cadence_identity(floor_plan, room.id)
     except ValueError:
@@ -471,7 +471,7 @@ def _reconcile_native_room_history(
         == verified_coverage_receipt.session_hash
         else None
     )
-    _record_native_completion(
+    record_native_completion(
         robot,
         pending["plan_id"],
         room,
@@ -494,19 +494,19 @@ def _reconcile_native_room_history(
         if room_settings is not None
         else None,
     )
-    _remember_native_reconciliation(robot, pending)
+    remember_native_reconciliation(robot, pending)
     if "session_hash" in pending:
         robot["rooms"][room.id]["last_completed_run_id"] = pending["run_id"]
         robot["rotations"][pending["plan_id"]]["rooms"][room.id]["run_id"] = pending[
             "run_id"
         ]
-    _repair_native_reconciled_run(robot, pending, pending["plan_id"])
+    repair_native_reconciled_run(robot, pending, pending["plan_id"])
     if on_reconciled is not None:
         on_reconciled(pending)
     return True
 
 
-def _repair_native_reconciled_run(
+def repair_native_reconciled_run(
     robot: dict[str, Any], pending: Mapping[str, Any], plan_id: str
 ) -> None:
     """Repair the matching managed run after a late native completion."""
@@ -541,7 +541,7 @@ def _repair_native_reconciled_run(
     repair_run_history(robot, last_run, pending.get("room"))
 
 
-def _record_native_completion(
+def record_native_completion(
     robot: dict[str, Any],
     plan_id: str,
     room: CleaningRoom | Room,
@@ -563,16 +563,16 @@ def _record_native_completion(
     record = room_records.setdefault(room_id, {})
     record["room_id"] = room_id
     record["name"] = room.name
-    record["duration_profiles"] = _duration_profiles(record)
+    record["duration_profiles"] = duration_profiles(record)
     active = stored_active_plan(robot)
     if not (
         active is not None
         and active.plan_id == plan_id
         and active.room_id == room_id
-        and _duration_profile_key(record)
-        != _duration_profile_key(asdict(room_settings) if room_settings else {})
+        and duration_profile_key(record)
+        != duration_profile_key(asdict(room_settings) if room_settings else {})
     ):
-        _admit_room_settings(record, room_settings)
+        admit_room_settings(record, room_settings)
     record["last_native_reconciled"] = dt_util.utcnow().isoformat()
     record_verified_completion(
         robot,
@@ -600,7 +600,7 @@ def _record_native_completion(
     )
 
 
-def _import_native_room_activity(
+def import_native_room_activity(
     robot: dict[str, Any],
     floor_plan: FloorPlan,
     records: Iterable[CleaningSessionRecord],
@@ -622,7 +622,7 @@ def _import_native_room_activity(
     by_protocol_id = {room.protocol_id: room for room in floor_plan.rooms}
     for record in records:
         session = record.session
-        timestamp = _latest_timestamp(session.ended_at)
+        timestamp = latest_timestamp(session.ended_at)
         if timestamp is None or not isinstance(session.ended_at, str):
             continue
         canonical = session.mission_id is not None or session.partition_id is not None
@@ -666,7 +666,7 @@ def _import_native_room_activity(
     changed = False
     for room_id, (timestamp, ended_at, name) in candidates.items():
         global_room = robot["rooms"].setdefault(room_id, {})
-        known = _latest_timestamp(
+        known = latest_timestamp(
             global_room.get("last_opportunity"),
             global_room.get("last_completed"),
         )

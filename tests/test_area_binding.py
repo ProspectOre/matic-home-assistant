@@ -185,7 +185,7 @@ def test_frameless_bindings_fail_closed_on_partition_and_geometry_churn(
 ) -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.2}]
-    monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1)
+    monkeypatch.setattr(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1)
     if kind == "v4":
         binding = legacy_bindings.v4(floor_plan, circles)
     else:
@@ -223,7 +223,7 @@ def test_bounded_binding_accepts_exactly_anchored_remote_refinement(
         {"x": 1.0, "y": 0.3, "radius": 0.2},
         {"x": 19.0, "y": 0.3, "radius": 0.2},
     ]
-    monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
+    monkeypatch.setattr(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
     area = _scoped_area(floor_plan, circles)
     assert _kind(area["map_binding"]) == "neighbourhood"
 
@@ -317,7 +317,7 @@ def test_dense_walls_binding_remains_reviewable_after_map_drift() -> None:
         (_room("dense", "Dense", boundary),),
     )
     circles = [{"x": 5.0, "y": 4.4, "radius": 0.1}]
-    with patch.object(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 4096):
+    with patch.object(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 4096):
         area = _scoped_area(floor_plan, circles)
 
     assert len(area["map_binding"]["local"]["segments_mm"]) > 256
@@ -411,7 +411,7 @@ def test_hash_fingerprint_work_exhaustion_keeps_valid_drift_reviewable() -> None
         assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
         assert area_binding_allows_review(area, changed)
         assert area_binding_status(area, floor_plan) is AreaBindingStatus.INVALID
-    shared_geometry = abg._room_geometry_index(changed)
+    shared_geometry = abg.room_geometry_index(changed)
     shared_geometry._query_work_remaining = 0
     with (
         patch.object(
@@ -421,7 +421,7 @@ def test_hash_fingerprint_work_exhaustion_keeps_valid_drift_reviewable() -> None
                 "synthetic fingerprint work exhausted after validation"
             ),
         ),
-        patch.object(abg, "_room_geometry_index") as create_index,
+        patch.object(abg, "room_geometry_index") as create_index,
     ):
         assert (
             area_binding_status(area, changed, room_geometry=shared_geometry)
@@ -447,7 +447,7 @@ def test_hash_fingerprint_exhaustion_keeps_saved_center_tolerance() -> None:
         ),
     )
     circles = [{"x": 1.995, "y": 1.0, "radius": 0.1}]
-    with patch.object(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 0):
+    with patch.object(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 0):
         area = _scoped_area(floor_plan, circles)
     assert _kind(area["map_binding"]) == "neighbourhood"
     changed = replace(
@@ -461,7 +461,7 @@ def test_hash_fingerprint_exhaustion_keeps_saved_center_tolerance() -> None:
     )
 
     def exhaust_after_validation(*args, center_tolerance, room_geometry):
-        assert center_tolerance == abg._LOCAL_GEOMETRY_TOLERANCE_METERS
+        assert center_tolerance == abg.LOCAL_GEOMETRY_TOLERANCE_METERS
         abg._validate_area_circles(
             args[0],
             args[1],
@@ -483,7 +483,7 @@ def test_hash_fingerprint_exhaustion_keeps_saved_center_tolerance() -> None:
 def test_hash_fingerprint_wraps_work_exhaustion_after_validation() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 1.5, "y": 0.75, "radius": 0.1}]
-    geometry = abg._room_geometry_index(floor_plan)
+    geometry = abg.room_geometry_index(floor_plan)
     validate = abg._validate_area_circles
 
     def validate_then_exhaust(*args, **kwargs):
@@ -508,7 +508,7 @@ def test_local_segment_correspondence_enforces_work_limits() -> None:
     shape = ((500, 0, 100),)
 
     with (
-        patch.object(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1),
+        patch.object(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1),
         pytest.raises(GeometryTooComplex),
     ):
         _local_segment_correspondence(segments, segments, shape)
@@ -685,12 +685,12 @@ def test_anchored_hash_binding_rejects_area_room_frame_translation() -> None:
 def test_saved_room_frame_match_rejects_inconsistent_evidence() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 1.0, "y": 0.75, "radius": 0.2}]
-    room_geometry = abg._room_geometry_index(floor_plan)
-    anchors = abg._translation_room_anchors(
+    room_geometry = abg.room_geometry_index(floor_plan)
+    anchors = abg.translation_room_anchors(
         floor_plan, circles, room_geometry=room_geometry
     )
     assert anchors
-    match = abg._saved_room_frames_match
+    match = abg.saved_room_frames_match
 
     assert not match([anchors[0], anchors[0]], circles, floor_plan, room_geometry)
     assert not match(
@@ -714,15 +714,15 @@ def test_saved_room_frame_match_rejects_inconsistent_evidence() -> None:
 
     with patch.object(
         abg,
-        "_translation_room_anchors",
+        "translation_room_anchors",
         return_value=[anchors[0], anchors[0]],
     ):
         assert not match(anchors, circles, floor_plan, room_geometry)
-    with patch.object(abg, "_translation_room_anchors", return_value=[]):
+    with patch.object(abg, "translation_room_anchors", return_value=[]):
         assert not match(anchors, circles, floor_plan, room_geometry)
     with (
-        patch.object(abg, "_translation_room_anchors", return_value=anchors),
-        patch.object(abg, "_room_frame_matches", return_value=False),
+        patch.object(abg, "translation_room_anchors", return_value=anchors),
+        patch.object(abg, "room_frame_matches", return_value=False),
     ):
         assert not match(anchors, circles, floor_plan, room_geometry)
 
@@ -730,7 +730,7 @@ def test_saved_room_frame_match_rejects_inconsistent_evidence() -> None:
 def test_anchored_hash_binding_fails_closed_without_frame_proof() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 1.0, "y": 0.75, "radius": 0.2}]
-    with patch.object(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1):
+    with patch.object(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1):
         binding = binding_for_area(floor_plan, circles)
     assert _kind(binding) == "neighbourhood"
     area = {
@@ -757,7 +757,7 @@ def test_anchored_hash_binding_fails_closed_without_frame_proof() -> None:
             "neighbourhood_fingerprint",
             return_value=local_hash,
         ),
-        patch.object(abg, "_saved_room_frames_match", return_value=False),
+        patch.object(abg, "saved_room_frames_match", return_value=False),
     ):
         assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
 
@@ -767,7 +767,7 @@ def test_anchored_hash_binding_fails_closed_without_frame_proof() -> None:
             "neighbourhood_fingerprint",
             return_value=local_hash,
         ),
-        patch.object(abg, "_saved_room_frames_match", return_value=True),
+        patch.object(abg, "saved_room_frames_match", return_value=True),
         patch.object(
             abg,
             "translation_invariant_geometry_fingerprint",
@@ -784,7 +784,7 @@ def test_anchored_hash_binding_fails_closed_without_frame_proof() -> None:
         ),
         patch.object(
             abg,
-            "_saved_room_frames_match",
+            "saved_room_frames_match",
             side_effect=GeometryTooComplex("frame evidence budget exhausted"),
         ),
     ):
@@ -795,8 +795,8 @@ def test_incomplete_room_anchors_fall_back_to_bounded_hash_binding() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 1.0, "y": 0.75, "radius": 0.2}]
     with (
-        patch.object(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1),
-        patch.object(abg, "_translation_room_anchors", return_value=[]),
+        patch.object(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1),
+        patch.object(abg, "translation_room_anchors", return_value=[]),
     ):
         binding = binding_for_area(floor_plan, circles)
 
@@ -819,7 +819,7 @@ def test_frameless_neighbourhood_binding_fails_closed_on_map_drift() -> None:
     )
     with patch.object(
         abg,
-        "_translation_room_anchors",
+        "translation_room_anchors",
         side_effect=GeometryTooComplex("synthetic anchor work exhausted"),
     ):
         binding = binding_for_area(floor_plan, circles)
@@ -856,7 +856,7 @@ def test_dense_area_hash_keeps_separated_circle_union_scope(monkeypatch) -> None
         {"x": 1.0, "y": 0.3, "radius": 0.2},
         {"x": 19.0, "y": 0.3, "radius": 0.2},
     ]
-    monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
+    monkeypatch.setattr(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
     binding = binding_for_area(base, circles)
     assert _kind(binding) == "neighbourhood"
 
@@ -896,7 +896,7 @@ def test_dense_hash_verification_accepts_saved_center_boundary_tolerance(
         (_room("main", "Main", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),),
     )
     circles = [{"x": 0.005, "y": 5.0, "radius": 0.2}]
-    monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1)
+    monkeypatch.setattr(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1)
     binding = binding_for_area(floor_plan, circles)
     boundary_moved_inward = replace(
         floor_plan,
@@ -924,8 +924,8 @@ def _area(floor_plan: FloorPlan | None = None) -> dict[str, Any]:
     """An area whose binding has no room frames, so any map change needs review."""
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
     with (
-        patch.object(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1),
-        patch.object(abg, "_translation_room_anchors", return_value=[]),
+        patch.object(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1),
+        patch.object(abg, "translation_room_anchors", return_value=[]),
     ):
         binding = binding_for_area(floor_plan or _floor_plan(), circles)
     return {
@@ -1493,7 +1493,7 @@ def test_scoped_binding_rejects_unexplained_probe_occupancy_change(
 def test_area_geometry_charges_fallback_neighborhood_intersection_checks() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
-    geometry = abg._room_geometry_index(floor_plan)
+    geometry = abg.room_geometry_index(floor_plan)
     boundary_edge_count = sum(len(room.boundary) for room in floor_plan.rooms)
 
     with (
@@ -1502,7 +1502,7 @@ def test_area_geometry_charges_fallback_neighborhood_intersection_checks() -> No
         ) as charge_work,
         patch.object(abg, "_MAX_NEIGHBORHOOD_QUERY_CELLS", 0),
     ):
-        abg._area_geometry_components(floor_plan, circles, room_geometry=geometry)
+        abg.area_geometry_components(floor_plan, circles, room_geometry=geometry)
 
     assert charge_work.call_count >= (2 * boundary_edge_count) + 3
 
@@ -1510,15 +1510,15 @@ def test_area_geometry_charges_fallback_neighborhood_intersection_checks() -> No
 def test_area_geometry_charges_neighborhood_index_cell_visits() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
-    indexed_geometry = abg._room_geometry_index(floor_plan)
-    fallback_geometry = abg._room_geometry_index(floor_plan)
+    indexed_geometry = abg.room_geometry_index(floor_plan)
+    fallback_geometry = abg.room_geometry_index(floor_plan)
 
     with patch.object(abg, "_MAX_NEIGHBORHOOD_QUERY_CELLS", 4_096):
-        abg._area_geometry_components(
+        abg.area_geometry_components(
             floor_plan, circles, room_geometry=indexed_geometry
         )
     with patch.object(abg, "_MAX_NEIGHBORHOOD_QUERY_CELLS", 0):
-        abg._area_geometry_components(
+        abg.area_geometry_components(
             floor_plan, circles, room_geometry=fallback_geometry
         )
 
@@ -1874,7 +1874,7 @@ def test_local_segment_matching_finds_non_greedy_pairing() -> None:
 
 
 def test_local_segment_correspondence_charges_candidate_generation() -> None:
-    geometry = abg._room_geometry_index(_floor_plan())
+    geometry = abg.room_geometry_index(_floor_plan())
     geometry._query_work_remaining = 5
     context = (frozenset({0}), frozenset({0}), (), frozenset({(1, 1)}))
 
@@ -1922,7 +1922,7 @@ def test_local_segment_correspondence_caps_segment_count() -> None:
 def test_local_segment_correspondence_caps_compatible_pairs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(abg, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 20_000)
+    monkeypatch.setattr(abg, "MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 20_000)
     segments = tuple((index * 1_000, 0, index * 1_000, 1) for index in range(16_385))
 
     with pytest.raises(GeometryTooComplex):
@@ -2593,12 +2593,12 @@ def test_unanchored_anchor_recomputation_budget_exhaustion_fails_closed(
     def exhaust_budget(*args, **kwargs):
         raise GeometryTooComplex("synthetic anchor query exhaustion")
 
-    monkeypatch.setattr(abg, "_translation_room_anchors", exhaust_budget)
+    monkeypatch.setattr(abg, "translation_room_anchors", exhaust_budget)
     assert area_binding_status(area, moved) is AreaBindingStatus.INVALID
 
 
 def test_room_anchor_containment_uses_the_shared_geometry_budget() -> None:
-    geometry = abg._room_geometry_index(_floor_plan())
+    geometry = abg.room_geometry_index(_floor_plan())
     geometry._query_work_remaining = 1
 
     with pytest.raises(GeometryTooComplex, match="query budget exhausted"):
@@ -2608,7 +2608,7 @@ def test_room_anchor_containment_uses_the_shared_geometry_budget() -> None:
 
 
 def test_room_anchor_containment_rejects_an_exhausted_shared_budget() -> None:
-    geometry = abg._room_geometry_index(_floor_plan())
+    geometry = abg.room_geometry_index(_floor_plan())
     geometry._query_work_remaining = 0
 
     with pytest.raises(GeometryTooComplex, match="budget exhausted"):
@@ -2724,7 +2724,7 @@ def test_room_frame_reconciles_remote_reshaping_with_unchanged_bounds(
         )
 
     saved = area["map_binding"]["frame"]["rooms"][0]["boundary_mm"]
-    current = abg._translation_room_anchors(reshaped, circles)[0]["boundary_mm"]
+    current = abg.translation_room_anchors(reshaped, circles)[0]["boundary_mm"]
     assert abg.room_bounds(saved) == abg.room_bounds(current)
     assert saved != current
     assert area_binding_status(area, reshaped) is AreaBindingStatus.CURRENT
@@ -2761,11 +2761,11 @@ def test_scoped_binding_rejects_malformed_translation_room_anchors() -> None:
 
     corrupted = {**area, "map_binding": dict(area["map_binding"])}
     corrupted["map_binding"]["frame"]["rooms"] = [*original]
-    with patch.object(abg, "_MAX_TRANSLATION_ROOM_ANCHORS", 0):
+    with patch.object(abg, "MAX_TRANSLATION_ROOM_ANCHORS", 0):
         assert (
             area_binding_status(corrupted, _floor_plan()) is AreaBindingStatus.INVALID
         )
-    with patch.object(abg, "_MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS", 0):
+    with patch.object(abg, "MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS", 0):
         assert (
             area_binding_status(corrupted, _floor_plan()) is AreaBindingStatus.INVALID
         )
@@ -2955,12 +2955,12 @@ def test_room_frame_rejects_rotation_with_short_edge_fixed_extrema(
     )
 
     saved_anchor = area["map_binding"]["frame"]["rooms"][0]
-    current_anchor = abg._translation_room_anchors(rotated, [circle])[0]
+    current_anchor = abg.translation_room_anchors(rotated, [circle])[0]
     assert area_binding_status(area, rotated) is AreaBindingStatus.GEOMETRY_CHANGED
-    assert not abg._room_frame_matches(
+    assert not abg.room_frame_matches(
         saved_anchor,
         current_anchor,
-        abg._room_geometry_index(rotated),
+        abg.room_geometry_index(rotated),
     )
 
 
@@ -2987,7 +2987,7 @@ def test_room_frame_accepts_one_millimeter_corner_refinement() -> None:
 
 def test_translation_room_anchor_count_is_bounded() -> None:
     floor_plan = _floor_plan()
-    with patch.object(abg, "_MAX_TRANSLATION_ROOM_ANCHORS", 0):
+    with patch.object(abg, "MAX_TRANSLATION_ROOM_ANCHORS", 0):
         with pytest.raises(
             ValueError, match="too many rooms for scoped area frame anchors"
         ):
@@ -2996,7 +2996,7 @@ def test_translation_room_anchor_count_is_bounded() -> None:
 
 def test_translation_room_circle_association_count_is_bounded() -> None:
     with (
-        patch.object(abg, "_MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS", 0),
+        patch.object(abg, "MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS", 0),
         pytest.raises(ValueError, match="too many circle-room frame anchors"),
     ):
         binding_for_area(_floor_plan(), [{"x": 0.5, "y": 0.5, "radius": 0.1}])

@@ -12,7 +12,7 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.const import EVENT_PLAN_DOCKED, EVENT_PLAN_FINISHED
 from custom_components.matic_robot.managed_executor import (
-    _async_execute_rooms,
+    async_execute_rooms,
     async_finish_plan_run,
 )
 from custom_components.matic_robot.managed_run import RoomStoppedInPlaceError
@@ -32,10 +32,10 @@ async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
         raise ServiceValidationError("room interrupted") from cause
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=stopped_leg),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             run_plan_call(hass),
             manager,

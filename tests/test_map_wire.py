@@ -38,8 +38,8 @@ from custom_components.matic_robot.slam_history_format import SlamHistorySnapsho
 from custom_components.matic_robot.slam_history_view import MaticSlamHistoryView
 from custom_components.matic_robot.slam_run_history_view import MaticRunHistoryView
 from custom_components.matic_robot.slam_view_data import (
-    _map_session_key,
     catalog_entry_projection,
+    map_session_key,
 )
 from tests.test_floor_types import _request as _floor_request
 from tests.test_floor_types import _runtime as _floor_runtime
@@ -200,7 +200,7 @@ async def test_run_history_bytes() -> None:
 
 
 def runtime_key(runtime: SimpleNamespace) -> bytes:
-    key = _map_session_key(runtime)
+    key = map_session_key(runtime)
     assert key is not None
     return key.encode()
 

@@ -25,10 +25,10 @@ from .client import MaticError, RobotActivity, UserCommand
 from .const import DOMAIN, EVENT_PLAN_FINISHED, EVENT_PLAN_STARTED
 from .managed_run import (
     PlanCancelledError,
+    PreparedRoomDispatch,
     RoomInterruptedError,
     RoomStoppedInPlaceError,
     RoomTakenOverError,
-    _PreparedRoomDispatch,
 )
 from .native_completion import native_room_key
 from .plan_model import (
@@ -61,7 +61,7 @@ _LOGGER = logging.getLogger(__name__)
 class _Handoff(NamedTuple):
     """How a leg starts: the dispatch it adopts and the boundary a new one checks."""
 
-    dispatch: _PreparedRoomDispatch | None = None
+    dispatch: PreparedRoomDispatch | None = None
     history: frozenset[str] | None = None
     revision: str | None = None
 
@@ -90,7 +90,7 @@ class _PlanRun:
     missing_rooms: Sequence[Mapping[str, str | None]]
     on_started: Callable[[str], None] | None
     # The mission a recovered run adopts for its first remaining leg.
-    recovered_dispatch: _PreparedRoomDispatch | None
+    recovered_dispatch: PreparedRoomDispatch | None
     cancel_event: asyncio.Event
     motion_token: int
     # The identity of the mission the run is on, b"" when none.
@@ -124,7 +124,7 @@ class _PlanRun:
         self.run_started = recovery is not None
         if recovery is None:
             self.started_at = dt_util.utcnow().isoformat()
-            self.provenance = dispatch_control._run_provenance(self.call)
+            self.provenance = dispatch_control.run_provenance(self.call)
             self.checkpoint = RecoveryCheckpoint.parse({})
             self.run = Run()
         else:
@@ -134,7 +134,7 @@ class _PlanRun:
             self.provenance = recovery.provenance
             self.checkpoint = recovery.checkpoint
             self.run = Run.from_checkpoint(self.checkpoint)
-        self.outer_command = dispatch_control._guard_native_commands(
+        self.outer_command = dispatch_control.guard_native_commands(
             self.managed_user_command,
             manager,
             self.serial_number,
@@ -170,7 +170,7 @@ class _PlanRun:
             )
         return write
 
-    async def save_dispatch(self, dispatch: _PreparedRoomDispatch) -> None:
+    async def save_dispatch(self, dispatch: PreparedRoomDispatch) -> None:
         await self.advance(
             DispatchRecorded(
                 dispatch.dispatched_at,
@@ -209,7 +209,7 @@ class _PlanRun:
         # Publish ownership before the first suspending check. Otherwise
         # Stop can observe no run while this start waits for an old stop
         # fence to clear, and prepare_run would erase its cancellation.
-        await dispatch_control._ensure_stop_settled(
+        await dispatch_control.ensure_stop_settled(
             self.hass,
             self.manager,
             self.serial_number,
@@ -370,9 +370,9 @@ class _PlanRun:
 
             async def dispatch(
                 on_identity: Callable[[bytes | None], None],
-            ) -> _PreparedRoomDispatch:
+            ) -> PreparedRoomDispatch:
                 await self.advance(LegDispatching(index))
-                return await dispatch_control._async_dispatch_leg_command(
+                return await dispatch_control.async_dispatch_leg_command(
                     self.robot,
                     leg,
                     self.motion_token,
@@ -401,13 +401,13 @@ class _PlanRun:
                 self.bind_native_identity,
                 back_to_handoff,
                 partial(
-                    dispatch_control._async_cleanup_managed_motion,
+                    dispatch_control.async_cleanup_managed_motion,
                     self.outer_command,
                     self.motion_token,
                     dispatch_attempted=True,
                 ),
                 partial(
-                    dispatch_control._shutdown_suspends_run,
+                    dispatch_control.shutdown_suspends_run,
                     self.hass,
                     self.manager,
                     self.serial_number,
@@ -415,7 +415,7 @@ class _PlanRun:
             )
             if prepared is not None:
                 return _Handoff(prepared, history, revision)
-        if not await observation._async_wait_for_settled_leg_handoff(
+        if not await observation.async_wait_for_settled_leg_handoff(
             self.robot,
             self.cancel_event,
             expected_identity=self.native_identity,
@@ -450,7 +450,7 @@ class _PlanRun:
     async def async_run_leg(self, index: int, leg: PlanLeg, handoff: _Handoff) -> bool:
         """Run one area or room leg and report whether it settled."""
         if isinstance(leg, AreaLeg):
-            settled = await area_execution._async_run_area_leg(
+            settled = await area_execution.async_run_area_leg(
                 self.hass,
                 self.call,
                 self.manager,
@@ -484,7 +484,7 @@ class _PlanRun:
             if self.recovery is not None and index == self.run.leg_index
             else None
         )
-        return await leg_execution._async_run_leg(
+        return await leg_execution.async_run_room_leg(
             self.hass,
             self.call,
             self.manager,
@@ -536,7 +536,7 @@ class _PlanRun:
             not (self.call.data["return_to_base"] or self.finish_room_event.is_set())
             or current is None
             or self.outer_command is None
-            or dispatch_control._stop_is_pending(self.manager, self.serial_number)
+            or dispatch_control.stop_is_pending(self.manager, self.serial_number)
             or (current.activity in home_or_returning and not smart_stopped)
         ):
             return
@@ -544,7 +544,7 @@ class _PlanRun:
             if current.activity not in home_or_returning:
                 await self.outer_command(self.motion_token, UserCommand.DOCK)
             if smart_stopped:
-                dispatch_control._schedule_run_dock_confirmation(
+                dispatch_control.schedule_run_dock_confirmation(
                     self.hass,
                     self.manager,
                     self.robot,
@@ -564,7 +564,7 @@ class _PlanRun:
     def cancelled(self, err: PlanCancelledError) -> None:
         """Attribute a cancelled run, or keep it for restart on shutdown."""
         manager, serial_number = self.manager, self.serial_number
-        if dispatch_control._shutdown_suspends_run(self.hass, manager, serial_number):
+        if dispatch_control.shutdown_suspends_run(self.hass, manager, serial_number):
             self.shutdown_suspended = True
             return
         reason = manager.control.cancellation_reason(serial_number)
@@ -578,7 +578,7 @@ class _PlanRun:
             self.ending = ("cancelled", "managed_stop", "managed_cancellation")
         elif "low_charge" in (
             getattr(err, "suspend_reason", None),
-            dispatch_control._suspended_run_reason(manager, serial_number),
+            dispatch_control.suspended_run_reason(manager, serial_number),
         ):
             self.ending = ("recharge_suspended", "low_charge", "robot")
         else:
@@ -586,7 +586,7 @@ class _PlanRun:
 
     async def async_failed(self, err: BaseException) -> bool:
         """Attribute a failed run and return whether the error propagates."""
-        if dispatch_control._shutdown_suspends_run(
+        if dispatch_control.shutdown_suspends_run(
             self.hass, self.manager, self.serial_number
         ):
             self.shutdown_suspended = True
@@ -611,12 +611,12 @@ class _PlanRun:
         elif isinstance(leaf_error, RoomTakenOverError):
             self.ending = ("unverified", "native_task_taken_over", "unknown")
         elif isinstance(leaf_error, RoomInterruptedError):
-            reason_code = managed_run._interruption_reason_code(leaf_error)
+            reason_code = managed_run.interruption_reason_code(leaf_error)
             self.ending = ("unverified", reason_code, "unknown")
         else:
             self.ending = (
                 "failed",
-                managed_run._failure_reason_code(err),
+                managed_run.failure_reason_code(err),
                 "unknown"
                 if isinstance(err, HomeAssistantError | MaticError | TimeoutError)
                 else "internal",
@@ -671,7 +671,7 @@ class _PlanRun:
         }:
             try:
                 session_ended = (
-                    await observation._async_active_session_state(
+                    await observation.async_active_session_state(
                         self.robot.active_session
                     )
                 ) is False
@@ -691,12 +691,12 @@ class _PlanRun:
                 or current.activity is not RobotActivity.RETURNING
                 or current.low_charge
             )
-            and managed_run._coverage_guard_cause(err) is None
-            and not dispatch_control._managed_stop_fence_owned_by_run(
+            and managed_run.coverage_guard_cause(err) is None
+            and not dispatch_control.managed_stop_fence_owned_by_run(
                 manager, serial_number, self.run_id
             )
         ):
-            await dispatch_control._async_cleanup_managed_motion(
+            await dispatch_control.async_cleanup_managed_motion(
                 self.outer_command, self.motion_token, dispatch_attempted=True
             )
 
@@ -810,7 +810,7 @@ async def async_finish_plan_run(
             manager.control.run_ended(serial_number, started["run_id"])
 
 
-async def _async_execute_rooms(
+async def async_execute_rooms(
     hass: HomeAssistant,
     call: ServiceCall,
     manager: CleaningPlanManager,
@@ -825,7 +825,7 @@ async def _async_execute_rooms(
     mapped_room_names: tuple[str, ...] = (),
     floor_is_current: Callable[[], bool] | None = None,
     recovery: LastRun | None = None,
-    recovered_dispatch: _PreparedRoomDispatch | None = None,
+    recovered_dispatch: PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
     validate_prepared_run: Callable[[], None] | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,

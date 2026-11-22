@@ -20,14 +20,14 @@ from custom_components.matic_robot.client.commands import _wrapped_uuid
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import RobotActivity
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_reconciliation import (
     _async_reconcile_grouped_history,
 )
 from custom_components.matic_robot.managed_run import (
+    PreparedRoomDispatch,
     RoomInterruptedError,
     RoomRunOutcome,
-    _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from tests.session_fakes import FakeRobot, robot_port, run_step
@@ -40,8 +40,8 @@ def _active_identity() -> bytes:
     return _field(1, mission) + _field(2, session)
 
 
-def _dispatch(rooms: tuple[CleaningRoom, ...]) -> _PreparedRoomDispatch:
-    return _PreparedRoomDispatch(
+def _dispatch(rooms: tuple[CleaningRoom, ...]) -> PreparedRoomDispatch:
+    return PreparedRoomDispatch(
         rooms,
         frozenset({b"old-session"}),
         dt_util.utcnow() - timedelta(seconds=5),
@@ -105,16 +105,16 @@ async def _run_interrupted_leg(hass, monkeypatch, *, owns_motion: bool):
 
     monkeypatch.setattr(
         managed_observation_module,
-        "_async_wait_for_owned_start",
+        "async_wait_for_owned_start",
         AsyncMock(return_value=RobotActivity.CLEANING),
     )
     monkeypatch.setattr(
-        managed_observation_module._LegOutcomeObserver, "next", wait_for_outcome
+        managed_observation_module.LegOutcomeObserver, "next", wait_for_outcome
     )
     scheduled = MagicMock()
     monkeypatch.setattr(
         reconciliation_module,
-        "_schedule_grouped_native_reconciliation",
+        "schedule_grouped_native_reconciliation",
         scheduled,
     )
     call = ServiceCall(
@@ -125,7 +125,7 @@ async def _run_interrupted_leg(hass, monkeypatch, *, owns_motion: bool):
         context=Context(),
     )
     task = asyncio.create_task(
-        _async_run_leg(
+        async_run_room_leg(
             hass,
             call,
             manager,
@@ -194,12 +194,12 @@ async def test_unverified_group_does_not_save_marker_after_floor_changes(
     )
     monkeypatch.setattr(
         managed_observation_module,
-        "_async_wait_for_owned_start",
+        "async_wait_for_owned_start",
         AsyncMock(return_value=RobotActivity.CLEANING),
     )
     monkeypatch.setattr(
         managed_observation_module,
-        "_async_verify_leg_completion",
+        "async_verify_leg_completion",
         AsyncMock(return_value=None),
     )
     outcomes = iter(
@@ -214,7 +214,7 @@ async def test_unverified_group_does_not_save_marker_after_floor_changes(
         return next(outcomes)
 
     monkeypatch.setattr(
-        managed_observation_module._LegOutcomeObserver, "next", next_outcome
+        managed_observation_module.LegOutcomeObserver, "next", next_outcome
     )
 
     call = ServiceCall(
@@ -224,7 +224,7 @@ async def test_unverified_group_does_not_save_marker_after_floor_changes(
         {"plan_id": "weekly", "completion_timeout": 10, "start_timeout": 2},
         context=Context(),
     )
-    finished = await _async_run_leg(
+    finished = await async_run_room_leg(
         hass,
         call,
         manager,

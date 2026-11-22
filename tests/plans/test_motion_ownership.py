@@ -18,10 +18,10 @@ from custom_components.matic_robot.client.models import (
     RobotActivity,
     Room,
 )
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_run import (
+    PreparedRoomDispatch,
     RoomInterruptedError,
-    _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
@@ -317,12 +317,12 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
             AsyncMock(side_effect=terminal_error),
         ),
         pytest.raises(ServiceValidationError) as failure,
     ):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             run_plan_call(hass),
             manager,
@@ -335,9 +335,7 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
             ),
             token,
             managed_user_command=replace_during_cleanup,
-            prepared_dispatch=_PreparedRoomDispatch(
-                (room,), frozenset(), dispatched_at
-            ),
+            prepared_dispatch=PreparedRoomDispatch((room,), frozenset(), dispatched_at),
             floor_token="floor",
             checkpoint_dispatch=AsyncMock(),
             advance=run_step,

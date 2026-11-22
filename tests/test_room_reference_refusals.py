@@ -7,7 +7,7 @@ from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.matic_robot.client import FloorPlan, Room
 from custom_components.matic_robot.robot_controls import _resolve_one_room
-from custom_components.matic_robot.service_plans import _resolve_room_id
+from custom_components.matic_robot.service_plans import resolve_room_id
 
 _SQUARE = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
 _ROOMS = {"room-a": "Hall", "room-b": "hall", "room-c": "Den"}
@@ -40,7 +40,7 @@ def test_room_refusal_follows_the_error_type(
     with pytest.raises(ServiceValidationError) as control:
         _resolve_one_room(identifier, _floor_plan())
     with pytest.raises(ServiceValidationError) as saved:
-        _resolve_room_id(identifier, _ROOMS)
+        resolve_room_id(identifier, _ROOMS)
 
     for refusal in (control.value, saved.value):
         assert refusal.translation_key == key

@@ -30,11 +30,11 @@ from .const import (
 )
 from .llm_camera import MaticInvestigateTool, MaticTakePhotoTool
 from .llm_common import (
-    _READ_ONLY,
-    _AdministratorAPI,
-    _exposed_to,
-    _MaticTool,
-    _robot_identifiers,
+    READ_ONLY,
+    AdministratorAPI,
+    MaticTool,
+    exposed_to,
+    robot_identifiers,
 )
 from .llm_control import (
     MaticCleanRoomsTool,
@@ -177,7 +177,7 @@ _SAFE_EVENT_FIELDS = (
 )
 
 
-class MaticRobotStatusAPI(_AdministratorAPI):
+class MaticRobotStatusAPI(AdministratorAPI):
     """Read-only robot status, and the event trail and administrators it keeps."""
 
     prompt = ROBOT_STATUS_PROMPT
@@ -277,7 +277,7 @@ class MaticRobotStatusAPI(_AdministratorAPI):
             self.operational_events.append(captured)
 
 
-class MaticRobotControlAPI(_AdministratorAPI):
+class MaticRobotControlAPI(AdministratorAPI):
     """The read-only tools and the cleaning actions Matic Map offers."""
 
     prompt = ROBOT_CONTROL_PROMPT
@@ -301,7 +301,7 @@ class MaticRobotControlAPI(_AdministratorAPI):
         ]
 
 
-class MaticFirmwareResearchAPI(_AdministratorAPI):
+class MaticFirmwareResearchAPI(AdministratorAPI):
     """Firmware reports and the research records an investigator writes."""
 
     prompt = FIRMWARE_RESEARCH_PROMPT
@@ -318,7 +318,7 @@ class MaticFirmwareResearchAPI(_AdministratorAPI):
         ]
 
 
-class MaticGetRecentEventsTool(_MaticTool):
+class MaticGetRecentEventsTool(MaticTool):
     """Return a bounded event trail kept since Home Assistant started."""
 
     name = "MaticGetRecentEvents"
@@ -329,7 +329,7 @@ class MaticGetRecentEventsTool(_MaticTool):
         "are left out by default so they can't hide other events; set "
         "`include_activity` or use `MaticGetActivity` for them."
     )
-    annotations = _READ_ONLY
+    annotations = READ_ONLY
     parameters = llm.Tool.parameters.extend(
         {
             probatio.Optional("limit", default=20): probatio.All(
@@ -354,7 +354,7 @@ class MaticGetRecentEventsTool(_MaticTool):
             if args["include_activity"]
             else self.api.operational_events
         )
-        visible = _robot_identifiers(hass, self.entries(hass, llm_context))
+        visible = robot_identifiers(hass, self.entries(hass, llm_context))
         events = [
             event
             for event in source
@@ -401,7 +401,7 @@ def async_get_tools(
     if api is None or user_id not in api.status.administrators:
         return None
     if not any(
-        _exposed_to(hass, llm_context.assistant, entry)
+        exposed_to(hass, llm_context.assistant, entry)
         for entry in hass.config_entries.async_loaded_entries(DOMAIN)
     ):
         return None

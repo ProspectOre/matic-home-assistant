@@ -13,8 +13,8 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.plan_model import CleaningRoom, _managed_stop_policy
+from custom_components.matic_robot.managed_executor import async_execute_rooms
+from custom_components.matic_robot.plan_model import CleaningRoom, managed_stop_policy
 from custom_components.matic_robot.restart import async_recover_managed_run
 from tests.plans.fakes import interrupted_run, memory_manager, recovery_record
 from tests.session_fakes import robot_port
@@ -82,11 +82,11 @@ async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
         CleaningRoom("room-b", "Room B", "vacuum", "standard"),
     ]
     with patch(
-        "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
+        "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
         new=stop_fence,
     ):
         task = asyncio.create_task(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 call,
                 manager,
@@ -229,11 +229,11 @@ async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
         },
     )
     with patch(
-        "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
+        "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
         new=hold_preflight,
     ):
         task = asyncio.create_task(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 call,
                 manager,
@@ -353,16 +353,16 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
+            "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
             new=hold_preflight,
         ),
         patch(
-            "custom_components.matic_robot.managed_leg._async_run_leg",
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
             new=hold_room,
         ),
     ):
         task = asyncio.create_task(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 call,
                 manager,
@@ -526,12 +526,12 @@ async def test_executor_maps_a_conflicting_restored_reservation_to_validation_er
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
+            "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
             new=AsyncMock(),
         ) as stop_settlement,
         pytest.raises(ServiceValidationError) as refused,
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,
@@ -661,7 +661,7 @@ async def test_rejected_restart_recovery_releases_restored_reservation(hass) -> 
     )
 
     with patch(
-        "custom_components.matic_robot.restart._async_execute_rooms",
+        "custom_components.matic_robot.restart.async_execute_rooms",
         new=AsyncMock(),
     ) as executor:
         await async_recover_managed_run(hass, entry, "serial")
@@ -729,7 +729,7 @@ async def test_request_stop_fails_closed_for_invalid_persisted_plan(hass) -> Non
 
 
 def test_invalid_persisted_stop_policy_uses_safe_defaults() -> None:
-    assert _managed_stop_policy(None) == (False, 50)
+    assert managed_stop_policy(None) == (False, 50)
 
 
 async def test_prepared_preview_rejection_cleans_reservation_before_dispatch(
@@ -758,13 +758,15 @@ async def test_prepared_preview_rejection_cleans_reservation_before_dispatch(
 
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
+            "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
             new=AsyncMock(),
         ),
-        patch("custom_components.matic_robot.managed_leg._async_run_leg") as run_leg,
+        patch(
+            "custom_components.matic_robot.managed_leg.async_run_room_leg"
+        ) as run_leg,
         pytest.raises(ValueError, match="preview changed"),
     ):
-        await _async_execute_rooms(
+        await async_execute_rooms(
             hass,
             call,
             manager,

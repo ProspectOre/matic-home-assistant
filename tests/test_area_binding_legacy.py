@@ -44,9 +44,9 @@ def test_malformed_record_has_no_exact_form(version, change) -> None:
 @pytest.mark.parametrize(
     "limit",
     [
-        "_MAX_TRANSLATION_ROOM_ANCHORS",
-        "_MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS",
-        "_MAX_ROOM_FRAME_POINTS",
+        "MAX_TRANSLATION_ROOM_ANCHORS",
+        "MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS",
+        "MAX_ROOM_FRAME_POINTS",
     ],
 )
 def test_record_over_a_room_frame_limit_has_no_exact_form(limit, monkeypatch) -> None:

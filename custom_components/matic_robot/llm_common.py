@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 NON_ADMIN_PROMPT = (
     "These tools are only for Home Assistant administrators. Ask an administrator."
 )
-_READ_ONLY = llm.ToolAnnotations(
+READ_ONLY = llm.ToolAnnotations(
     read_only=True, destructive=False, idempotent=True, open_world=False
 )
 _ERRORS = {
@@ -81,7 +81,7 @@ _ERRORS = {
 }
 
 
-def _error(key: str, **placeholders: str) -> HomeAssistantError:
+def tool_error(key: str, **placeholders: str) -> HomeAssistantError:
     """Create a translatable tool error that a model can relay to people."""
     return HomeAssistantError(
         _ERRORS[key].format(**placeholders),
@@ -103,10 +103,10 @@ async def _require_current_admin(
 ) -> None:
     """Fail closed when the caller is not an administrator now."""
     if not await _is_admin(hass, llm_context):
-        raise _error("llm_admin_required")
+        raise tool_error("llm_admin_required")
 
 
-class _AdministratorAPI(llm.API):
+class AdministratorAPI(llm.API):
     """Offer tools to administrators and a plain prompt line to everyone else."""
 
     prompt: str
@@ -129,7 +129,7 @@ class _AdministratorAPI(llm.API):
         )
 
 
-class _MaticTool(llm.Tool):
+class MaticTool(llm.Tool):
     """A Matic tool that only a current administrator can call.
 
     On every path, Assist or an LLM API, a tool sees only robots whose vacuum
@@ -145,12 +145,12 @@ class _MaticTool(llm.Tool):
         """Return the loaded robots this caller may see, or a plain error."""
         loaded = hass.config_entries.async_loaded_entries(DOMAIN)
         if not loaded:
-            raise _error("llm_no_robot")
+            raise tool_error("llm_no_robot")
         entries = [
-            entry for entry in loaded if _exposed_to(hass, llm_context.assistant, entry)
+            entry for entry in loaded if exposed_to(hass, llm_context.assistant, entry)
         ]
         if not entries:
-            raise _error("llm_robot_not_exposed")
+            raise tool_error("llm_robot_not_exposed")
         return entries
 
     def resolve_entry(
@@ -184,12 +184,12 @@ class _MaticTool(llm.Tool):
         )
 
 
-_ROBOT_FIELD: dict[probatio.Marker, Any] = {
+ROBOT_FIELD: dict[probatio.Marker, Any] = {
     probatio.Optional("robot"): probatio.All(cv.string, probatio.Length(min=1, max=128))
 }
 
 
-def _exposed_to(hass: HomeAssistant, assistant: str, entry: MaticConfigEntry) -> bool:
+def exposed_to(hass: HomeAssistant, assistant: str, entry: MaticConfigEntry) -> bool:
     """Return whether the robot's vacuum is exposed to the assistant."""
     return any(
         async_should_expose(hass, assistant, entity.entity_id)
@@ -200,9 +200,7 @@ def _exposed_to(hass: HomeAssistant, assistant: str, entry: MaticConfigEntry) ->
     )
 
 
-def _robot_identifiers(
-    hass: HomeAssistant, entries: list[MaticConfigEntry]
-) -> set[str]:
+def robot_identifiers(hass: HomeAssistant, entries: list[MaticConfigEntry]) -> set[str]:
     """Return the entry, device and entity ids that identify these robots."""
     registry = er.async_get(hass)
     identifiers: set[str] = set()
@@ -221,7 +219,7 @@ def _resolve_entry(
     """Resolve one robot without exposing or accepting its serial number."""
     if reference is None:
         if len(entries) != 1:
-            raise _error("llm_robot_required")
+            raise tool_error("llm_robot_required")
         return entries[0]
     folded = reference.casefold()
     for entry in entries:
@@ -233,23 +231,23 @@ def _resolve_entry(
         if folded
         in {
             entry.title.casefold(),
-            _entry_name(entry).casefold(),
+            entry_name(entry).casefold(),
         }
     ]
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
-        raise _error("llm_robot_ambiguous")
-    raise _error("llm_robot_unknown", robot=reference)
+        raise tool_error("llm_robot_ambiguous")
+    raise tool_error("llm_robot_unknown", robot=reference)
 
 
-def _entry_name(entry: MaticConfigEntry) -> str:
+def entry_name(entry: MaticConfigEntry) -> str:
     """Return the local robot display name with a config-entry fallback."""
     name = entry.runtime_data.session.info.name
     return name if name else entry.title
 
 
-def _resolve_plan_id(
+def resolve_plan_id(
     manager: CleaningPlanManager,
     serial_number: str,
     requested: str | None,
@@ -267,7 +265,7 @@ def _resolve_plan_id(
         if str(plan.get("name", plan_id)).casefold() == folded
     ]
     if len(matches) > 1:
-        raise _error("llm_plan_ambiguous", plan=requested)
+        raise tool_error("llm_plan_ambiguous", plan=requested)
     if matches:
         return matches[0]
-    raise _error("llm_plan_unknown", plan=requested)
+    raise tool_error("llm_plan_unknown", plan=requested)

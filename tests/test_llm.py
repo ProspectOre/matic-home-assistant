@@ -57,8 +57,8 @@ from custom_components.matic_robot.llm import (
 from custom_components.matic_robot.llm_common import (
     _ERRORS,
     NON_ADMIN_PROMPT,
-    _entry_name,
     _resolve_entry,
+    entry_name,
 )
 from custom_components.matic_robot.llm_control import (
     MaticCleanRoomsTool,
@@ -679,7 +679,7 @@ async def test_operations_and_robot_resolution() -> None:
     }
     assert robot["managed_runner"]["lock_held"] is True
     assert robot["native_reconciliation"]["room"] == "Study"
-    assert _entry_name(fallback) == "Fallback"
+    assert entry_name(fallback) == "Fallback"
 
 
 async def test_operations_includes_read_only_bag_observation_when_available() -> None:
@@ -1317,7 +1317,7 @@ async def test_plan_readiness_reuses_one_geometry_index_for_reviewable_areas() -
             return_value=True,
         ),
         patch(
-            "custom_components.matic_robot.llm_plan._room_geometry_index",
+            "custom_components.matic_robot.llm_plan.room_geometry_index",
             return_value=geometry,
         ) as build_index,
         patch(
@@ -1521,7 +1521,7 @@ async def test_plan_readiness_recognizes_reviewable_stale_v4_area(hass) -> None:
     )
     circles = [{"x": 5.0, "y": 4.4, "radius": 0.1}]
     with patch(
-        "custom_components.matic_robot.area_binding_geometry._translation_room_anchors",
+        "custom_components.matic_robot.area_binding_geometry.translation_room_anchors",
         return_value=None,
     ):
         saved_area = {

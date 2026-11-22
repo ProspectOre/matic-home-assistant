@@ -31,8 +31,8 @@ from .coverage_accounting import (
 from .plan_model import plan_floor_token
 from .plan_records import LastRun, RecoveryCheckpoint
 from .plan_repository import (
+    MetadataLockLease,
     PlanRepository,
-    _MetadataLockLease,
 )
 from .run_machine import RunPhase
 
@@ -94,7 +94,7 @@ class PlanRecovery:
     ) -> None:
         """Persist the resolved queue, in its stored form, for restart recovery."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number):
                 run = self.repository.run_record(serial_number, run_id)
                 if run is None:
@@ -176,7 +176,7 @@ class PlanRecovery:
     ) -> bool:
         """Persist a verified dispatch only within its exact owned queue leg."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number):
                 checkpoint = self.checkpoint(serial_number, run_id)
                 if (
@@ -255,7 +255,7 @@ class PlanRecovery:
     ) -> None:
         """Persist the generated native identity before mixed START is sent."""
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.repository.commit(serial_number):
                 if not is_sha256_hex(session_identity_hash):
                     raise ValueError(
@@ -376,7 +376,7 @@ class PlanRecovery:
     ) -> None:
         """Do not lose a user's stop request if HA restarts before completion."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number, user=True):
                 run = (
                     self.repository.run_record(serial_number, run_id)
@@ -422,7 +422,7 @@ class PlanRecovery:
     ) -> None:
         """Publish reconnection state without inventing a robot outcome."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
                 run = self.repository.last_run(serial_number)
                 if run is None or not run.running:

@@ -25,8 +25,8 @@ from .plan_catalog import PlanCatalog
 from .plan_history import PlanHistory
 from .plan_ledger import (
     PlanLedger,
-    _close_unfinished_area_records,
-    _close_unfinished_room_records,
+    close_unfinished_area_records,
+    close_unfinished_room_records,
 )
 from .plan_model import CleaningRoom as CleaningRoom
 from .plan_records import stored_active_plan, stored_last_run
@@ -35,8 +35,8 @@ from .plan_repository import (
     MetadataAdmissionClosedError as MetadataAdmissionClosedError,
 )
 from .plan_repository import (
+    MetadataLockLease,
     PlanRepository,
-    _MetadataLockLease,
 )
 from .room_identity import room_cadence_identity as room_cadence_identity
 from .run_control import (
@@ -104,7 +104,7 @@ class CleaningPlanManager:
                     )
                     recovered = True
             fence_value = robot.get(plan_storage.STOP_FENCE_EXPIRES_AT)
-            fence_remaining = native_history._stop_fence_remaining_seconds(fence_value)
+            fence_remaining = native_history.stop_fence_remaining_seconds(fence_value)
             if fence_value is not None:
                 if fence_remaining is None or fence_remaining <= 0:
                     robot.pop(plan_storage.STOP_FENCE_EXPIRES_AT, None)
@@ -113,11 +113,11 @@ class CleaningPlanManager:
                     recovered = True
                 else:
                     self.control.arm_stop_pending(str(serial_number), fence_remaining)
-            pending = native_history._validated_native_reconciliation(
+            pending = native_history.validated_native_reconciliation(
                 robot.get("pending_native_reconciliation")
             )
             if pending is not None:
-                remaining = native_history._native_reconciliation_remaining_seconds(
+                remaining = native_history.native_reconciliation_remaining_seconds(
                     pending
                 )
                 if remaining <= 0:
@@ -180,11 +180,11 @@ class CleaningPlanManager:
                 robot["last_interrupted_plan"] = active.published()
                 robot["active_plan"] = None
                 recovered = True
-            if checkpoint is None and _close_unfinished_room_records(
+            if checkpoint is None and close_unfinished_room_records(
                 robot, recovered_at=dt_util.utcnow().isoformat()
             ):
                 recovered = True
-            if checkpoint is None and _close_unfinished_area_records(
+            if checkpoint is None and close_unfinished_area_records(
                 robot, ended_at=dt_util.utcnow().isoformat()
             ):
                 recovered = True
@@ -200,7 +200,7 @@ class CleaningPlanManager:
         for done in tuple(self.repository.native_history_saves.get(serial_number, ())):
             await done.wait()
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             return await self.repository.async_remove(serial_number)
 
         def forget_runtime_state(_removed: bool) -> None:

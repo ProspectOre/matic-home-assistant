@@ -26,9 +26,9 @@ DURATION_PROFILE_KEYS = tuple(
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 
 
-def _admit_room_settings(record: dict[str, Any], room: CleaningRoom | None) -> None:
+def admit_room_settings(record: dict[str, Any], room: CleaningRoom | None) -> None:
     """Select an exact settings tier without discarding other successful tiers."""
-    record["duration_profiles"] = _duration_profiles(record)
+    record["duration_profiles"] = duration_profiles(record)
     if room is None or any(
         record.get(key) != getattr(room, key)
         for key in ("cleaning_mode", "coverage_setting")
@@ -51,7 +51,7 @@ def _admit_room_settings(record: dict[str, Any], room: CleaningRoom | None) -> N
     _project_duration_profile(record)
 
 
-def _latest_timestamp_value(
+def latest_timestamp_value(
     *values: object, now: datetime | None = None
 ) -> tuple[float, str] | None:
     """Return the latest trusted timestamp and its original ISO value."""
@@ -73,13 +73,13 @@ def _latest_timestamp_value(
     return max(timestamps, key=lambda item: item[0], default=None)
 
 
-def _latest_timestamp(*values: object, now: datetime | None = None) -> float | None:
+def latest_timestamp(*values: object, now: datetime | None = None) -> float | None:
     """Return the latest trusted timezone-aware room-history timestamp."""
-    latest = _latest_timestamp_value(*values, now=now)
+    latest = latest_timestamp_value(*values, now=now)
     return latest[0] if latest is not None else None
 
 
-def _active_elapsed_seconds(active: ActivePlan, now: datetime) -> int:
+def active_elapsed_seconds(active: ActivePlan, now: datetime) -> int:
     """Return elapsed cleaning time while excluding closed suspension segments."""
     elapsed = float(active.elapsed_seconds)
     if active.segment_started is not None:
@@ -120,7 +120,7 @@ def _duration_history(record: Mapping[str, Any]) -> list[int]:
     return [round(average)] * sample_count
 
 
-def _duration_profile_key(record: Mapping[str, Any]) -> str | None:
+def duration_profile_key(record: Mapping[str, Any]) -> str | None:
     """Accept only the finite supported mode/coverage combinations."""
     mode = record.get("cleaning_mode")
     coverage = record.get("coverage_setting")
@@ -130,10 +130,10 @@ def _duration_profile_key(record: Mapping[str, Any]) -> str | None:
     return key if key in DURATION_PROFILE_KEYS else None
 
 
-def _duration_profiles(record: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def duration_profiles(record: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Read bounded tiers, admitting legacy history only before its migration."""
     if "duration_profiles" not in record:
-        key = _duration_profile_key(record)
+        key = duration_profile_key(record)
         raw: Mapping[str, Any] = {key: record} if key is not None else {}
         legacy = True
     else:
@@ -161,14 +161,14 @@ def _duration_profiles(record: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                 len(history), stored_count(profile, "duration_samples")
             ),
         }
-        completed = _latest_timestamp_value(profile.get("last_completed"))
+        completed = latest_timestamp_value(profile.get("last_completed"))
         if completed is not None:
             normalized["last_completed"] = completed[1]
         profiles[key] = normalized
     return profiles
 
 
-def _normalize_duration_profiles(record: dict[str, Any]) -> bool:
+def normalize_duration_profiles(record: dict[str, Any]) -> bool:
     """Sanitize persisted tiers without inventing history for empty records."""
     if not any(
         key in record
@@ -180,7 +180,7 @@ def _normalize_duration_profiles(record: dict[str, Any]) -> bool:
         )
     ):
         return False
-    profiles = _duration_profiles(record)
+    profiles = duration_profiles(record)
     if record.get("duration_profiles") == profiles:
         return False
     record["duration_profiles"] = profiles
@@ -195,8 +195,8 @@ def _project_duration_profile(record: dict[str, Any]) -> None:
         "duration_samples",
     ):
         record.pop(name, None)
-    key = _duration_profile_key(record)
-    profile = _duration_profiles(record).get(key) if key is not None else None
+    key = duration_profile_key(record)
+    profile = duration_profiles(record).get(key) if key is not None else None
     if profile is not None:
         history = profile["duration_history_seconds"]
         record["duration_history_seconds"] = list(history)
@@ -204,15 +204,15 @@ def _project_duration_profile(record: dict[str, Any]) -> None:
         record["duration_samples"] = profile["duration_samples"]
 
 
-def _record_duration_sample(
+def record_duration_sample(
     record: dict[str, Any],
     room: CleaningRoom | None,
     duration: int,
     completed_at: str,
 ) -> None:
     """Add one admitted completion to its tier, never to an active other tier."""
-    profiles = _duration_profiles(record)
-    key = _duration_profile_key(asdict(room) if room is not None else {})
+    profiles = duration_profiles(record)
+    key = duration_profile_key(asdict(room) if room is not None else {})
     if key is not None:
         previous = profiles.get(key, {})
         history = [*previous.get("duration_history_seconds", []), duration]
@@ -228,11 +228,11 @@ def _record_duration_sample(
     record["last_duration_seconds"] = duration
 
 
-def _compatible_duration_history(
+def compatible_duration_history(
     robot: Mapping[str, Any], room_id: str, active_record: Mapping[str, Any]
 ) -> list[int]:
     """Return recent samples for one room with exactly matching settings."""
-    key = _duration_profile_key(active_record)
+    key = duration_profile_key(active_record)
     if key is None:
         return []
 
@@ -250,11 +250,11 @@ def _compatible_duration_history(
         record = records.get(room_id)
         if not isinstance(record, Mapping):
             continue
-        profile = _duration_profiles(record).get(key)
+        profile = duration_profiles(record).get(key)
         if profile is None:
             continue
         history = profile["duration_history_seconds"]
-        completed = _latest_timestamp(profile.get("last_completed"), now=now)
+        completed = latest_timestamp(profile.get("last_completed"), now=now)
         candidates.append((completed or 0.0, plan_id, history))
 
     history = [
@@ -265,7 +265,7 @@ def _compatible_duration_history(
     return history[-DURATION_HISTORY_MAX_SAMPLES:]
 
 
-def _expected_duration(record: Mapping[str, Any]) -> int | None:
+def expected_duration(record: Mapping[str, Any]) -> int | None:
     """Return a robust estimate only after enough recent successful samples."""
     history = _duration_history(record)
     if len(history) < DURATION_CONFIDENCE_MIN_SAMPLES:
@@ -273,7 +273,7 @@ def _expected_duration(record: Mapping[str, Any]) -> int | None:
     return max(1, round(median(history)))
 
 
-def _room_timing(
+def room_timing(
     robot: Mapping[str, Any], active: ActivePlan, now: datetime
 ) -> dict[str, Any]:
     """Sample the existing room clock and matching successful-duration baseline."""
@@ -285,13 +285,13 @@ def _room_timing(
         .get(room_id, {})
     )
     history = (
-        _compatible_duration_history(robot, room_id, record)
+        compatible_duration_history(robot, room_id, record)
         if room_id is not None
         else []
     )
-    expected = _expected_duration({"duration_history_seconds": history})
+    expected = expected_duration({"duration_history_seconds": history})
     return {
-        "active_elapsed_seconds": _active_elapsed_seconds(active, now),
+        "active_elapsed_seconds": active_elapsed_seconds(active, now),
         "expected_seconds": expected,
         "estimated_percent": _estimated_progress(active, expected, now=now),
         "baseline_samples": len(history),
@@ -309,5 +309,5 @@ def _estimated_progress(
         or expected <= 0
     ):
         return None
-    elapsed = _active_elapsed_seconds(active, now or dt_util.utcnow())
+    elapsed = active_elapsed_seconds(active, now or dt_util.utcnow())
     return max(0, min(100, math.floor((elapsed / expected) * 100)))

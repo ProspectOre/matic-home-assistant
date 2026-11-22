@@ -53,7 +53,7 @@ async def test_second_shutdown_during_recovery_preserves_checkpoint(
     with (
         patch("custom_components.matic_robot.restart.RECOVERY_RETRY_SECONDS", 0),
         patch(
-            "custom_components.matic_robot.restart._async_execute_rooms",
+            "custom_components.matic_robot.restart.async_execute_rooms",
             new_callable=AsyncMock,
         ) as execute,
     ):
@@ -76,7 +76,7 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
         raise asyncio.CancelledError
 
     with patch(
-        "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
+        "custom_components.matic_robot.managed_observation.async_wait_with_native_identity",
         side_effect=shutdown_monitor,
     ):
         with pytest.raises(asyncio.CancelledError):
@@ -104,11 +104,11 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
     entry.runtime_data.client.async_get_cleaning_session_identity.side_effect = identity
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_adjudicate_room_end",
+            "custom_components.matic_robot.managed_observation.async_adjudicate_room_end",
             AsyncMock(return_value=NativeRoomVerdict.COMPLETED),
         ),
         patch(
-            "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_dispatch.async_dispatch_leg_command",
             new_callable=AsyncMock,
         ) as dispatch,
     ):
@@ -137,7 +137,7 @@ async def test_credited_intermediate_leg_does_not_authorize_offline_queue_replay
     )
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
     with patch(
-        "custom_components.matic_robot.restart._async_execute_rooms",
+        "custom_components.matic_robot.restart.async_execute_rooms",
         new_callable=AsyncMock,
     ) as execute:
         await async_recover_managed_run(hass, entry, "serial")

@@ -23,8 +23,8 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.const import MAX_ROOM_SEQUENCE_SIZE
 from custom_components.matic_robot.native_history import (
-    _reconcile_pending_native_history,
-    _validated_native_reconciliation,
+    reconcile_pending_native_history,
+    validated_native_reconciliation,
 )
 from custom_components.matic_robot.plan_model import plan_floor_token
 from custom_components.matic_robot.plans import CleaningPlanManager
@@ -170,7 +170,7 @@ def _robot(marker: dict[str, Any]) -> dict[str, Any]:
 
 def test_grouped_marker_validator_normalizes_children() -> None:
     floor = _floor_plan()
-    pending = _validated_native_reconciliation(_marker(floor))
+    pending = validated_native_reconciliation(_marker(floor))
 
     assert pending is not None
     assert pending["plan_id"] == "weekly-plan"
@@ -196,7 +196,7 @@ def test_fresh_grouped_marker_freezes_one_expiry_for_every_room() -> None:
     marker = _marker(_floor_plan())
     marker.pop("expires_at")
 
-    pending = _validated_native_reconciliation(marker, create_expiry=True)
+    pending = validated_native_reconciliation(marker, create_expiry=True)
 
     assert pending is not None
     assert dt_util.parse_datetime(pending["expires_at"]) > dt_util.utcnow()
@@ -219,13 +219,13 @@ def test_legacy_single_room_marker_keeps_its_existing_shape_and_behavior() -> No
         "coverage_setting": "quick",
     }
 
-    assert _validated_native_reconciliation(legacy) == legacy
+    assert validated_native_reconciliation(legacy) == legacy
     robot = {
         "rotations": {},
         "rooms": {},
         "pending_native_reconciliation": deepcopy(legacy),
     }
-    assert _reconcile_pending_native_history(
+    assert reconcile_pending_native_history(
         robot,
         floor,
         [_record(_session_key(), rooms=("Kitchen",), completed_rooms=("Kitchen",))],
@@ -288,7 +288,7 @@ def test_grouped_marker_validator_rejects_invalid_envelopes(damage: str) -> None
     elif damage == "invalid-child-mode":
         pending["rooms"][1]["cleaning_mode"] = "unknown"
 
-    assert _validated_native_reconciliation(pending) is None
+    assert validated_native_reconciliation(pending) is None
 
 
 def test_group_reconciles_started_rooms_and_keeps_terminal_outcome() -> None:
@@ -301,7 +301,7 @@ def test_group_reconciles_started_rooms_and_keeps_terminal_outcome() -> None:
     record = _record(session_key)
     reconciled: list[dict[str, Any]] = []
 
-    assert _reconcile_pending_native_history(
+    assert reconcile_pending_native_history(
         robot, floor, [record], on_reconciled=reconciled.append
     )
 
@@ -327,7 +327,7 @@ def test_grouped_native_history_keeps_partial_marker_and_deduplicates_replay() -
     reconciled: list[dict[str, Any]] = []
     partial = _record(session_key, completed_rooms=("Kitchen",))
 
-    assert _reconcile_pending_native_history(
+    assert reconcile_pending_native_history(
         robot, floor, [partial], on_reconciled=reconciled.append
     )
     assert robot["pending_native_reconciliation"] is not None
@@ -337,7 +337,7 @@ def test_grouped_native_history_keeps_partial_marker_and_deduplicates_replay() -
     assert robot["last_run"]["completed_room_count"] == 1
     assert robot["last_run"]["outcome"] == "unverified"
 
-    assert not _reconcile_pending_native_history(
+    assert not reconcile_pending_native_history(
         robot, floor, [partial], on_reconciled=reconciled.append
     )
     assert robot["pending_native_reconciliation"] == original_pending
@@ -345,7 +345,7 @@ def test_grouped_native_history_keeps_partial_marker_and_deduplicates_replay() -
     assert len(reconciled) == 1
 
     completed = _record(session_key)
-    assert _reconcile_pending_native_history(
+    assert reconcile_pending_native_history(
         robot, floor, [completed], on_reconciled=reconciled.append
     )
     assert robot.get("pending_native_reconciliation") is None
@@ -357,7 +357,7 @@ def test_grouped_native_history_keeps_partial_marker_and_deduplicates_replay() -
         "room-kitchen",
         "room-study",
     ]
-    assert not _reconcile_pending_native_history(
+    assert not reconcile_pending_native_history(
         robot, floor, [completed], on_reconciled=reconciled.append
     )
     assert len(reconciled) == 2
@@ -381,7 +381,7 @@ def test_grouped_native_history_rejects_nonmatching_evidence_without_consuming_m
         record = _record(session_key)
         current_floor = _floor_plan(mission_id=8)
 
-    assert not _reconcile_pending_native_history(robot, current_floor, [record])
+    assert not reconcile_pending_native_history(robot, current_floor, [record])
     assert robot["pending_native_reconciliation"] is not None
     assert robot["rooms"] == {}
     assert robot["rotations"] == {}
@@ -394,7 +394,7 @@ def test_grouped_native_history_expiry_clears_marker_without_room_credit() -> No
     pending = _marker(floor, expires_at=expired_at)
     robot = _robot(pending)
 
-    assert _reconcile_pending_native_history(robot, floor, [_record(_session_key())])
+    assert reconcile_pending_native_history(robot, floor, [_record(_session_key())])
 
     assert "pending_native_reconciliation" not in robot
     assert robot["rooms"] == {}
@@ -454,7 +454,7 @@ async def test_single_room_completion_api_refuses_grouped_marker(hass) -> None:
     assert restored is not None
     assert restored["plan_id"] == pending["plan_id"]
     assert restored["run_id"] == pending["run_id"]
-    assert restored["rooms"] == _validated_native_reconciliation(pending)["rooms"]
+    assert restored["rooms"] == validated_native_reconciliation(pending)["rooms"]
     manager.repository.store.async_save.assert_not_awaited()
 
 

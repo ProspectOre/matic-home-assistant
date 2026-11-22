@@ -13,8 +13,8 @@ from homeassistant.helpers import llm
 
 from .client import room_name_key
 from .const import DOMAIN
-from .llm_common import _ROBOT_FIELD, _MaticTool
-from .llm_control import _async_service_refusal, _PanelRobot
+from .llm_common import ROBOT_FIELD, MaticTool
+from .llm_control import PanelRobot, async_service_refusal
 from .service_names import SERVICE_RUN_PHOTO_TOUR
 
 if TYPE_CHECKING:
@@ -34,7 +34,7 @@ _AI_DISCLOSURE = (
 )
 
 
-class MaticTakePhotoTool(_MaticTool):
+class MaticTakePhotoTool(MaticTool):
     """Take and return a pixelated preview from a named room or viewpoint."""
 
     name = "MaticTakePhoto"
@@ -43,7 +43,7 @@ class MaticTakePhotoTool(_MaticTool):
     annotations = llm.ToolAnnotations(destructive=False, open_world=False)
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Required("place"): probatio.All(
                 cv.string, probatio.Length(min=1, max=128)
             ),
@@ -58,7 +58,7 @@ class MaticTakePhotoTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
         entry = self.resolve_entry(hass, llm_context, args.get("robot"))
-        robot = _PanelRobot(hass, entry)
+        robot = PanelRobot(hass, entry)
         try:
             response = await hass.services.async_call(
                 DOMAIN,
@@ -69,14 +69,14 @@ class MaticTakePhotoTool(_MaticTool):
                 return_response=True,
             )
         except HomeAssistantError as err:
-            return await _async_service_refusal(hass, llm_context, err)
+            return await async_service_refusal(hass, llm_context, err)
         photo = _first_photo(cast(dict[str, Any], response))
         return llm.ToolResult(
             data={"taken": photo is not None, "photo": photo, "preview_only": True}
         )
 
 
-class MaticInvestigateTool(_MaticTool):
+class MaticInvestigateTool(MaticTool):
     """Take a photo of a named room and ask one selected AI Task entity."""
 
     name = "MaticInvestigate"
@@ -85,7 +85,7 @@ class MaticInvestigateTool(_MaticTool):
     annotations = llm.ToolAnnotations(destructive=False, open_world=False)
     parameters = llm.Tool.parameters.extend(
         {
-            **_ROBOT_FIELD,
+            **ROBOT_FIELD,
             probatio.Required("place"): probatio.All(
                 cv.string, probatio.Length(min=1, max=128)
             ),
@@ -104,7 +104,7 @@ class MaticInvestigateTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
         entry = self.resolve_entry(hass, llm_context, args.get("robot"))
-        robot = _PanelRobot(hass, entry)
+        robot = PanelRobot(hass, entry)
         try:
             response = await hass.services.async_call(
                 DOMAIN,
@@ -120,7 +120,7 @@ class MaticInvestigateTool(_MaticTool):
                 return_response=True,
             )
         except HomeAssistantError as err:
-            return await _async_service_refusal(hass, llm_context, err)
+            return await async_service_refusal(hass, llm_context, err)
         photo = _first_photo(cast(dict[str, Any], response))
         if photo is None or not isinstance(photo.get("analysis"), dict):
             return llm.ToolResult(

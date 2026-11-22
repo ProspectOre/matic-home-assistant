@@ -23,9 +23,9 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_reconciliation import (
     _async_reconcile_native_stop,
-    _native_reconciliation_data,
+    native_reconciliation_data,
 )
-from custom_components.matic_robot.managed_run import _NativeReconciliation
+from custom_components.matic_robot.managed_run import NativeReconciliation
 from custom_components.matic_robot.plan_model import (
     CleaningRoom,
     plan_floor_token,
@@ -131,7 +131,7 @@ async def test_late_reconciliation_credits_identity_from_registered_current_floo
     _entry, entity_id, floor_plan = await _registered_robot(hass)
     room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
     now = dt_util.utcnow()
-    reconciliation = _NativeReconciliation(
+    reconciliation = NativeReconciliation(
         "synthetic-plan",
         room.room_id,
         room.name,
@@ -181,7 +181,7 @@ async def test_late_reconciliation_credits_only_the_dispatch_floor(hass, floor_c
     room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
     now = dt_util.utcnow()
     key = history_key()
-    reconciliation = _NativeReconciliation(
+    reconciliation = NativeReconciliation(
         "synthetic-plan",
         room.room_id,
         room.name,
@@ -211,7 +211,7 @@ async def test_late_reconciliation_credits_only_the_dispatch_floor(hass, floor_c
         "synthetic-plan",
         room,
         "The selected Matic robot reported an error",
-        native_reconciliation=_native_reconciliation_data(reconciliation),
+        native_reconciliation=native_reconciliation_data(reconciliation),
     )
     if floor_changed:
         # The same room id on a newly active floor is a different room.

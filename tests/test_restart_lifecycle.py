@@ -13,14 +13,14 @@ from homeassistant.util import dt as dt_util
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import RobotActivity
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_dispatch import _shutdown_suspends_run
-from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_dispatch import shutdown_suspends_run
+from custom_components.matic_robot.managed_executor import async_execute_rooms
+from custom_components.matic_robot.managed_leg import async_run_room_leg
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
+    PreparedRoomDispatch,
     RoomInterruptedError,
     RoomTakenOverError,
-    _PreparedRoomDispatch,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
@@ -63,7 +63,7 @@ async def test_shutdown_non_cancellation_errors_preserve_real_executor(
         raise error_type("synthetic shutdown error")
 
     with patch(
-        "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
+        "custom_components.matic_robot.managed_observation.async_wait_with_native_identity",
         side_effect=shutdown_error,
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -99,7 +99,7 @@ def test_shutdown_suspension_is_distinct_from_explicit_unload(
     manager = MagicMock()
     manager.control.cancellation_reason.return_value = reason
     hass.set_state(CoreState.stopping if stopping else CoreState.running)
-    assert _shutdown_suspends_run(hass, manager, "serial") is expected
+    assert shutdown_suspends_run(hass, manager, "serial") is expected
 
 
 async def test_shutdown_checkpoint_is_retained(hass) -> None:
@@ -158,11 +158,11 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
         raise error_type
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=cancel_leg),
     ):
         with pytest.raises(error_type):
-            await _async_execute_rooms(
+            await async_execute_rooms(
                 hass,
                 call,
                 manager,
@@ -199,11 +199,11 @@ async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_leg._async_run_leg",
+        "custom_components.matic_robot.managed_leg.async_run_room_leg",
         AsyncMock(side_effect=held_leg),
     ):
         task = hass.async_create_background_task(
-            _async_execute_rooms(
+            async_execute_rooms(
                 hass,
                 call,
                 manager,
@@ -237,7 +237,7 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
         if multi
         else [room]
     )
-    prepared = _PreparedRoomDispatch(
+    prepared = PreparedRoomDispatch(
         tuple(rooms),
         frozenset(),
         dt_util.utcnow(),
@@ -253,20 +253,20 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
 
     with (
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation.async_wait_for_owned_start",
             AsyncMock(side_effect=started),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
+            "custom_components.matic_robot.managed_observation.async_wait_with_native_identity",
             AsyncMock(side_effect=PlanCancelledError),
         ),
         patch(
-            "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_dispatch.async_dispatch_leg_command",
             new_callable=AsyncMock,
         ) as dispatch,
         pytest.raises(PlanCancelledError),
     ):
-        await _async_run_leg(
+        await async_run_room_leg(
             hass,
             ServiceCall(hass, DOMAIN, "run_selected_plan", checkpoint["data"]),
             manager,

@@ -16,7 +16,7 @@ from custom_components.matic_robot.client.models import (
     FloorPlan,
     Room,
 )
-from custom_components.matic_robot.native_history import _import_native_room_activity
+from custom_components.matic_robot.native_history import import_native_room_activity
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import memory_manager
 from tests.test_room_statistics import _import_history
@@ -358,6 +358,6 @@ async def test_activity_import_skips_malformed_room_and_updates_valid_room(hass)
 
     # Exercise the import boundary with a corrupt persisted neighboring row;
     # the valid room still imports and malformed storage is left untouched.
-    assert _import_native_room_activity(robot, floor, [record])
+    assert import_native_room_activity(robot, floor, [record])
     assert robot["rooms"]["corrupt"] == "not-a-room-record"
     assert robot["rooms"]["living"]["robot_last_duration_seconds"] == 400

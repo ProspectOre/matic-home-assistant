@@ -327,7 +327,7 @@ def test_native_future_completion_is_held_not_credited(monkeypatch, completed_at
         mode_results=(CleaningModeResult("Kitchen", "vacuum", "completed", 90),),
     )
 
-    assert native_history._import_daily_native_uncertainty(
+    assert native_history.import_daily_native_uncertainty(
         robot, floor, [CleaningSessionRecord(b"future-native", session)]
     )
 
@@ -406,7 +406,7 @@ def test_late_native_timestamp_revision_clears_its_session_hold(
         mode_results=(CleaningModeResult("Kitchen", "vacuum", "completed", 90),),
     )
     robot: dict = {}
-    assert native_history._import_daily_native_uncertainty(
+    assert native_history.import_daily_native_uncertainty(
         robot, floor, [CleaningSessionRecord(key, first)]
     )
     row = robot["daily_room_completions"][ROOM_ID]
@@ -419,7 +419,7 @@ def test_late_native_timestamp_revision_clears_its_session_hold(
     ]
 
     revised = replace(first, ended_at=(now - timedelta(days=1)).isoformat())
-    assert native_history._import_daily_native_uncertainty(
+    assert native_history.import_daily_native_uncertainty(
         robot, floor, [CleaningSessionRecord(key, revised)]
     )
     row = robot["daily_room_completions"][ROOM_ID]

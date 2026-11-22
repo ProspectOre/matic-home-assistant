@@ -32,12 +32,12 @@ from custom_components.matic_robot.slam_history import (
     _oldest_auto_victim,
 )
 from custom_components.matic_robot.slam_history_format import (
-    _build_snapshot,
-    _decode_history_state,
-    _enforce_history_bounds,
     _oldest_disposable_snapshot_index,
-    _valid_name,
     _validate_coverage,
+    build_snapshot,
+    decode_history_state,
+    enforce_history_bounds,
+    valid_name,
 )
 from tests.test_slam_map import synthetic_slam_entry
 
@@ -313,7 +313,7 @@ async def test_history_scene_decode_is_revoked_after_catalog_mutation(hass) -> N
     executor = hass.async_add_executor_job
 
     async def delayed_decode(function, *args):
-        if function.__name__ == "_decompress_scene":
+        if function.__name__ == "decompress_scene":
             started.set()
             await release.wait()
         return await executor(function, *args)
@@ -342,7 +342,7 @@ async def test_history_scene_survives_unrelated_catalog_mutation(hass) -> None:
     executor = hass.async_add_executor_job
 
     async def delayed_decode(function, *args):
-        if function.__name__ == "_decompress_scene":
+        if function.__name__ == "decompress_scene":
             started.set()
             await release.wait()
         return await executor(function, *args)
@@ -596,7 +596,7 @@ async def test_history_archive_import_json_quota_rollback_and_idempotent_race(
 
     async def delayed_decode(function, *args):
         nonlocal starts
-        if function.__name__ == "_import_records":
+        if function.__name__ == "import_records":
             starts += 1
             if starts == 2:
                 both_started.set()
@@ -647,8 +647,8 @@ async def test_history_import_generation_and_request_identity_conflicts(hass) ->
 
 
 def test_history_state_decoder_rejects_bad_salt_generation_and_requests() -> None:
-    assert _decode_history_state("bad") == (None, 0, False, {})
-    decoded = _decode_history_state(
+    assert decode_history_state("bad") == (None, 0, False, {})
+    decoded = decode_history_state(
         {
             "group_salt": "%%%",
             "generation": True,
@@ -670,11 +670,11 @@ def test_oldest_automatic_victim_skips_kept_readers_and_reserved_records(hass) -
     second_id = "b" * 32
     first = store.__class__.__new__(store.__class__)
     del first
-    from custom_components.matic_robot.slam_history_format import _build_snapshot
+    from custom_components.matic_robot.slam_history_format import build_snapshot
 
     created = datetime(2026, 7, 26, tzinfo=UTC)
-    a = _build_snapshot(_scene(), 1, created, None)
-    b = _build_snapshot(_scene(1), 2, created + timedelta(minutes=1), None)
+    a = build_snapshot(_scene(), 1, created, None)
+    b = build_snapshot(_scene(1), 2, created + timedelta(minutes=1), None)
     from dataclasses import replace
 
     a = replace(a, record_id=first_id)
@@ -719,7 +719,7 @@ async def test_history_trash_expiry_without_matches_and_snapshot_compress_bound(
 
     with patch.object(history_format, "MAX_HISTORY_COMPRESSED_BYTES", 1):
         with pytest.raises(DecodeError, match="storage bounds"):
-            _build_snapshot(_scene(), 1, datetime.now(UTC), None)
+            build_snapshot(_scene(), 1, datetime.now(UTC), None)
 
 
 async def test_history_export_rejects_selected_compressed_record_over_archive_cap(hass):
@@ -756,7 +756,7 @@ async def test_history_import_second_commit_rechecks_generation_and_idempotency(
     executor = hass.async_add_executor_job
 
     async def delayed_decode(function, *args):
-        if function.__name__ == "_import_records":
+        if function.__name__ == "import_records":
             started.set()
             await release.wait()
         return await executor(function, *args)
@@ -783,7 +783,7 @@ async def test_history_import_second_commit_rechecks_generation_and_idempotency(
 
     async def wait_for_both(function, *args):
         nonlocal count
-        if function.__name__ == "_import_records":
+        if function.__name__ == "import_records":
             count += 1
             if count == 2:
                 both_started.set()
@@ -848,10 +848,10 @@ def test_history_coverage_validation_rejects_shape_digest_and_stream_errors():
 def test_history_name_bounds_and_loaded_item_bounds():
     for name in (None, "  ", "x" * 129):
         with pytest.raises(ValueError, match="invalid-history-name"):
-            _valid_name(name)
+            valid_name(name)
 
     snapshots = [
-        _build_snapshot(
+        build_snapshot(
             _scene(index),
             index + 1,
             datetime(2026, 7, 26, tzinfo=UTC) + timedelta(minutes=index),
@@ -866,7 +866,7 @@ def test_history_name_bounds_and_loaded_item_bounds():
     ]
     assert _oldest_disposable_snapshot_index(duplicate) == 0
     with patch.object(history_format, "MAX_HISTORY_ITEMS", 2):
-        _enforce_history_bounds(snapshots)
+        enforce_history_bounds(snapshots)
     assert [item.revision for item in snapshots] == [2, 3]
 
 

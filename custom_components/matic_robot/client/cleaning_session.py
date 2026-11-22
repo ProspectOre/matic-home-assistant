@@ -53,7 +53,7 @@ class _LegacyRoomResults:
     durations: dict[tuple[int, str], int | None]
 
 
-def _native_history_collection_revision(
+def native_history_collection_revision(
     entries: tuple[HermesCollectionEntry, ...],
 ) -> str:
     """Hash ended records in a complete history snapshot without exposing them."""

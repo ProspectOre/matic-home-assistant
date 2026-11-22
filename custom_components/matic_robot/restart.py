@@ -30,19 +30,19 @@ from .client import (
 from .const import DOMAIN
 from .coverage_accounting import async_confirm_completed_coverage
 from .managed_dispatch import (
-    _async_managed_user_command,
-    _schedule_managed_dock_after_stop,
-    _schedule_run_dock_confirmation,
-    _shutdown_suspends_run,
+    async_managed_user_command,
+    schedule_managed_dock_after_stop,
+    schedule_run_dock_confirmation,
+    shutdown_suspends_run,
 )
-from .managed_executor import _async_execute_rooms, async_finish_plan_run
+from .managed_executor import async_execute_rooms, async_finish_plan_run
 from .managed_leg import RoomResult, fire_room_event, withheld_room_ids
 from .managed_observation import (
     LEG_HANDOFF_TIMEOUT_SECONDS,
-    _async_verify_leg_completion,
-    _async_wait_for_settled_leg_handoff,
+    async_verify_leg_completion,
+    async_wait_for_settled_leg_handoff,
 )
-from .managed_run import _PreparedRoomDispatch
+from .managed_run import PreparedRoomDispatch
 from .plan_model import AreaLeg, CleaningRoom, PlanLeg, plan_floor_token
 from .plan_records import LastRun, RecoveryCheckpoint
 from .robot_port import RobotPort
@@ -191,7 +191,7 @@ async def _async_stop_interrupted_mixed_dispatch(
             if transmitted:
                 manager.control.request_stop(serial_number)
                 manager.control.end_managed_motion(serial_number, token)
-                _schedule_managed_dock_after_stop(
+                schedule_managed_dock_after_stop(
                     hass, entry, manager, serial_number, entity_id, run_id, None
                 )
             else:
@@ -216,7 +216,7 @@ async def _async_stop_interrupted_mixed_dispatch(
                 raise
         manager.control.request_stop(serial_number)
         manager.control.end_managed_motion(serial_number, token)
-        _schedule_managed_dock_after_stop(
+        schedule_managed_dock_after_stop(
             hass, entry, manager, serial_number, entity_id, run_id, None
         )
         await runtime.session.heartbeat.async_request_refresh()
@@ -246,7 +246,7 @@ def _restore_stop_settlement(
         and entity_id is not None
         and not manager.control.dock_reconciliation_active(serial_number)
     ):
-        _schedule_managed_dock_after_stop(
+        schedule_managed_dock_after_stop(
             hass, entry, manager, serial_number, entity_id, owner, None
         )
 
@@ -396,7 +396,7 @@ async def async_recover_managed_run(
             hass, entry, serial_number, run, cancel, generation
         )
     except asyncio.CancelledError:
-        if _shutdown_suspends_run(hass, manager, serial_number):
+        if shutdown_suspends_run(hass, manager, serial_number):
             reason = "home_assistant_shutdown"
         raise
     except NativeHistoryIncompleteError:
@@ -415,11 +415,11 @@ async def async_recover_managed_run(
     finally:
         if (
             reason != "home_assistant_shutdown"
-            and not _shutdown_suspends_run(hass, manager, serial_number)
+            and not shutdown_suspends_run(hass, manager, serial_number)
             and manager.recovery.recovery_run(serial_number) is not None
         ):
             await _async_finish_recovered_run(hass, entry, serial_number, run, reason)
-        shutdown_suspended = _shutdown_suspends_run(hass, manager, serial_number)
+        shutdown_suspended = shutdown_suspends_run(hass, manager, serial_number)
         manager.control.unregister_run_task(serial_number)
         if not shutdown_suspended:
             _restore_stop_settlement(hass, entry, serial_number, restored_stop_owner)
@@ -539,7 +539,7 @@ async def _async_execute(
         recovery.manager,
         recovery.serial_number,
     )
-    await _async_execute_rooms(
+    await async_execute_rooms(
         hass,
         rejoined.call,
         manager,
@@ -548,7 +548,7 @@ async def _async_execute(
         recovery.rooms,
         robot=rejoined.robot,
         managed_user_command=partial(
-            _async_managed_user_command,
+            async_managed_user_command,
             hass,
             recovery.entry,
             manager,
@@ -566,7 +566,7 @@ async def _async_execute(
     )
     return (
         "home_assistant_shutdown"
-        if _shutdown_suspends_run(hass, manager, serial_number)
+        if shutdown_suspends_run(hass, manager, serial_number)
         else "restart_execution_ended"
     )
 
@@ -585,7 +585,7 @@ async def _async_resume_handoff(recovery: _Recovery, rejoined: _Rejoined) -> str
     # Settle before the loop starts the next leg, as recovery always
     # has: the loop's own handoff may send that leg while the robot
     # still drives home.
-    settled = await _async_wait_for_settled_leg_handoff(
+    settled = await async_wait_for_settled_leg_handoff(
         rejoined.robot,
         recovery.cancel,
         expected_identity=identity if identity else None,
@@ -638,7 +638,7 @@ async def _async_resume_mission(recovery: _Recovery, rejoined: _Rejoined) -> str
         return await _async_execute(
             recovery,
             rejoined,
-            recovered_dispatch=_PreparedRoomDispatch(
+            recovered_dispatch=PreparedRoomDispatch(
                 () if isinstance(leg, AreaLeg) else tuple(leg),
                 baseline,
                 dispatched_at,
@@ -698,7 +698,7 @@ async def _async_verify_ended_leg(
 
     completion_sessions: list[str] = []
     unreachable: set[str] = set()
-    evidence = await _async_verify_leg_completion(
+    evidence = await async_verify_leg_completion(
         read_history,
         baseline,
         leg,
@@ -889,7 +889,7 @@ async def _async_finish_recovered_run(
         and cancellation is None
         and not manager.control.stop_pending(serial_number)
     ):
-        _schedule_run_dock_confirmation(
+        schedule_run_dock_confirmation(
             hass,
             manager,
             RobotPort.for_entry(hass, entry, entity_id),

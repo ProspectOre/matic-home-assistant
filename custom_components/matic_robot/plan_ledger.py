@@ -47,8 +47,8 @@ from .plan_catalog import PlanCatalog
 from .plan_model import (
     AreaLeg,
     CleaningRoom,
-    _bounded_stop_threshold,
-    _managed_stop_policy,
+    bounded_stop_threshold,
+    managed_stop_policy,
     normalize_run_outcome,
     normalize_run_provenance,
     plan_floor_token,
@@ -56,8 +56,8 @@ from .plan_model import (
 )
 from .plan_records import ActivePlan, LastRun, stored_active_plan
 from .plan_repository import (
+    MetadataLockLease,
     PlanRepository,
-    _MetadataLockLease,
 )
 from .run_control import (
     RunControl,
@@ -73,7 +73,7 @@ from .verified_completion import (
 _LOGGER = logging.getLogger(__name__)
 
 
-def _close_unfinished_area_records(
+def close_unfinished_area_records(
     robot: dict[str, Any], *, ended_at: str, run_id: str | None = None
 ) -> bool:
     """Retain accepted opportunities without inventing success after a stop/restart."""
@@ -127,7 +127,7 @@ def _restore_opportunity(
             target.pop("last_opportunity", None)
 
 
-def _close_unfinished_room_records(
+def close_unfinished_room_records(
     robot: dict[str, Any],
     *,
     plan_id: str | None = None,
@@ -206,7 +206,7 @@ class PlanLedger:
         self, serial_number: str
     ) -> dict[str, Any] | None:
         """Return a copy of the exact late-completion marker, when present."""
-        pending = native_history._validated_native_reconciliation(
+        pending = native_history.validated_native_reconciliation(
             self.repository.robot(serial_number).get("pending_native_reconciliation")
         )
         return deepcopy(pending) if pending is not None else None
@@ -255,7 +255,7 @@ class PlanLedger:
                         matched
                         for marker in proof_pending.get("rooms", [proof_pending])
                         if len(
-                            matched := native_history._native_marker_matches(
+                            matched := native_history.native_marker_matches(
                                 records, marker
                             )
                         )
@@ -271,7 +271,7 @@ class PlanLedger:
                     )
         reconciled: list[dict[str, Any]] = []
 
-        async def commit(lease: _MetadataLockLease) -> bool | None:
+        async def commit(lease: MetadataLockLease) -> bool | None:
             motion_generation = self.control.motion_generation(serial_number)
             lease.release(self.control.command_lock(serial_number))
             async with self.native_history_commit(serial_number):
@@ -374,12 +374,10 @@ class PlanLedger:
         """Import and reconcile native history inside its commit."""
         robot = self.repository.robot(serial_number)
         records = tuple(records)
-        changed = native_history._import_native_room_activity(
-            robot, floor_plan, records
-        )
+        changed = native_history.import_native_room_activity(robot, floor_plan, records)
         changed = import_native_cadence(robot, floor_plan, records) or changed
         changed = (
-            native_history._reconcile_pending_native_history(
+            native_history.reconcile_pending_native_history(
                 robot,
                 floor_plan,
                 records,
@@ -389,7 +387,7 @@ class PlanLedger:
             or changed
         )
         changed = (
-            native_history._import_daily_native_uncertainty(robot, floor_plan, records)
+            native_history.import_daily_native_uncertainty(robot, floor_plan, records)
             or changed
         )
         return changed
@@ -401,7 +399,7 @@ class PlanLedger:
         if not isinstance(enabled, bool):
             raise ValueError("native cleanings option must be boolean")
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
                 state = robot.get("native_cleanings")
                 if isinstance(state, dict) and state.get("enabled") is enabled:
@@ -423,7 +421,7 @@ class PlanLedger:
         canonical_id = str(UUID(session_id))
         claim = hashlib.sha256(canonical_id.encode("ascii")).hexdigest()
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
                 if run_id is not None:
                     run = self.repository.run_record(serial_number, run_id)
@@ -452,11 +450,11 @@ class PlanLedger:
     ) -> None:
         """Reset one plan's room and area history or all managed history."""
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.repository.commit(serial_number, user=True) as robot:
                 if plan_id is not None and plan_id not in robot["plans"]:
                     raise KeyError(plan_id)
-                pending = native_history._validated_native_reconciliation(
+                pending = native_history.validated_native_reconciliation(
                     robot.get("pending_native_reconciliation")
                 )
                 clear_reconciliation = plan_id is None or (
@@ -498,16 +496,16 @@ class PlanLedger:
     ) -> None:
         """Persist the bounded identity and provenance of a managed run."""
 
-        async def commit(_lease: _MetadataLockLease) -> None:
+        async def commit(_lease: MetadataLockLease) -> None:
             async with self.repository.commit(serial_number) as robot:
                 safe_provenance = normalize_run_provenance(provenance or trigger)
-                stop_enabled, stop_threshold = _managed_stop_policy(
+                stop_enabled, stop_threshold = managed_stop_policy(
                     robot["plans"].get(plan_id, {})
                 )
                 if finish_current_room is not None:
                     stop_enabled = finish_current_room
                 if finish_current_room_threshold is not None:
-                    stop_threshold = _bounded_stop_threshold(
+                    stop_threshold = bounded_stop_threshold(
                         finish_current_room_threshold
                     )
                 robot["last_run"] = {
@@ -551,7 +549,7 @@ class PlanLedger:
         """Finish one matching run as an owned sticky metadata transaction."""
 
         async def commit(
-            _lease: _MetadataLockLease,
+            _lease: MetadataLockLease,
         ) -> tuple[bool, list[dict[str, Any]]]:
             result: tuple[bool, list[dict[str, Any]]] = (False, [])
             try:
@@ -623,14 +621,14 @@ class PlanLedger:
         last_run = self.repository.draft_run(serial_number)
         max_rooms = run.room_count
         ended_at = dt_util.utcnow().isoformat()
-        unfinished = _close_unfinished_room_records(
+        unfinished = close_unfinished_room_records(
             robot,
             plan_id=run.plan_id,
             run_id=run_id,
             ended_at=ended_at,
             skipped=self.skipped_room_ids(serial_number, run_id),
         )
-        _close_unfinished_area_records(robot, run_id=run_id, ended_at=ended_at)
+        close_unfinished_area_records(robot, run_id=run_id, ended_at=ended_at)
         stored_completed_count = run.completed_room_count
         was_completed = run.outcome == "completed"
         completed = was_completed or (
@@ -896,7 +894,7 @@ class PlanLedger:
     ) -> bool:
         """Commit area evidence atomically; failed writes cannot publish credit."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number):
                 if serial_number in self.repository.removed_robots:
                     return False
@@ -1125,7 +1123,7 @@ class PlanLedger:
         now = (
             completed_at
             if completed_at is not None
-            and plan_timing._latest_timestamp(completed_at, now=now_value) is not None
+            and plan_timing.latest_timestamp(completed_at, now=now_value) is not None
             else now_value.isoformat()
         )
         snapshots = checkpoint.cadence_by_room if checkpoint is not None else None
@@ -1149,7 +1147,7 @@ class PlanLedger:
             and active.plan_id == plan_id
             and active.room_id == room.room_id
         ):
-            duration = plan_timing._active_elapsed_seconds(active, now_value) or None
+            duration = plan_timing.active_elapsed_seconds(active, now_value) or None
         record_verified_completion(
             robot,
             VerifiedCompletion(
@@ -1204,15 +1202,15 @@ class PlanLedger:
             active = self.repository.active_plan(serial_number)
             if active is not None:
                 record["last_unverified_duration_seconds"] = (
-                    plan_timing._active_elapsed_seconds(active, now_value)
+                    plan_timing.active_elapsed_seconds(active, now_value)
                 )
             robot = self.repository.robot(serial_number)
             if native_reconciliation is not None:
-                pending = native_history._validated_native_reconciliation(
+                pending = native_history.validated_native_reconciliation(
                     native_reconciliation, create_expiry=True
                 )
                 if pending is not None:
-                    native_history._attach_cadence_state(robot, pending)
+                    native_history.attach_cadence_state(robot, pending)
                     robot["pending_native_reconciliation"] = pending
             robot["active_plan"] = None
             return True
@@ -1238,11 +1236,11 @@ class PlanLedger:
             record["last_error"] = reason
             record["failed_runs"] = stored_count(record, "failed_runs") + 1
             if native_reconciliation is not None:
-                pending = native_history._validated_native_reconciliation(
+                pending = native_history.validated_native_reconciliation(
                     native_reconciliation, create_expiry=True
                 )
                 if pending is not None:
-                    native_history._attach_cadence_state(robot, pending)
+                    native_history.attach_cadence_state(robot, pending)
                     robot["pending_native_reconciliation"] = pending
             robot["active_plan"] = None
             return True
@@ -1271,7 +1269,7 @@ class PlanLedger:
         """
         changed: list[bool] = []
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.native_history_commit(serial_number):
                 return self.mark_native_completed_transaction(
                     serial_number,
@@ -1314,7 +1312,7 @@ class PlanLedger:
     ) -> bool:
         """Reconcile late completion inside its native-history commit."""
         robot = self.repository.robot(serial_number)
-        pending = native_history._validated_native_reconciliation(
+        pending = native_history.validated_native_reconciliation(
             robot.get("pending_native_reconciliation")
         )
         if pending is None:
@@ -1322,7 +1320,7 @@ class PlanLedger:
         # Grouped markers are reconciled atomically by the native-history import.
         if "rooms" in pending:
             return False
-        if native_history._native_reconciliation_expired(pending):
+        if native_history.native_reconciliation_expired(pending):
             robot.pop("pending_native_reconciliation", None)
             if changed is not None:
                 changed()
@@ -1334,7 +1332,7 @@ class PlanLedger:
             or not native_history.native_marker_on_floor(pending, floor_plan)
         ):
             return False
-        if native_history._native_reconciliation_was_committed(robot, pending):
+        if native_history.native_reconciliation_was_committed(robot, pending):
             robot.pop("pending_native_reconciliation", None)
             if changed is not None:
                 changed()
@@ -1342,11 +1340,11 @@ class PlanLedger:
         completed_value = (
             completed_at
             if isinstance(completed_at, str)
-            and plan_timing._latest_timestamp(completed_at) is not None
+            and plan_timing.latest_timestamp(completed_at) is not None
             else dt_util.utcnow().isoformat()
         )
-        room_settings = native_history._native_completion_settings(pending, room)
-        native_history._record_native_completion(
+        room_settings = native_history.native_completion_settings(pending, room)
+        native_history.record_native_completion(
             robot,
             plan_id,
             room,
@@ -1369,8 +1367,8 @@ class PlanLedger:
             if room_settings is not None
             else None,
         )
-        native_history._remember_native_reconciliation(robot, pending)
-        native_history._repair_native_reconciled_run(robot, pending, plan_id)
+        native_history.remember_native_reconciliation(robot, pending)
+        native_history.repair_native_reconciled_run(robot, pending, plan_id)
         robot.pop("pending_native_reconciliation", None)
         if changed is not None:
             changed()
@@ -1385,9 +1383,9 @@ class PlanLedger:
     ) -> bool:
         """Durably clear one exact late-completion marker after its watcher ends."""
 
-        async def commit(_lease: _MetadataLockLease) -> bool:
+        async def commit(_lease: MetadataLockLease) -> bool:
             async with self.repository.commit(serial_number) as robot:
-                pending = native_history._validated_native_reconciliation(
+                pending = native_history.validated_native_reconciliation(
                     robot.get("pending_native_reconciliation")
                 )
                 if (
@@ -1425,7 +1423,7 @@ class PlanLedger:
             robot = self.repository.robot(serial_number)
             if (active := stored_active_plan(robot)) is not None:
                 robot["active_plan"].update(
-                    active_elapsed_seconds=plan_timing._active_elapsed_seconds(
+                    active_elapsed_seconds=plan_timing.active_elapsed_seconds(
                         active, now_value
                     ),
                     active_segment_started=None,
@@ -1452,7 +1450,7 @@ class PlanLedger:
             if (active := stored_active_plan(robot)) is not None:
                 stored = robot["active_plan"]
                 stored.update(
-                    active_elapsed_seconds=plan_timing._active_elapsed_seconds(
+                    active_elapsed_seconds=plan_timing.active_elapsed_seconds(
                         active, now_value
                     ),
                     active_segment_started=None,
@@ -1532,11 +1530,11 @@ class PlanLedger:
             record["last_error"] = reason
             record["interrupted_runs"] = stored_count(record, "interrupted_runs") + 1
             if native_reconciliation is not None:
-                pending = native_history._validated_native_reconciliation(
+                pending = native_history.validated_native_reconciliation(
                     native_reconciliation, create_expiry=True
                 )
                 if pending is not None:
-                    native_history._attach_cadence_state(robot, pending)
+                    native_history.attach_cadence_state(robot, pending)
                     robot["pending_native_reconciliation"] = pending
             if (active := stored_active_plan(robot)) is not None:
                 robot["last_interrupted_plan"] = active.published()
@@ -1608,7 +1606,7 @@ class PlanLedger:
             active = self.repository.active_plan(serial_number)
             if active is not None:
                 record["last_cancelled_duration_seconds"] = (
-                    plan_timing._active_elapsed_seconds(active, now_value)
+                    plan_timing.active_elapsed_seconds(active, now_value)
                 )
             self.repository.robot(serial_number)["active_plan"] = None
             return True
@@ -1631,7 +1629,7 @@ class PlanLedger:
         if not isinstance(record, dict):
             record = {}
             records[room.room_id] = record
-        plan_timing._admit_room_settings(record, room)
+        plan_timing.admit_room_settings(record, room)
         record.update(asdict(room))
         return cast(dict[str, Any], record)
 

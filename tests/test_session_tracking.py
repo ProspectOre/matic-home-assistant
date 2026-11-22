@@ -15,9 +15,9 @@ from custom_components.matic_robot.session_tracking import (
     CleaningSessionTracker,
     _build_session,
     _canonical_room,
-    _parse_timestamp,
     _room_timeline,
-    _sessions_overlap,
+    parse_timestamp,
+    sessions_overlap,
 )
 
 
@@ -282,7 +282,7 @@ def test_session_preference_uses_newest_and_richer_source() -> None:
     assert merged_stopped.stop_reason == "stopped"
     assert merged_stopped.duration_seconds == interrupted.duration_seconds
     assert (
-        _sessions_overlap(
+        sessions_overlap(
             overlapping_native,
             CleaningSession(
                 tracked.started_at,
@@ -430,10 +430,10 @@ def test_helpers_reject_non_rooms_and_handle_timestamp_edges() -> None:
     assert _canonical_room(None, ("Office",)) is None
     assert _canonical_room("unknown", ("Office",)) is None
     assert _canonical_room("Garage", ("Office",)) is None
-    assert _parse_timestamp(None) == datetime.min.replace(tzinfo=UTC)
-    assert _parse_timestamp("bad") == datetime.min.replace(tzinfo=UTC)
-    assert _parse_timestamp("2026-01-01T00:00:00") == datetime(2026, 1, 1, tzinfo=UTC)
-    assert _parse_timestamp("2025-12-31T16:00:00-08:00") == datetime(
+    assert parse_timestamp(None) == datetime.min.replace(tzinfo=UTC)
+    assert parse_timestamp("bad") == datetime.min.replace(tzinfo=UTC)
+    assert parse_timestamp("2026-01-01T00:00:00") == datetime(2026, 1, 1, tzinfo=UTC)
+    assert parse_timestamp("2025-12-31T16:00:00-08:00") == datetime(
         2026, 1, 1, tzinfo=UTC
     )
 
@@ -446,7 +446,7 @@ def test_helpers_reject_non_rooms_and_handle_timestamp_edges() -> None:
     assert reversed_session.duration_seconds == 0
     assert reversed_session.room_durations == ()
     invalid_interval = CleaningSession("bad", "also-bad", 1, (), (), True)
-    assert _sessions_overlap(invalid_interval, invalid_interval) is False
+    assert sessions_overlap(invalid_interval, invalid_interval) is False
 
 
 def test_room_timeline_normalizes_names_once_per_room_and_event(
@@ -488,4 +488,4 @@ def test_adjacent_sessions_are_distinct():
     second = CleaningSession(
         first.ended_at, "2026-07-20T03:00:00+00:00", 3600, (), (), True
     )
-    assert not _sessions_overlap(first, second)
+    assert not sessions_overlap(first, second)

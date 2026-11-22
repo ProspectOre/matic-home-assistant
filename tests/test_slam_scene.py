@@ -87,7 +87,7 @@ from custom_components.matic_robot.slam_history_view import (
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_scene import MaticSlamSceneView
 from custom_components.matic_robot.slam_view_data import (
-    _map_session_key,
+    map_session_key,
     pose_projection,
 )
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
@@ -228,14 +228,14 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
 
 
 def _browser_session_key(runtime: SimpleNamespace) -> str:
-    key = _map_session_key(runtime)
+    key = map_session_key(runtime)
     assert key is not None
     return key
 
 
 def test_map_session_key_tracks_floor_partition_not_stream_token() -> None:
     runtime = _runtime()
-    original = _map_session_key(runtime)
+    original = map_session_key(runtime)
     identity = runtime.slam_map.mission_identity
     assert original is not None
     assert identity is not None
@@ -244,7 +244,7 @@ def test_map_session_key_tracks_floor_partition_not_stream_token() -> None:
         "replacement-stream-token",
         identity.mission_id,
     )
-    assert _map_session_key(runtime) == original
+    assert map_session_key(runtime) == original
 
     floor_plan = runtime.session.floor.value
     assert floor_plan is not None
@@ -252,13 +252,13 @@ def test_map_session_key_tracks_floor_partition_not_stream_token() -> None:
         floor_plan,
         partition_id_wire=b"replacement-partition",
     )
-    assert _map_session_key(runtime) != original
+    assert map_session_key(runtime) != original
 
     runtime.session.floor.value = replace(
         floor_plan,
         mission_id=floor_plan.mission_id + 1,
     )
-    assert _map_session_key(runtime) is None
+    assert map_session_key(runtime) is None
 
 
 def _hass(entry) -> SimpleNamespace:
@@ -992,7 +992,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     assert "private-session" not in blocked_response.text
 
     runtime.slam_map.mission_identity = None
-    assert _map_session_key(runtime) is None
+    assert map_session_key(runtime) is None
     empty_identity = await MaticSlamCatalogView().get(_request(hass))
     empty_entry = json.loads(empty_identity.body)["entries"][0]
     assert empty_entry["history_count"] == 0
