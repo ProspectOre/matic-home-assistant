@@ -98,7 +98,7 @@ for (const action of ["save-plan", "clean-rooms"]) {
           entryId: initial.selection.entryId, floorToken: "f".repeat(64), previewToken: "b".repeat(64),
           rooms: rooms.map((room) => ({ roomId: room.room, name: room.room === "room-a" ? "Kitchen" : room.room,
             cleaningMode: room.cleaning_mode, coverageSetting: room.coverage_setting, cadenceReasons: [] })),
-          missionBoundaries: [], blocker: null,
+          blocker: null,
         }),
         service: async (...args) => calls.push(args), dispose() {},
       });

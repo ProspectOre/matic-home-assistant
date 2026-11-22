@@ -813,15 +813,11 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = element.getWorkspaceSnapshot();
       const plans = state.resources.plans.value;
       const current = plans.plans[0];
-      const nextRunPreview = {
-        previewToken: "a".repeat(64),
-        rooms: [
-          { roomId: "room-b", name: "Living room", cleaningMode: "vacuum_and_mop", coverageSetting: "heavy_duty", cadenceReasons: ["mop_due"] },
-          { roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "quick", cadenceReasons: ["coverage_due"] },
-        ],
-        missionBoundaries: [1],
-        blocker: null,
-      };
+      const living = { roomId: "room-b", name: "Living room", cleaningMode: "vacuum_and_mop", coverageSetting: "heavy_duty", cadenceReasons: ["mop_due"] };
+      const kitchen = { roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "quick", cadenceReasons: ["coverage_due"] };
+      const rug = { areaId: "rug", name: "Rug", cleaningMode: "vacuum", coverageSetting: "quick", cadenceReasons: [] };
+      // Only a custom area starts or ends a part.
+      const nextRunPreview = { previewToken: "a".repeat(64), rooms: [living, kitchen], steps: [living, rug, kitchen], missionBoundaries: [1, 2], blocker: null };
       element.replaceWorkspaceState({
         ...state,
         resources: {
@@ -835,12 +831,14 @@ test.describe("Map Studio v0.4 foundation", () => {
     // Run: server order, one setting string per row, due lines
     // above, `v4_room_parts` and a named divider at each boundary.
     const rows = gallery.locator(".run-list > li");
-    await expect(rows).toHaveCount(2);
-    await expect(rows.nth(0)).toHaveText("Living room Vacuum + mop · Heavy duty");
-    await expect(rows.nth(1)).toHaveText("Part 2 starts here; the robot may stop at the dock first Kitchen Vacuum · Quick");
+    await expect(rows).toHaveText([
+      "Living room Vacuum + mop · Heavy duty",
+      "Part 2 starts here; the robot may stop at the dock first Rug Vacuum · Quick",
+      "Part 3 starts here; the robot may stop at the dock first Kitchen Vacuum · Quick",
+    ]);
     await expect(gallery.getByText("Mop due in Living room", { exact: true })).toBeVisible();
     await expect(gallery.getByText("Quick vacuum due in Kitchen", { exact: true })).toBeVisible();
-    await expect(gallery.getByText("The robot cleans in 2 parts and may stop at the dock between parts.", { exact: true })).toBeVisible();
+    await expect(gallery.getByText("The robot cleans in 3 parts and may stop at the dock between parts.", { exact: true })).toBeVisible();
     // `v4_action_run_plan_named`: Run plan is named with the plan.
     await expect(gallery.getByRole("button", { name: "Run plan Daily clean", exact: true })).toBeEnabled();
   });
@@ -1044,6 +1042,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           nextRunPreview: {
             ...firstPlan.nextRunPreview,
             rooms: [...firstPlan.nextRunPreview.rooms].reverse(),
+            steps: [...firstPlan.nextRunPreview.steps].reverse(),
           },
         }],
       };
@@ -1348,15 +1347,16 @@ test.describe("Map Studio v0.4 foundation", () => {
 
     await gallery.evaluate((element) => element.setScenario("plan-run-parts"));
     await settleWorkspace(gallery);
-    await expect(gallery.getByText("The robot cleans in 2 parts and may stop at the dock between parts.", { exact: true })).toBeVisible();
+    await expect(gallery.getByText("The robot cleans in 3 parts and may stop at the dock between parts.", { exact: true })).toBeVisible();
     await expect(gallery.getByText("Mop due in Kitchen", { exact: true })).toBeVisible();
     const rows = gallery.locator("ol.run-list > li");
     await expect(rows).toHaveText([
       "1 Kitchen Vacuum + mop · Optimal",
-      "Part 2 starts here; the robot may stop at the dock first 2 Living room Vacuum · Optimal",
-      "3 Office Vacuum · Optimal",
+      "Part 2 starts here; the robot may stop at the dock first 2 Entryway Vacuum · Optimal",
+      "Part 3 starts here; the robot may stop at the dock first 3 Living room Vacuum · Optimal",
+      "4 Office Vacuum · Optimal",
     ]);
-    await expect(gallery.locator(".run-row[data-break]")).toHaveCount(1);
+    await expect(gallery.locator(".run-row[data-break]")).toHaveCount(2);
   });
 
   test("Run lists custom areas in their place and counts them apart from rooms", async ({ page }) => {
@@ -1543,7 +1543,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = element.getWorkspaceSnapshot();
       const catalog = state.resources.plans.value;
       const plans = catalog.plans.map((plan) => ({ ...plan, rooms: plan.rooms.slice(0, 1), roomOrder: plan.roomOrder.slice(0, 1),
-        nextRunEstimateSeconds: seconds, nextRunPreview: { ...plan.nextRunPreview, rooms: plan.nextRunPreview.rooms.slice(0, 1) } }));
+        nextRunEstimateSeconds: seconds, nextRunPreview: { ...plan.nextRunPreview, rooms: plan.nextRunPreview.rooms.slice(0, 1), steps: plan.nextRunPreview.steps.slice(0, 1) } }));
       element.replaceWorkspaceState({ ...state, resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...catalog, plans } } } });
     }, seconds);
     await oneRoom(1_980);
@@ -2162,7 +2162,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           entryId: initial.selection.entryId, floorToken: "f".repeat(64), previewToken: "b".repeat(64),
           rooms: rooms.map((room) => ({ roomId: room.room, name: room.room === "room-a" ? "Kitchen" : room.room,
             cleaningMode: room.cleaning_mode, coverageSetting: room.coverage_setting, cadenceReasons: [] })),
-          missionBoundaries: [], blocker: null,
+          blocker: null,
         }),
         service: async (domain, service) => {
           calls.push(service);
@@ -2221,7 +2221,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           entryId: initial.selection.entryId, floorToken: "f".repeat(64), previewToken: "b".repeat(64),
           rooms: rooms.map((room) => ({ roomId: room.room, name: room.room === "room-a" ? "Kitchen" : room.room,
             cleaningMode: room.cleaning_mode, coverageSetting: room.coverage_setting, cadenceReasons: [] })),
-          missionBoundaries: [], blocker: null,
+          blocker: null,
         }),
         service: async (...args) => { calls.push(args); },
         dispose() {},
@@ -2509,7 +2509,6 @@ test.describe("Map Studio v0.4 foundation", () => {
               coverageSetting: room.coverage_setting,
               cadenceReasons: [],
             })),
-            missionBoundaries: [],
             blocker: null,
           }),
           service: async () => { commands++; },
@@ -9437,14 +9436,14 @@ test.describe("plan primary action", () => {
       ["coverage_requires_vacuum", "v4_reason_run_plan_preview"],
     ];
     for (const [blocker, reasonKey, reason] of cases) {
-      const action = await primary(page, "plan-saved-intelligent", { preview: { blocker, rooms: [] } });
+      const action = await primary(page, "plan-saved-intelligent", { preview: { blocker, rooms: [], steps: [] } });
       expect(action).toMatchObject({ id: "run-plan", enabled: false, reasonKey, reasonPlaceholders: undefined, jump: undefined });
       if (reason) expect(action.reason).toBe(reason);
     }
     // room-z is in the plan but not in the catalog, so it has no name to show.
     expect(await primary(page, "plan-saved-intelligent", {
       plan: { rooms: [{ roomId: "room-z", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: ["room_not_on_current_map"] }], roomOrder: ["room-z"] },
-      preview: { blocker: "invalid_plan", rooms: [] },
+      preview: { blocker: "invalid_plan", rooms: [], steps: [] },
     })).toMatchObject({ reasonKey: "v4_preview_invalid", jump: undefined });
   });
 

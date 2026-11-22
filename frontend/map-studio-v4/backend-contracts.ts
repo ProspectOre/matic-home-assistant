@@ -333,9 +333,9 @@ export interface NextRunPreview {
   readonly rooms: readonly NextRunPreviewRoom[];
   readonly heldRooms?: readonly NextRunHeldRoom[];
   readonly missingRooms?: readonly NextRunMissingRoom[];
-  /** Every step in run order, rooms and custom areas. Synthetic fixtures may leave it out; the steps are then `rooms`. */
-  readonly steps?: readonly NextRunPreviewStep[];
-  /** Offsets into `steps` when sent, else `rooms`. */
+  /** Every step in run order, rooms and custom areas. */
+  readonly steps: readonly NextRunPreviewStep[];
+  /** Offsets into `steps`; only a custom area starts or ends a part. */
   readonly missionBoundaries: readonly number[];
   readonly blocker: NextRunPreviewBlocker | null;
   readonly previewToken?: string;
@@ -351,7 +351,6 @@ export interface ManualRoomSequencePreview {
   readonly floorToken: string;
   readonly previewToken: string;
   readonly rooms: readonly ManualRoomSequencePreviewRoom[];
-  readonly missionBoundaries: readonly number[];
   readonly blocker: NextRunPreviewBlocker | null;
 }
 

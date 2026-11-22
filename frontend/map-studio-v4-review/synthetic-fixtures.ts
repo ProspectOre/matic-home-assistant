@@ -129,6 +129,14 @@ export const syntheticEntry = (): MapEntry => ({
   bootstrapFailures: 0,
 });
 
+const dailyPreviewRooms = () => rooms.slice(0, 3).map((room) => ({
+  roomId: room.roomId,
+  name: room.name,
+  cleaningMode: "vacuum" as const,
+  coverageSetting: "standard" as const,
+  cadenceReasons: [],
+}));
+
 export const syntheticPlans = (): PlansCatalog => ({
   rooms: rooms.map(({ roomId, name }) => ({ roomId, name })),
   selectedPlan: "daily",
@@ -144,13 +152,8 @@ export const syntheticPlans = (): PlansCatalog => ({
     })),
     nextRunPreview: {
       previewToken: "e".repeat(64),
-      rooms: rooms.slice(0, 3).map((room) => ({
-        roomId: room.roomId,
-        name: room.name,
-        cleaningMode: "vacuum",
-        coverageSetting: "standard",
-        cadenceReasons: [],
-      })),
+      rooms: dailyPreviewRooms(),
+      steps: dailyPreviewRooms(),
       missionBoundaries: [],
       blocker: null,
     },

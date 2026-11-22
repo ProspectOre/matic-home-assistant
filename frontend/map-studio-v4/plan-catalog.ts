@@ -130,7 +130,8 @@ const parseDailyLimit = (value: unknown): DailyRoomLimit | undefined => {
 const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
   if (value === undefined || value === null) return undefined;
   const preview: Unchecked<wire.NextRunPreview> = objectValue(value, "invalid-plan-preview");
-  const steps = preview.entries ?? preview.rooms;
+  // A blocked preview sends no entries.
+  const steps = preview.entries ?? [];
   if (!Array.isArray(preview.rooms) || preview.rooms.length > MAX_ROOM_SEQUENCE_SIZE
     || !Array.isArray(steps) || steps.length > 2 * MAX_ROOM_SEQUENCE_SIZE
     || !Array.isArray(preview.mission_boundaries) || preview.mission_boundaries.length > steps.length) {
