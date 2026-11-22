@@ -140,22 +140,20 @@ const openPlan = (
   planDraft: draftForPlan(plan),
 });
 
+/** A ready preview of `rooms`; its steps are the rooms unless `overrides` add areas. */
 const previewFor = (
   rooms: readonly PlanRoom[],
   overrides: Partial<NextRunPreview> = {},
-): NextRunPreview => ({
-  previewToken: "e".repeat(64),
-  rooms: rooms.map((room) => ({
+): NextRunPreview => {
+  const previewRooms = rooms.map((room) => ({
     roomId: room.roomId,
     name: syntheticPlans().rooms.find((candidate) => candidate.roomId === room.roomId)?.name ?? room.roomId,
     cleaningMode: room.cleaningMode,
     coverageSetting: room.coverageSetting,
     cadenceReasons: room.cadenceReasons ?? [],
-  })),
-  missionBoundaries: [],
-  blocker: null,
-  ...overrides,
-});
+  }));
+  return { previewToken: "e".repeat(64), rooms: previewRooms, steps: previewRooms, missionBoundaries: [], blocker: null, ...overrides };
+};
 
 /** Replaces a plan's rooms and keeps its room order and next-run preview in step. */
 const planWithRooms = (
@@ -459,13 +457,18 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       }), "run");
     }
     case "plan-run-parts": {
-      // Saved order with a mode change after the first room.
+      // Saved order with mop due in the first room and Entryway after it.
+      // Rooms share a part; a custom area is a part of its own.
       const rooms = savedDailyPlan().rooms.map((room, index): PlanRoom => index === 0
         ? { ...room, cleaningMode: "vacuum_and_mop", cadenceReasons: ["mop_due"] }
         : room);
-      return openPlan(state, planWithRooms(savedDailyPlan(), rooms, {
+      const [kitchen, ...rest] = previewFor(rooms).rooms;
+      const entryway = galleryArea("entryway");
+      return openPlan(withAreas(state), planWithRooms(savedDailyPlan(), rooms, {
         runBehavior: "ordered",
-        nextRunPreview: previewFor(rooms, { missionBoundaries: [1] }),
+        entries: [roomEntry("room-a"), areaEntry(entryway), roomEntry("room-b"), roomEntry("room-c")],
+        nextRunPreview: previewFor(rooms, { steps: [requireFixture(kitchen, "room"), areaStep(entryway), ...rest], missionBoundaries: [1, 2] }),
+        nextRunEstimateSeconds: null,
       }), "run");
     }
     case "plan-edit-ordered":
@@ -787,8 +790,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       });
     }
     // Rooms with four rooms selected: Kitchen's mop is
-    // due, Living room's heavy duty rotation is due, and the clean runs in
-    // two parts.
+    // due and Living room's heavy duty rotation is due.
     case "rooms-ready":
     case "rooms-busy":
     case "rooms-failed": {
@@ -809,7 +811,6 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       return withGalleryRoomPreview(rooms, {
         reasons: { "room-a": ["mop_due"], "room-b": ["coverage_due"] },
         effective: { "room-a": { cleaningMode: "vacuum_and_mop", coverageSetting: "standard" }, "room-b": { cleaningMode: "vacuum", coverageSetting: "heavy_duty" } },
-        missionBoundaries: [2],
       });
     }
     case "rooms-empty":
@@ -861,7 +862,6 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
 interface GalleryPreviewOverrides {
   readonly reasons?: Readonly<Record<string, readonly CadenceReason[]>>;
   readonly effective?: Readonly<Record<string, Pick<PlanRoom, "cleaningMode" | "coverageSetting">>>;
-  readonly missionBoundaries?: readonly number[];
   readonly blocker?: NextRunPreviewBlocker | null;
 }
 
@@ -881,7 +881,7 @@ const tokenFor = (overrides: GalleryPreviewOverrides): string => {
 
 /**
  * The gallery's stand-in for the backend's room preview. The overrides (due
- * reasons, effective settings, parts and a blocker) are remembered by the
+ * reasons, effective settings and a blocker) are remembered by the
  * preview's token, so the gallery's re-application after every intent keeps
  * them, and later overrides merge over them; a loading or failed preview a
  * scenario or test set deliberately is left alone.
@@ -926,7 +926,6 @@ export const withGalleryRoomPreview = (state: WorkspaceState, overrides?: Galler
         cadenceReasons: applied.reasons?.[roomId] ?? [],
       }];
     }),
-    missionBoundaries: applied.missionBoundaries ?? [],
     blocker: applied.blocker ?? null,
     ...(dailyLimitHeldRooms.length ? { dailyLimitHeldRooms } : {}),
   };

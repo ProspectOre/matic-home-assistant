@@ -28,15 +28,17 @@ export const requestRoomPreview = async (
     if (!/^[0-9a-f]{64}$/u.test(floorToken) || !/^[0-9a-f]{64}$/u.test(previewToken)) {
       throw new ContractError("invalid-room-sequence-preview-token");
     }
+    const rawRooms = response.rooms;
+    if (!Array.isArray(rawRooms)) throw new ContractError("invalid-room-sequence-preview-rooms");
+    // A room sequence is one mission of rooms alone, so it has no part breaks.
     const preview = parseNextRunPreview({
-      rooms: response.rooms,
+      rooms: rawRooms,
+      entries: rawRooms.map((room) => ({ ...objectValue(room, "invalid-room-sequence-preview-room"), kind: "room" })),
       mission_boundaries: response.mission_boundaries,
       blocker: response.blocker,
       daily_limit_held_rooms: response.daily_limit_held_rooms,
     });
-    if (!preview) throw new ContractError("invalid-room-sequence-preview");
-    const rawRooms = response.rooms;
-    if (!Array.isArray(rawRooms)) throw new ContractError("invalid-room-sequence-preview-rooms");
+    if (!preview || preview.missionBoundaries.length) throw new ContractError("invalid-room-sequence-preview");
     const rooms = preview.rooms.map((room, index): ManualRoomSequencePreviewRoom => {
       const source = objectValue(rawRooms[index], "invalid-room-sequence-preview-room");
       const cadenceProgress = parseCadenceProgress(source.cadence_progress, source.cadence_reasons);
@@ -47,7 +49,6 @@ export const requestRoomPreview = async (
       floorToken,
       previewToken,
       rooms,
-      missionBoundaries: preview.missionBoundaries,
       blocker: preview.blocker,
       ...(preview.dailyLimitHeldRooms ? { dailyLimitHeldRooms: preview.dailyLimitHeldRooms } : {}),
     };
