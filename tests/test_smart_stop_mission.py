@@ -8,7 +8,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from homeassistant.core import ServiceCall
+from homeassistant.core import ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
@@ -470,3 +470,32 @@ async def test_a_settled_room_is_saved_with_the_credit_before_it(hass) -> None:
     assert settled_save["settled_room_ids"] == [STUDY.room_id]
     (finished,) = _events(events, "plan_finished")
     assert finished["reason_code"] == "all_rooms_settled"
+
+
+async def test_a_room_is_not_settled_after_the_run_loses_the_robot(hass) -> None:
+    """A takeover after the kitchen's credit leaves the study unsettled."""
+    managers = []
+
+    def make_robot(manager):
+        managers.append(manager)
+        hass.bus.async_listen(
+            "matic_robot_room_completed",
+            callback(lambda _event: manager.control.begin_managed_motion("serial")),
+        )
+        return _StudyUnreachableRobot(hass, manager, study=False)
+
+    _robot, events, _error = await _run(hass, make_robot, smart_stop=False)
+
+    assert [e["room_id"] for e in _events(events, "room_completed")] == [
+        KITCHEN.room_id
+    ]
+    assert not _events(events, "room_skipped")
+    manager = managers[0]
+    run = manager.history.snapshot("serial")["last_run"]
+    assert (run["outcome"], run["reason_code"], run["completed_room_count"]) == (
+        "unverified",
+        "cancellation_unattributed",
+        1,
+    )
+    study = manager.ledger.room("serial", "test-plan", STUDY)
+    assert "last_unreachable" not in study

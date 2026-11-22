@@ -368,19 +368,9 @@ async def test_one_room_leg_settles_a_skipped_room(monkeypatch) -> None:
     )
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(bus=bus)
-    manager = SimpleNamespace(
-        ledger=SimpleNamespace(
-            async_claim_native_session=AsyncMock(),
-            async_mark_started=AsyncMock(),
-            async_mark_completed=AsyncMock(),
-            async_mark_ended_unverified=AsyncMock(),
-            async_mark_verifying=AsyncMock(),
-            async_mark_failed=AsyncMock(),
-            async_mark_resumed=AsyncMock(),
-            async_mark_skipped=AsyncMock(),
-            skipped_room_ids=MagicMock(return_value=frozenset({"room-study"})),
-        )
-    )
+    manager = leg_manager()
+    manager.ledger.skipped_room_ids = MagicMock(return_value=frozenset({"room-study"}))
+    manager.ledger.async_mark_skipped = AsyncMock()
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
 
     async def mission_ends(*_args, **_kwargs):
