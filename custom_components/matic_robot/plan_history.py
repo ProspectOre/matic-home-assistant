@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import (
-    Mapping,
-    Sequence,
-)
+from collections.abc import Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -20,29 +17,24 @@ from .plan_model import (
     plan_setting,
     stored_count,
 )
+from .plan_records import ActivePlan
 from .plan_repository import (
     PlanRepository,
 )
-from .plan_schema import RunSummary, RunTarget
+from .plan_schema import RunSummary
 from .run_control import (
     RunControl,
 )
 from .run_history import history_entries
-from .run_machine import running_run
 
 
-def _run_target(active: Mapping[str, Any]) -> RunTarget | None:
-    """Name the active plan's custom area, else its room."""
-    if isinstance(active.get("area_id"), str):
-        return {"kind": "area", "id": active["area_id"], "name": _name(active, "area")}
-    if isinstance(active.get("room_id"), str):
-        return {"kind": "room", "id": active["room_id"], "name": _name(active, "room")}
-    return None
-
-
-def _name(active: Mapping[str, Any], key: str) -> str | None:
-    name = active.get(key)
-    return name if isinstance(name, str) else None
+def _room_fields(active: ActivePlan) -> dict[str, Any]:
+    return {
+        "run_id": active.run_id,
+        "room_id": active.room_id,
+        "room": active.room,
+        "status": active.status,
+    }
 
 
 class PlanHistory:
@@ -58,31 +50,29 @@ class PlanHistory:
         self.catalog = catalog
         self.control = control
 
-    def current_room(self, serial_number: str) -> dict[str, Any] | None:
-        """Return the confirmed managed room's run, room and status, or None."""
-        robot = self.repository.robot(serial_number)
-        active = robot.get("active_plan")
-        run = running_run(robot)
+    def _confirmed_room(self, serial_number: str) -> ActivePlan | None:
+        """Return the active plan when it is the running run's confirmed room."""
+        active = self.repository.active_plan(serial_number)
+        run = self.repository.last_run(serial_number)
         if (
-            not isinstance(active, Mapping)
+            active is None
             or run is None
-            or not isinstance(active.get("room_id"), str)
-            or not active["room_id"]
-            or not isinstance(active.get("run_id"), str)
-            or not active["run_id"]
-            or run.get("run_id") != active["run_id"]
-            or run.get("plan_id") != active.get("plan_id")
+            or not run.running
+            or not active.room_id
+            or not active.run_id
+            or run.run_id != active.run_id
+            or run.plan_id != active.plan_id
             or self.control.cancellation_reason(serial_number) == "motion_replaced"
-            or active.get("status") not in {"running", "suspended"}
-            or not isinstance(active.get("cleaning_started"), str)
+            or active.status not in {"running", "suspended"}
+            or active.cleaning_started is None
         ):
             return None
-        return {
-            "run_id": active["run_id"],
-            "room_id": active["room_id"],
-            "room": active.get("room"),
-            "status": active["status"],
-        }
+        return active
+
+    def current_room(self, serial_number: str) -> dict[str, Any] | None:
+        """Return the confirmed managed room's run, room and status, or None."""
+        active = self._confirmed_room(serial_number)
+        return _room_fields(active) if active is not None else None
 
     def current_room_timing(self, serial_number: str) -> dict[str, Any] | None:
         """Read the canonical active-time estimate for the confirmed managed room.
@@ -90,13 +80,14 @@ class PlanHistory:
         This read never learns history, advances completion or writes storage.
         Stop uses the same calculation, including its unknown-baseline fallback.
         """
-        room = self.current_room(serial_number)
-        if room is None:
+        active = self._confirmed_room(serial_number)
+        if active is None:
             return None
-        robot = self.repository.robot(serial_number)
         return {
-            **room,
-            **plan_timing._room_timing(robot, robot["active_plan"], dt_util.utcnow()),
+            **_room_fields(active),
+            **plan_timing._room_timing(
+                self.repository.robot(serial_number), active, dt_util.utcnow()
+            ),
         }
 
     def run_history(
@@ -113,23 +104,20 @@ class PlanHistory:
 
     def run_summary(self, serial_number: str) -> RunSummary | None:
         """Summarize the stored run; only the running run has a target or phase."""
-        robot = self.repository.robot(serial_number)
-        run = robot.get("last_run")
-        if not isinstance(run, Mapping):
+        run = self.repository.last_run(serial_number)
+        if run is None:
             return None
-        active = robot.get("active_plan")
+        active = self.repository.active_plan(serial_number)
         target = (
-            _run_target(active)
-            if running_run(robot) is not None
-            and isinstance(active, Mapping)
-            and active.get("run_id") == run["run_id"]
+            active.target
+            if run.running and active is not None and active.run_id == run.run_id
             else None
         )
         summary: RunSummary = {
-            "run_id": run["run_id"],
-            "outcome": run.get("outcome"),
-            "completed_room_count": stored_count(run, "completed_room_count"),
-            "room_count": stored_count(run, "room_count"),
+            "run_id": run.run_id,
+            "outcome": run.outcome,
+            "completed_room_count": run.completed_room_count,
+            "room_count": run.room_count,
             "target": target,
             "smart_stop_phase": self.control.smart_stop_phase(serial_number),
         }
@@ -169,26 +157,27 @@ class PlanHistory:
             for plan_id, plan in robot["plans"].items()
         }
         smart_stop = self.control.smart_stop_phase(serial_number)
-        active_plan = deepcopy(robot.get("active_plan"))
-        if smart_stop is not None and not isinstance(active_plan, dict):
-            # Smart Stop docks after the run's last room or area ended.
-            last_run = robot["last_run"]
-            active_plan = {
-                "run_id": last_run["run_id"],
-                "plan_id": last_run.get("plan_id"),
-                "plan_name": last_run.get("plan_name"),
-                "status": "returning_to_dock",
-            }
-        if isinstance(active_plan, dict):
+        active = self.repository.active_plan(serial_number)
+        last_run = self.repository.last_run(serial_number)
+        active_plan: dict[str, Any] | None = None
+        if active is not None:
+            active_plan = active.published()
             active_plan["active_elapsed_seconds"] = plan_timing._active_elapsed_seconds(
-                active_plan, dt_util.utcnow()
+                active, dt_util.utcnow()
             )
+        elif smart_stop is not None and last_run is not None:
+            # Smart Stop docks after the run's last room or area ended.
+            active_plan = {
+                "run_id": last_run.run_id,
+                "plan_id": last_run.plan_id,
+                "plan_name": last_run.plan_name,
+                "status": "returning_to_dock",
+                "active_elapsed_seconds": 0,
+            }
+        if active_plan is not None:
             active_plan["smart_stop_pending"] = smart_stop is not None
             if smart_stop is not None:
                 active_plan["smart_stop_phase"] = smart_stop
-        public_last_run = deepcopy(robot.get("last_run"))
-        if isinstance(public_last_run, dict):
-            public_last_run.pop("recovery_checkpoint", None)
         return {
             "completed_runs": completed_runs,
             "failed_runs": failed_runs,
@@ -244,7 +233,7 @@ class PlanHistory:
             ),
             "active_plan": active_plan,
             "last_interrupted_plan": deepcopy(robot.get("last_interrupted_plan")),
-            "last_run": public_last_run,
+            "last_run": last_run.published() if last_run is not None else None,
         }
 
     def next_run_estimate_seconds(

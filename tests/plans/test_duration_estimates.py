@@ -14,6 +14,7 @@ from custom_components.matic_robot.plan_model import (
     PlanStopDecision,
     stored_count,
 )
+from custom_components.matic_robot.plan_records import ActivePlan
 from custom_components.matic_robot.plan_timing import (
     _compatible_duration_history,
     _duration_history,
@@ -300,10 +301,6 @@ async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
     assert unverified_record["duration_history_seconds"] == [60]
 
 
-def test_progress_estimate_rejects_missing_and_malformed_start_times() -> None:
-    assert _estimated_progress("not-a-timestamp", 100) is None
-
-
 def test_persisted_duration_values_fail_closed() -> None:
     assert stored_count({"count": 3}, "count") == 3
     for value in (-1, True, 1.5, "3", None):
@@ -325,10 +322,14 @@ def test_persisted_duration_values_fail_closed() -> None:
             == []
         )
 
-    active = {
-        "active_elapsed_seconds": float("inf"),
-        "active_segment_started": "2026-01-01T00:00:00",
-    }
+    active = ActivePlan.parse(
+        {
+            "plan_id": "plan",
+            "room_id": "room",
+            "active_elapsed_seconds": float("inf"),
+            "active_segment_started": "2026-01-01T00:00:00",
+        }
+    )
     assert _estimated_progress(active, 100) == 0
 
 
