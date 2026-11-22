@@ -168,6 +168,9 @@ def test_every_lane_downloads_the_build_before_reading_it(
 
     assert lane["needs"] == "build"
     assert lane["steps"][download]["with"] == {"name": "matic-map"}
+    if job != "browser":
+        # An edit run skips the build, so the replaying lanes must skip this.
+        assert lane["steps"][download]["if"] == "${{ !fromJSON(env.RECHECK) }}"
     assert download < next(i for i, run in enumerate(commands) if reader in run)
 
 
