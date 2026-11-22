@@ -6,10 +6,7 @@ import asyncio
 from itertools import accumulate
 
 import pytest
-from homeassistant.components import frontend as ha_frontend
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockModule, mock_integration
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components.matic_robot.const import (
@@ -28,18 +25,6 @@ from .plan_run import (
     state_becomes,
 )
 from .sim_mission import SimFloor, parse_coverage_command
-
-
-@pytest.fixture
-async def frontend(hass: HomeAssistant) -> None:
-    """Matic Map's views are served only beside the frontend.
-
-    The frontend package is not a test dependency, so a stand-in is loaded
-    with the module list Matic Map registers into.
-    """
-    mock_integration(hass, MockModule("frontend"))
-    assert await async_setup_component(hass, "frontend", {})
-    hass.data[ha_frontend.DATA_EXTRA_MODULE_URL] = set()
 
 
 async def _start_smart_stop_plan(plan: PlanRun) -> None:
