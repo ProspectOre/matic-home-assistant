@@ -54,6 +54,8 @@ jobs:
             tests/browser/.generated/
           include-hidden-files: true
           if-no-files-found: error
+          # "Re-run all jobs" uploads it again in the same run.
+          overwrite: true
           # Long enough to re-run a failed lane.
           retention-days: 7
 

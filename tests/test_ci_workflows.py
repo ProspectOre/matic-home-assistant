@@ -192,6 +192,7 @@ def test_one_job_builds_matic_map_and_shares_it() -> None:
     # The review build sits under a dot directory, which is skipped otherwise.
     assert upload["with"]["include-hidden-files"] is True
     assert upload["with"]["if-no-files-found"] == "error"
+    assert upload["with"]["overwrite"] is True
     for name, job in jobs.items():
         assert name == "build" or not any(
             "npm run build:" in run or "test:build" in run for run in _commands(job)
