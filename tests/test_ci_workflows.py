@@ -220,6 +220,7 @@ def test_release_publishes_the_zip_test_built_for_its_commit() -> None:
         "path": "dist",
         "run-id": "${{ steps.test.outputs.run-id }}",
         "github-token": "${{ github.token }}",
+        "skip-decompress": True,
     }
     assert "digest-mismatch" not in download["with"]
     assert not any("npm" in run for run in _commands(job))
