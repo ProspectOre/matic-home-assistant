@@ -1,4 +1,4 @@
-"""Layer, size, unused-name, test-selection and coverage rules of the check."""
+"""Layer, private-name, size, unused-name, test-selection and coverage rules."""
 
 from __future__ import annotations
 
@@ -125,6 +125,51 @@ def test_plan_core_module_that_no_longer_exists_is_reported(integration: Path) -
     assert check.layer_violations(integration) == [
         "scripts/check.py: PLAN_CORE names custom_components.matic_robot.cadence, "
         "which is gone"
+    ]
+
+
+def test_public_and_own_private_names_pass(integration: Path) -> None:
+    _write(
+        integration,
+        {
+            f"{PACKAGE}/plans.py": "_LIMIT = 1\ndef run(): return _LIMIT\n",
+            f"{PACKAGE}/views.py": (
+                "from homeassistant.helpers import _outside\n"
+                "from . import plans\nfrom .plans import run as _run\n"
+                "plans.run()\nplans.__name__\n"
+            ),
+            f"{PACKAGE}/client/proto/pb2.py": "from .. import api\napi._generated\n",
+        },
+    )
+
+    assert check.private_name_violations(integration) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "violation"),
+    [
+        ("from .plans import _LIMIT\n", "views.py:1: _LIMIT is private to plans"),
+        (
+            "from . import plans\n\nplans._own()\n",
+            "views.py:3: _own is private to plans",
+        ),
+        (
+            "import custom_components.matic_robot.plans as stored\nstored._LIMIT\n",
+            "views.py:2: _LIMIT is private to plans",
+        ),
+        ("from .client import _hidden\n", "views.py:1: _hidden is private to client"),
+    ],
+)
+def test_private_name_of_another_module_is_reported(
+    integration: Path, source: str, violation: str
+) -> None:
+    _write(
+        integration,
+        {f"{PACKAGE}/plans.py": "_LIMIT = 1\n", f"{PACKAGE}/views.py": source},
+    )
+
+    assert check.private_name_violations(integration) == [
+        f"{PACKAGE}/{violation}; make it public there"
     ]
 
 
@@ -383,10 +428,12 @@ def test_structure_rules_read_the_checkout_and_its_records(
     )
     monkeypatch.setattr(check, "ROOT", tmp_path)
     monkeypatch.setattr(check, "layer_violations", lambda: ["a layer"])
+    monkeypatch.setattr(check, "private_name_violations", lambda: ["a private name"])
     monkeypatch.setattr(check, "_code_sizes", lambda: {"big.py": 1201})
 
     assert check.structure_violations() == [
         "a layer",
+        "a private name",
         "big.py: 1201 lines, over its recorded 1200; put additions in a new file",
         f"{PACKAGE}/run.py::run: 151 lines, over the 150 ceiling; split it",
         f"{PACKAGE}/plans.py::unused: only tests refer to it; "
