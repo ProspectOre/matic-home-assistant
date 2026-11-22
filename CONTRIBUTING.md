@@ -85,8 +85,9 @@ npm run build:map-studio-v4
 npm run test:browser
 ```
 
-Git ignores the build output, so commit the source alone. In CI one job builds
-it and every job that reads it downloads that build. On Linux, `npx playwright install --with-deps` also installs system
+Git ignores the build output, so commit the source alone. In Test, one job builds
+it and the tests, the live lane and the browser shards download that build;
+Nightly and the Windows qualification build their own. On Linux, `npx playwright install --with-deps` also installs system
 packages and may need administrator rights. Give each worktree its own
 `node_modules`: a shared, symlinked one can change the generated chunks.
 
