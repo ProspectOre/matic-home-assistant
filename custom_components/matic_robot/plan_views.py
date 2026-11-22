@@ -61,7 +61,6 @@ from .plan_schema import (
     PlanRoomEntry,
     PlansCatalog,
     PreviewAreaStep,
-    PreviewRoom,
     PreviewRoomStep,
     SavedPlan,
 )
@@ -136,7 +135,7 @@ def _conflict(reason: str) -> web.Response:
 
 
 def _blocked(blocker: PlanBlocker) -> NextRunPreview:
-    return {"rooms": [], "mission_boundaries": [], "blocker": blocker}
+    return {"entries": [], "mission_boundaries": [], "blocker": blocker}
 
 
 # First match wins: a subclass precedes its base.
@@ -177,12 +176,11 @@ def _occupancy_holds(
 
 def _preview_steps(
     preview_entries: list[dict[str, Any]],
-) -> tuple[list[PreviewRoom], list[PreviewRoomStep | PreviewAreaStep]]:
-    """Project a preview's entries as its rooms and its ordered steps."""
-    rooms: list[PreviewRoom] = []
+) -> list[PreviewRoomStep | PreviewAreaStep]:
+    """Project a preview's entries as its ordered steps."""
     steps: list[PreviewRoomStep | PreviewAreaStep] = []
     for entry in preview_entries:
-        if entry.get("kind") == "area":
+        if entry["kind"] == "area":
             steps.append(
                 {
                     "kind": "area",
@@ -196,7 +194,8 @@ def _preview_steps(
             )
             continue
         due = entry.get("cadence", {})
-        room: PreviewRoom = {
+        room: PreviewRoomStep = {
+            "kind": "room",
             "room_id": str(entry["room_id"]),
             "name": str(entry["name"]),
             "cleaning_mode": str(entry["cleaning_mode"]),
@@ -209,9 +208,8 @@ def _preview_steps(
         }
         if "daily_limit" in entry:
             room["daily_limit"] = entry["daily_limit"]
-        rooms.append(room)
-        steps.append({"kind": "room", **room})
-    return rooms, steps
+        steps.append(room)
+    return steps
 
 
 def _held_out(preview: Mapping[str, Any]) -> _HeldRooms:
@@ -262,19 +260,12 @@ def _next_run_preview(
             floor_plan=floor.floor_plan,
             **holds,
         )
-        preview_entries = preview.get("entries")
-        if not isinstance(preview_entries, list):
-            preview_entries = [{"kind": "room", **room} for room in preview["rooms"]]
+        preview_entries = preview["entries"]
         if not preview_entries and preview.get("daily_limit_held_rooms"):
-            return {
-                "rooms": [],
-                "entries": [],
-                **_blocked("daily_limit_reached"),
-                **_held_out(preview),
-            }
+            return {**_blocked("daily_limit_reached"), **_held_out(preview)}
         if not preview_entries:
             raise EmptyPlanError("plan has no rooms")
-        rooms, steps = _preview_steps(preview_entries)
+        steps = _preview_steps(preview_entries)
         boundaries = leg_boundaries(preview_legs(preview_entries))
     except PlanRoomsHeldError:
         return {
@@ -295,7 +286,6 @@ def _next_run_preview(
     except (KeyError, TypeError, ValueError) as err:
         return {**_blocked(_blocker(err)), **_missing_rooms(floor, plan)}
     return {
-        "rooms": rooms,
         "entries": steps,
         "mission_boundaries": boundaries,
         **_held_out(preview),
@@ -313,16 +303,15 @@ def _next_run_estimate(floor: _Floor, preview: NextRunPreview) -> int | None:
     """Estimate the previewed run from the stored per-room durations."""
     if preview["blocker"] is not None:
         return None
-    if any(entry["kind"] == "area" for entry in preview["entries"]):
-        # The robot keeps no duration history for a custom area.
-        return None
-    return floor.manager.history.next_run_estimate_seconds(
-        floor.serial_number,
-        [
-            (room["room_id"], room["cleaning_mode"], room["coverage_setting"])
-            for room in preview["rooms"]
-        ],
-    )
+    rooms: list[tuple[str, str, str]] = []
+    for entry in preview["entries"]:
+        if entry["kind"] == "area":
+            # The robot keeps no duration history for a custom area.
+            return None
+        rooms.append(
+            (entry["room_id"], entry["cleaning_mode"], entry["coverage_setting"])
+        )
+    return floor.manager.history.next_run_estimate_seconds(floor.serial_number, rooms)
 
 
 def _cadence_state(

@@ -152,7 +152,6 @@ export const syntheticPlans = (): PlansCatalog => ({
     })),
     nextRunPreview: {
       previewToken: "e".repeat(64),
-      rooms: dailyPreviewRooms(),
       steps: dailyPreviewRooms(),
       missionBoundaries: [],
       blocker: null,

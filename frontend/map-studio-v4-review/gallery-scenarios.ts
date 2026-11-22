@@ -27,7 +27,6 @@ export type GalleryScenario =
   | "plan-run-paused"
   | "plan-run-blocked"
   | "plan-run-room-missing"
-  | "plan-run-parts"
   | "plan-edit-ordered"
   | "plan-new"
   | "plan-dirty"
@@ -103,7 +102,6 @@ export const GALLERY_SCENARIOS: readonly GalleryScenario[] = [
   "plan-run-paused",
   "plan-run-blocked",
   "plan-run-room-missing",
-  "plan-run-parts",
   "plan-edit-ordered",
   "plan-new",
   "plan-dirty",

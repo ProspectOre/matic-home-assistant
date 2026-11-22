@@ -166,9 +166,9 @@ async def test_the_plan_list_shows_each_saved_plan_and_its_next_run(
     preview = evening["next_run_preview"]
     assert preview["blocker"] is None
     assert len(preview["preview_token"]) == 64
-    assert _previewed(preview["rooms"]) == [("Study", {1}), ("Kitchen", {0})]
+    assert _previewed(preview["entries"]) == [("Study", {1}), ("Kitchen", {0})]
     morning = _saved(catalog, "morning")["next_run_preview"]
-    assert _previewed(morning["rooms"]) == [("Kitchen", {0, 1})]
+    assert _previewed(morning["entries"]) == [("Kitchen", {0, 1})]
     # Listing and saving plans sends the robot nothing.
     assert robot.received() == []
 
@@ -201,7 +201,7 @@ async def test_a_plan_runs_the_preview_its_list_showed(
     await matic_map.call(
         "run_selected_plan", plan="evening", preview_token=current["preview_token"]
     )
-    assert _sent(robot) == _previewed(current["rooms"])
+    assert _sent(robot) == _previewed(current["entries"])
     assert _sent(robot) == [("Study", {1}), ("Kitchen", {0})]
 
 
@@ -320,7 +320,7 @@ async def test_reset_clears_only_the_progress_asked_for(
     assert _progress(catalog) == (0, 1)
     # The coverage pass is still due, so the next run is unchanged.
     next_run = _saved(catalog, "weekly")["next_run_preview"]
-    assert next_run["rooms"][0]["cadence_reasons"] == ["coverage_due"]
+    assert next_run["entries"][0]["cadence_reasons"] == ["coverage_due"]
     stored = _stored(hass_storage, robot)["plan_room_cadence"]["weekly"][kitchen]
     assert stored["progress"] == {"mop": 0, "coverage": 1}
 

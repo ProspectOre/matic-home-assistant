@@ -14,7 +14,6 @@ import {
   type NextRunMissingRoom,
   type NextRunPreview,
   type NextRunPreviewBlocker,
-  type NextRunPreviewRoom,
   type NextRunPreviewStep,
   type PlanRoom,
   type PlansCatalog,
@@ -130,10 +129,8 @@ const parseDailyLimit = (value: unknown): DailyRoomLimit | undefined => {
 const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
   if (value === undefined || value === null) return undefined;
   const preview: Unchecked<wire.NextRunPreview> = objectValue(value, "invalid-plan-preview");
-  // A blocked preview sends no entries.
-  const steps = preview.entries ?? [];
-  if (!Array.isArray(preview.rooms) || preview.rooms.length > MAX_ROOM_SEQUENCE_SIZE
-    || !Array.isArray(steps) || steps.length > 2 * MAX_ROOM_SEQUENCE_SIZE
+  const steps = preview.entries;
+  if (!Array.isArray(steps) || steps.length > 2 * MAX_ROOM_SEQUENCE_SIZE
     || !Array.isArray(preview.mission_boundaries) || preview.mission_boundaries.length > steps.length) {
     throw new ContractError("invalid-plan-preview");
   }
@@ -152,7 +149,9 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
       ...(step.daily_limit === undefined ? {} : { dailyLimit: parseDailyLimit(step.daily_limit)! }),
     };
   });
-  const rooms = parsedSteps.filter((step): step is NextRunPreviewRoom => "roomId" in step);
+  if (parsedSteps.filter((step) => "roomId" in step).length > MAX_ROOM_SEQUENCE_SIZE) {
+    throw new ContractError("invalid-plan-preview");
+  }
   const boundaries = preview.mission_boundaries.map((candidate) =>
     boundedInteger(candidate, 1, stepCount - 1, "invalid-plan-preview-boundary"));
   if (boundaries.some((value, index) => value <= (boundaries[index - 1] ?? 0))) {
@@ -210,7 +209,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     throw new ContractError("invalid-plan-preview-token");
   }
   return {
-    rooms, steps: parsedSteps, missionBoundaries: boundaries, blocker: rawBlocker as NextRunPreviewBlocker | null,
+    steps: parsedSteps, missionBoundaries: boundaries, blocker: rawBlocker as NextRunPreviewBlocker | null,
     ...(heldRooms?.length ? { heldRooms } : {}),
     ...(missingRooms?.length ? { missingRooms } : {}),
     ...(dailyLimitHeldRooms?.length ? { dailyLimitHeldRooms } : {}),

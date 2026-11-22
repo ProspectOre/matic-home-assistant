@@ -1,4 +1,4 @@
-import type { CleaningMode, CoverageSetting, NextRunPreviewRoom, PlanRoom, SavedPlan } from "./backend-contracts";
+import type { CleaningMode, CoverageSetting, NextRunPreviewStep, PlanRoom, SavedPlan } from "./backend-contracts";
 import type { PlanDraft, PlanDraftArea } from "./contracts";
 import { formatList } from "./localize";
 
@@ -92,14 +92,14 @@ export const roomsAndAreas = (t: Translate, locale: string, rooms: number, areas
  * the order mop, quick, optimal, heavy duty. A rotation's level is the
  * preview room's own vacuum coverage.
  */
-export const dueLines = (t: Translate, locale: string, rooms: readonly NextRunPreviewRoom[]): string[] => {
-  const due = (match: (room: NextRunPreviewRoom) => boolean): string | null => {
-    const names = rooms.filter(match).map((room) => room.name);
+export const dueLines = (t: Translate, locale: string, steps: readonly NextRunPreviewStep[]): string[] => {
+  const due = (match: (step: NextRunPreviewStep) => boolean): string | null => {
+    const names = steps.filter(match).map((step) => step.name);
     return names.length ? formatList(locale, names) : null;
   };
-  const rotation = (level: PlanRoom["coverageSetting"]) => due((room) =>
-    room.cadenceReasons.includes("coverage_due") && room.coverageSetting === level);
-  const mop = due((room) => room.cadenceReasons.includes("mop_due"));
+  const rotation = (level: PlanRoom["coverageSetting"]) => due((step) =>
+    step.cadenceReasons.includes("coverage_due") && step.coverageSetting === level);
+  const mop = due((step) => step.cadenceReasons.includes("mop_due"));
   const quick = rotation("quick");
   const optimal = rotation("standard");
   const heavy = rotation("heavy_duty");
@@ -141,6 +141,6 @@ export const planRowLine3 = (t: Translate, locale: string, plan: SavedPlan): Pla
   if (!plan.enabled) return null;
   const blocker = plan.nextRunPreview?.blocker;
   if (blocker && blocker !== "plan_disabled") return { blocked: t("v4_plan_row_blocked", "Needs attention before it can run") };
-  const due = dueLines(t, locale, plan.nextRunPreview?.rooms ?? []);
+  const due = dueLines(t, locale, plan.nextRunPreview?.steps ?? []);
   return due.length ? { due } : null;
 };

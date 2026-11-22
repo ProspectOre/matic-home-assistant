@@ -817,7 +817,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const kitchen = { roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "quick", cadenceReasons: ["coverage_due"] };
       const rug = { areaId: "rug", name: "Rug", cleaningMode: "vacuum", coverageSetting: "quick", cadenceReasons: [] };
       // Only a custom area starts or ends a part.
-      const nextRunPreview = { previewToken: "a".repeat(64), rooms: [living, kitchen], steps: [living, rug, kitchen], missionBoundaries: [1, 2], blocker: null };
+      const nextRunPreview = { previewToken: "a".repeat(64), steps: [living, rug, kitchen], missionBoundaries: [1, 2], blocker: null };
       element.replaceWorkspaceState({
         ...state,
         resources: {
@@ -1041,7 +1041,6 @@ test.describe("Map Studio v0.4 foundation", () => {
           ...firstPlan,
           nextRunPreview: {
             ...firstPlan.nextRunPreview,
-            rooms: [...firstPlan.nextRunPreview.rooms].reverse(),
             steps: [...firstPlan.nextRunPreview.steps].reverse(),
           },
         }],
@@ -1062,7 +1061,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         await effects.refreshCatalog(true);
         useUpdatedPreview = true;
         await effects.executeAction("run-plan");
-        return { calls, notice: store.value.notice?.key, refreshedOrder: store.value.resources.plans.value?.plans[0]?.nextRunPreview?.rooms.map((room) => room.roomId) };
+        return { calls, notice: store.value.notice?.key, refreshedOrder: store.value.resources.plans.value?.plans[0]?.nextRunPreview?.steps.map((step) => step.roomId) };
       } finally { effects.dispose(); }
     });
     expect(result.calls).toEqual([]);
@@ -1319,7 +1318,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         const state = element.getWorkspaceSnapshot();
         const catalog = state.resources.plans.value;
         const plans = catalog.plans.map((plan) => ({ ...plan, nextRunPreview: { ...plan.nextRunPreview,
-          rooms: plan.nextRunPreview.rooms.map((room) => ({ ...room, cadenceReasons: ["mop_due"] })) } }));
+          steps: plan.nextRunPreview.steps.map((step) => ({ ...step, cadenceReasons: ["mop_due"] })) } }));
         element.replaceWorkspaceState({ ...state, resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...catalog, plans } } } });
       });
       await expect(gallery.getByText("3 rooms · about 33 min", { exact: true })).toBeVisible();
@@ -1345,9 +1344,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator("ol.run-list > li")).toHaveText(["1 Office Vacuum · Optimal", "2 Kitchen Vacuum · Optimal", "3 Living room Vacuum · Optimal"]);
     await expect(gallery.getByText("Smart Order cleans the rooms and areas that have waited longest first, checking again each time.")).toHaveCount(0);
 
-    await gallery.evaluate((element) => element.setScenario("plan-run-parts"));
+    await gallery.evaluate((element) => element.setScenario("plan-run-areas"));
     await settleWorkspace(gallery);
-    await expect(gallery.getByText("The robot cleans in 3 parts and may stop at the dock between parts.", { exact: true })).toBeVisible();
+    await expect(gallery.getByText("The robot cleans in 4 parts and may stop at the dock between parts.", { exact: true })).toBeVisible();
     await expect(gallery.getByText("Mop due in Kitchen", { exact: true })).toBeVisible();
     const rows = gallery.locator("ol.run-list > li");
     await expect(rows).toHaveText([
@@ -1355,8 +1354,9 @@ test.describe("Map Studio v0.4 foundation", () => {
       "Part 2 starts here; the robot may stop at the dock first 2 Entryway Vacuum · Optimal",
       "Part 3 starts here; the robot may stop at the dock first 3 Living room Vacuum · Optimal",
       "4 Office Vacuum · Optimal",
+      "Part 4 starts here; the robot may stop at the dock first 5 Under the dining table Mop",
     ]);
-    await expect(gallery.locator(".run-row[data-break]")).toHaveCount(2);
+    await expect(gallery.locator(".run-row[data-break]")).toHaveCount(3);
   });
 
   test("Run lists custom areas in their place and counts them apart from rooms", async ({ page }) => {
@@ -1365,7 +1365,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = element.getWorkspaceSnapshot();
       const catalog = state.resources.plans.value;
       const plans = catalog.plans.map((plan) => ({ ...plan, nextRunPreview: { ...plan.nextRunPreview,
-        rooms: steps.filter((step) => step.roomId), steps, missionBoundaries } }));
+        steps, missionBoundaries } }));
       element.replaceWorkspaceState({ ...state, resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...catalog, plans } } } });
     }, [steps, missionBoundaries]);
     const rug = { areaId: "rug", name: "Rug", cleaningMode: "mop", coverageSetting: "quick", cadenceReasons: [] };
@@ -1543,7 +1543,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = element.getWorkspaceSnapshot();
       const catalog = state.resources.plans.value;
       const plans = catalog.plans.map((plan) => ({ ...plan, rooms: plan.rooms.slice(0, 1), roomOrder: plan.roomOrder.slice(0, 1),
-        nextRunEstimateSeconds: seconds, nextRunPreview: { ...plan.nextRunPreview, rooms: plan.nextRunPreview.rooms.slice(0, 1), steps: plan.nextRunPreview.steps.slice(0, 1) } }));
+        nextRunEstimateSeconds: seconds, nextRunPreview: { ...plan.nextRunPreview, steps: plan.nextRunPreview.steps.slice(0, 1) } }));
       element.replaceWorkspaceState({ ...state, resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...catalog, plans } } } });
     }, seconds);
     await oneRoom(1_980);
@@ -1582,7 +1582,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = element.getWorkspaceSnapshot();
       const catalog = state.resources.plans.value;
       const plans = catalog.plans.map((plan) => ({ ...plan,
-        nextRunPreview: { ...plan.nextRunPreview, blocker: "area_map_changed", rooms: [], steps: [] },
+        nextRunPreview: { ...plan.nextRunPreview, blocker: "area_map_changed", steps: [] },
       }));
       const areas = state.resources.areas.value.areas.map((area) => ({ ...area,
         status: area.id === "entryway" ? "review" : area.status,

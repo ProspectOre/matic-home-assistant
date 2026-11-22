@@ -283,7 +283,7 @@ test("plan catalog reads occupancy settings and held rooms", async ({ page }) =>
       occupancy_aware: true,
       occupancy_sensors: { "room-a": "binary_sensor.kitchen" },
       next_run_preview: {
-        rooms: [], mission_boundaries: [], blocker: "plan_rooms_held",
+        entries: [], mission_boundaries: [], blocker: "plan_rooms_held",
         held_rooms: [{ room_id: "room-a", name: "Kitchen", reason: "occupied", sensor: "binary_sensor.kitchen" }],
       },
     });
@@ -296,15 +296,15 @@ test("plan catalog reads occupancy settings and held rooms", async ({ page }) =>
         rejects((plan) => { plan.occupancy_sensors = ["binary_sensor.kitchen"]; }),
         rejects((plan) => { plan.occupancy_sensors = { "room-a": "" }; }),
         rejects((plan) => { plan.occupancy_sensors = Object.fromEntries(Array.from({ length: 257 }, (_, index) => [`room-${index}`, "binary_sensor.x"])); }),
-        rejects((plan) => { plan.next_run_preview = { rooms: [], mission_boundaries: [], blocker: "invalid_plan", held_rooms: {} }; }),
-        rejects((plan) => { plan.next_run_preview = { rooms: [], mission_boundaries: [], blocker: "invalid_plan", held_rooms: [{ room_id: "room-a", name: "Kitchen" }] }; }),
+        rejects((plan) => { plan.next_run_preview = { entries: [], mission_boundaries: [], blocker: "invalid_plan", held_rooms: {} }; }),
+        rejects((plan) => { plan.next_run_preview = { entries: [], mission_boundaries: [], blocker: "invalid_plan", held_rooms: [{ room_id: "room-a", name: "Kitchen" }] }; }),
       ],
     };
   }, plansPayload());
   expect(result).toEqual({
     defaults: [false, {}],
     parsed: [true, { "room-a": "binary_sensor.kitchen" }, {
-      rooms: [], steps: [], missionBoundaries: [], blocker: "plan_rooms_held",
+      steps: [], missionBoundaries: [], blocker: "plan_rooms_held",
       heldRooms: [{ roomId: "room-a", name: "Kitchen", sensor: "binary_sensor.kitchen" }],
     }],
     rejected: [true, true, true, true, true, true],
@@ -318,7 +318,7 @@ test("plan catalog reads removed rooms up to the saved-plan room limit", async (
     const parse = (missing) => {
       const candidate = structuredClone(payload);
       candidate.plans[0].next_run_preview = {
-        rooms: [], mission_boundaries: [], blocker: "room_missing", missing_rooms: missing,
+        entries: [], mission_boundaries: [], blocker: "room_missing", missing_rooms: missing,
       };
       try { return parsePlansCatalog(candidate).plans[0].nextRunPreview.missingRooms; } catch (error) { return error.code; }
     };
@@ -371,7 +371,7 @@ test("plan preview keeps area labels bounded while accepting native room labels"
       cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] });
     const candidate = structuredClone(payload);
     candidate.plans[0].next_run_preview = {
-      rooms: [], entries: [step("room", "r".repeat(256)), step("area", "a".repeat(128))],
+      entries: [step("room", "r".repeat(256)), step("area", "a".repeat(128))],
       mission_boundaries: [], blocker: "plan_room_limit",
     };
     const parsed = parsePlansCatalog(candidate).plans[0].nextRunPreview;
@@ -417,7 +417,7 @@ test("saved-plan parsing preserves a room-limit blocker without inventing a prev
   const result = await page.evaluate(async payload => {
     const { parsePlansCatalog } = await import("/backend-contracts.js");
     payload.plans[0].next_run_preview = {
-      rooms: [],
+      entries: [],
       mission_boundaries: [],
       blocker: "plan_room_limit",
     };
@@ -464,7 +464,7 @@ test("saved-plan parsing admits explicit unverified cadence recovery state", asy
       "coverage_progress_unverified",
     ];
     payload.plans[0].next_run_preview = {
-      rooms: [],
+      entries: [],
       mission_boundaries: [],
       blocker: "cadence_progress_unverified",
     };
@@ -535,7 +535,6 @@ test("saved-plan preview parsing enforces the shared room-sequence limit", async
     const parse = count => {
       const candidate = structuredClone(payload);
       candidate.plans[0].next_run_preview = {
-        rooms: Array.from({ length: count }, (_, index) => room(index)),
         entries: Array.from({ length: count }, (_, index) => ({ kind: "room", ...room(index) })),
         mission_boundaries: [],
         blocker: null,
@@ -587,7 +586,6 @@ test("saved-plan preview parsing accepts plans with custom areas", async ({ page
       }
     };
     const ready = (overrides) => ({
-      rooms: [room],
       entries: [area, { kind: "room", ...room }],
       mission_boundaries: [1],
       blocker: null,
@@ -596,13 +594,13 @@ test("saved-plan preview parsing accepts plans with custom areas", async ({ page
     });
     return {
       mixed: parse(ready({})),
-      areasOnly: parse(ready({ rooms: [], entries: [area], mission_boundaries: [] })),
+      areasOnly: parse(ready({ entries: [area], mission_boundaries: [] })),
       blockers: ["area_map_changed", "area_missing"].map((blocker) =>
-        parse({ rooms: [], mission_boundaries: [], blocker }).blocker),
+        parse({ entries: [], mission_boundaries: [], blocker }).blocker),
       boundaryPastEntries: parse(ready({ mission_boundaries: [2] })),
       boundariesWithoutEntries: parse(ready({ entries: undefined })),
-      roomsWithoutEntries: parse(ready({ entries: undefined, mission_boundaries: [] })),
-      emptyEntries: parse(ready({ rooms: [], entries: [], mission_boundaries: [] })),
+      blockedWithoutEntries: parse({ mission_boundaries: [], blocker: "area_missing" }),
+      emptyEntries: parse(ready({ entries: [], mission_boundaries: [] })),
       entriesNotList: parse(ready({ entries: {} })),
       tooMany: parse(ready({ entries: Array.from({ length: 201 }, () => area), mission_boundaries: [] })),
       areaWithoutId: parse(ready({ entries: [{ ...area, area_id: "" }] })),
@@ -612,20 +610,18 @@ test("saved-plan preview parsing accepts plans with custom areas", async ({ page
   const kitchen = { roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: ["mop_due"] };
   const rug = { areaId: "rug", name: "Rug", cleaningMode: "mop", coverageSetting: "quick", cadenceReasons: [] };
   expect(result.mixed).toEqual({
-    rooms: [kitchen],
     steps: [rug, kitchen],
     missionBoundaries: [1],
     blocker: null,
     previewToken: "a".repeat(64),
   });
-  expect(result.areasOnly.rooms).toEqual([]);
   expect(result.areasOnly.steps).toEqual([rug]);
   expect(result.areaWithoutId).toBe("invalid-plan-preview-room-id");
   expect(result.blockers).toEqual(["area_map_changed", "area_missing"]);
   expect(result.boundaryPastEntries).toBe("invalid-plan-preview-boundary");
   expect(result.boundariesWithoutEntries).toBe("invalid-plan-preview");
-  // Only a blocked preview omits entries; its rooms are not read as steps.
-  expect(result.roomsWithoutEntries).toBe("empty-plan-preview");
+  // Every preview sends entries, a blocked one an empty list.
+  expect(result.blockedWithoutEntries).toBe("invalid-plan-preview");
   expect(result.emptyEntries).toBe("empty-plan-preview");
   expect(result.entriesNotList).toBe("invalid-plan-preview");
   expect(result.tooMany).toBe("invalid-plan-preview");
