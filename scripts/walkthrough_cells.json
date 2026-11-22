@@ -9,7 +9,7 @@
     {
       "id": "R02",
       "journey": "Plan pick, run, edit, save and delete",
-      "steps": ["plans", "plan-saved-intelligent", "plan-saved-ordered", "plan-run-parts", "plan-run-paused", "plan-run-blocked", "plan-run-areas", "plan-run-areas-only", "plan-edit-ordered", "plan-edit-areas", "plan-edit-areas-rotation", "plan-edit-area-stale", "plan-dirty", "plan-dirty:discardDraft", "plan-new", "plan-saved-intelligent:confirmDeletePlan"],
+      "steps": ["plans", "plan-saved-intelligent", "plan-saved-ordered", "plan-run-paused", "plan-run-blocked", "plan-run-areas", "plan-run-areas-only", "plan-edit-ordered", "plan-edit-areas", "plan-edit-areas-rotation", "plan-edit-area-stale", "plan-dirty", "plan-dirty:discardDraft", "plan-new", "plan-saved-intelligent:confirmDeletePlan"],
       "check": "Picker to Run to Edit; numbers only in Saved order; rooms and custom areas rotate together in Intelligent rotation, follow the exact sequence in Saved order and say what they need; Save, Cancel and Delete ask only when data would be lost"
     },
     {

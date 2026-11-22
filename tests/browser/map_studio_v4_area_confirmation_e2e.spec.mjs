@@ -181,7 +181,6 @@ test("saved-area confirmation writes the same ID, reads it back as current, and 
     const next = structuredClone(catalog);
     next.plans[0].next_run_preview = {
       preview_token: token,
-      rooms: [],
       entries: [{ kind: "area", area_id: "office-saved-id", name: "Office", cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] }],
       mission_boundaries: [],
       blocker: null,

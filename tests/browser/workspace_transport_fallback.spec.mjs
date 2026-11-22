@@ -118,7 +118,7 @@ async function setup(page, failureMode) {
     window.fallbackHarness = { controller, store, projection, stats, intervals, clearedIntervals,
       updateSavedPlan: (name, cleaningMode) => {
         savedPlans.plans[0].name = name;
-        savedPlans.plans[0].nextRunPreview.rooms[0].cleaningMode = cleaningMode;
+        savedPlans.plans[0].nextRunPreview.steps[0].cleaningMode = cleaningMode;
         const mopDue = cleaningMode === "vacuum_and_mop";
         savedPlans.plans[0].rooms[0].cadenceProgress = {
           mopProgress: mopDue ? 1 : 0, coverageProgress: 0, mopDue, coverageDue: false,
@@ -233,7 +233,7 @@ for (const failureMode of ["snapshot-unsupported", "subscription-unsupported"]) 
     await page.evaluate(() => window.fallbackHarness.invokeCatalogPoll());
     await expect.poll(() => page.evaluate(() => window.fallbackHarness.store.value.planDraft.name)).toBe("Daily clean updated");
     expect(await page.evaluate(() => window.fallbackHarness.stats.planCalls)).toBe(before + 1);
-    expect(await page.evaluate(() => window.fallbackHarness.store.value.resources.plans.value.plans[0].nextRunPreview.rooms[0].cleaningMode)).toBe("vacuum_and_mop");
+    expect(await page.evaluate(() => window.fallbackHarness.store.value.resources.plans.value.plans[0].nextRunPreview.steps[0].cleaningMode)).toBe("vacuum_and_mop");
     expect(await page.evaluate(() => window.fallbackHarness.store.value.planDraft.rooms[0].cadenceProgress))
       .toMatchObject({ mopProgress: 1, mopDue: true, nextMopIn: 1 });
     await page.evaluate(() => {

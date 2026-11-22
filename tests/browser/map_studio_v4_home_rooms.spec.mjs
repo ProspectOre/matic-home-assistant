@@ -565,7 +565,6 @@ test.describe("the plan card", () => {
         finish_current_room: false, finish_current_room_threshold: 50,
         next_run_preview: {
           preview_token: "e".repeat(64),
-          rooms: rooms.map((room) => ({ room_id: room.room_id, name: room.name, cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] })),
           entries: rooms.map((room) => ({ kind: "room", room_id: room.room_id, name: room.name, cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] })),
           mission_boundaries: [],
           blocker: null,

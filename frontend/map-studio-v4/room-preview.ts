@@ -1,7 +1,7 @@
 // Room previews start only after a cleaning choice. Keep their FIFO queue,
 // deadline and outstanding-wire accounting out of the map startup graph.
 import type { HassLike } from "./contracts";
-import type { CleaningMode, CoverageSetting, ManualRoomSequencePreview, ManualRoomSequencePreviewRoom } from "./backend-contracts";
+import type { CleaningMode, CoverageSetting, ManualRoomSequencePreview, ManualRoomSequencePreviewRoom, NextRunPreviewRoom } from "./backend-contracts";
 
 type Connection = NonNullable<HassLike["connection"]>;
 type Room = { readonly room: string; readonly cleaning_mode: CleaningMode; readonly coverage_setting: CoverageSetting };
@@ -32,14 +32,13 @@ export const requestRoomPreview = async (
     if (!Array.isArray(rawRooms)) throw new ContractError("invalid-room-sequence-preview-rooms");
     // A room sequence is one mission of rooms alone, so it has no part breaks.
     const preview = parseNextRunPreview({
-      rooms: rawRooms,
       entries: rawRooms.map((room) => ({ ...objectValue(room, "invalid-room-sequence-preview-room"), kind: "room" })),
       mission_boundaries: response.mission_boundaries,
       blocker: response.blocker,
       daily_limit_held_rooms: response.daily_limit_held_rooms,
     });
     if (!preview || preview.missionBoundaries.length) throw new ContractError("invalid-room-sequence-preview");
-    const rooms = preview.rooms.map((room, index): ManualRoomSequencePreviewRoom => {
+    const rooms = preview.steps.filter((step): step is NextRunPreviewRoom => "roomId" in step).map((room, index): ManualRoomSequencePreviewRoom => {
       const source = objectValue(rawRooms[index], "invalid-room-sequence-preview-room");
       const cadenceProgress = parseCadenceProgress(source.cadence_progress, source.cadence_reasons);
       return { ...room, ...(cadenceProgress === undefined ? {} : { cadenceProgress }) };

@@ -96,7 +96,7 @@ const shortcut = (host: ShortcutHost, pin: HomePin, name: string, title: string,
 const planShortcut = (host: ShortcutHost, pin: HomePin, plan: SavedPlan, position: number, total: number) => {
   const { t, state } = host;
   const action = planShortcutAction(state, plan);
-  const due = plan.enabled ? dueLines(t, state.locale, plan.nextRunPreview?.rooms ?? []) : [];
+  const due = plan.enabled ? dueLines(t, state.locale, plan.nextRunPreview?.steps ?? []) : [];
   return shortcut(host, pin, plan.name, t("v4_run_named_plan", "Run {plan}", { plan: "\u0000" }),
     html`<small><bdi dir="auto">${planRowLine2(t, state.locale, plan)}</bdi></small>${due.length ? html`<span class="card-lines">${due.map((line) => html`<span class="line">${icon(iconDue)}${line}</span>`)}</span>` : nothing}`,
     "label" in action ? action : null, "run-plan", plan.enabled ? nothing : html`<span class="ms-chip">${t("v4_paused", "Paused")}</span>`, position, total);
