@@ -55,6 +55,7 @@ from .plan_model import (
     plan_floor_token,
     stored_count,
 )
+from .plan_records import ActivePlan, LastRun, stored_active_plan
 from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
@@ -667,26 +668,25 @@ class PlanLedger:
         last_run.pop("native_reconciled_completion", None)
         last_run.pop("recovery_status", None)
         last_run.pop("recovery_reason", None)
-        active = robot.get("active_plan")
-        if isinstance(active, dict) and active.get("run_id") == run_id:
+        active = stored_active_plan(robot)
+        if active is not None and active.run_id == run_id:
             robot["active_plan"] = None
         return True, unfinished
 
-    def active_target(self, serial_number: str) -> Mapping[str, Any] | None:
+    def active_target(self, serial_number: str) -> ActivePlan | None:
         """Return the stored room or area being cleaned, never the projection."""
-        active = self.repository.robot(serial_number).get("active_plan")
-        return active if isinstance(active, Mapping) else None
+        return self.repository.active_plan(serial_number)
 
-    def run_record(self, serial_number: str, run_id: str) -> Mapping[str, Any] | None:
+    def run_record(self, serial_number: str, run_id: str) -> LastRun | None:
         """Return the stored record of run ``run_id``, running or finished."""
-        return stored_run(self.repository.robot(serial_number), run_id)
+        run = self.repository.last_run(serial_number)
+        return run if run is not None and run.run_id == run_id else None
 
     @callback
     def active_run_id(self, serial_number: str) -> str | None:
         """Return the current managed run ID without exposing user context."""
-        run = running_run(self.repository.robot(serial_number))
-        run_id = run.get("run_id") if run is not None else None
-        return run_id if isinstance(run_id, str) else None
+        run = self.repository.last_run(serial_number)
+        return run.run_id if run is not None and run.running else None
 
     async def async_mark_run_docked(
         self,
@@ -702,10 +702,12 @@ class PlanLedger:
         A running run closes after its ``plan_finished``, which ``plan_docked``
         so always follows. A failed run only has its matching fence cleared.
         """
-        live = running_run(self.repository.robot(serial_number), run_id) is not None
-        await self.control.async_wait_for_run_end(serial_number, run_id, live)
-        outcome = (self.run_record(serial_number, run_id) or {}).get("outcome")
-        if outcome == "failed" and stop_fence_token is not None:
+        run = self.run_record(serial_number, run_id)
+        await self.control.async_wait_for_run_end(
+            serial_number, run_id, run is not None and run.running
+        )
+        run = self.run_record(serial_number, run_id)
+        if run is not None and run.outcome == "failed" and stop_fence_token is not None:
             return await self.control.async_clear_stop_pending_if_token(
                 serial_number, stop_fence_token, run_id=run_id
             )
@@ -800,40 +802,29 @@ class PlanLedger:
             else:
                 record.pop("run_id", None)
             robot.pop("pending_native_reconciliation", None)
-            previous_active = robot.get("active_plan")
-            previous_active = (
-                previous_active if isinstance(previous_active, dict) else {}
-            )
-            recovering_same_room = (
-                run_id is not None
-                and (duplicate or previous_active.get("status") == "recovering")
-                and previous_active.get("plan_id") == plan_id
-                and previous_active.get("room_id") == room.room_id
-                and previous_active.get("run_id") == run_id
+            previous = stored_active_plan(robot)
+            # A restart rejoining the same room keeps its clock.
+            same = (
+                previous
+                if previous is not None
+                and run_id is not None
+                and (duplicate or previous.status == "recovering")
+                and previous.plan_id == plan_id
+                and previous.room_id == room.room_id
+                and previous.run_id == run_id
+                else None
             )
             robot["active_plan"] = {
                 "plan_id": plan_id,
                 "plan_name": self.catalog.plan_name(serial_number, plan_id),
                 "room_id": room.room_id,
                 "room": room.name,
-                "started": (
-                    previous_active.get("started", now) if recovering_same_room else now
-                ),
+                "started": now if same is None else same.started or now,
                 "status": "starting",
-                "cleaning_started": (
-                    previous_active.get("cleaning_started")
-                    if recovering_same_room
-                    else None
-                ),
-                "active_elapsed_seconds": (
-                    previous_active.get("active_elapsed_seconds", 0)
-                    if recovering_same_room
-                    else 0
-                ),
+                "cleaning_started": None if same is None else same.cleaning_started,
+                "active_elapsed_seconds": 0 if same is None else same.elapsed_seconds,
                 "active_segment_started": (
-                    previous_active.get("active_segment_started")
-                    if recovering_same_room
-                    else None
+                    None if same is None else same.segment_started
                 ),
             }
             stop_policy = (
@@ -880,21 +871,21 @@ class PlanLedger:
             last_run = running_run(robot, run_id)
             if last_run is None or last_run.get("plan_id") != plan_id:
                 return None
-            previous = robot.get("active_plan")
-            previous = previous if isinstance(previous, dict) else {}
+            previous = stored_active_plan(robot)
             # A restart rejoining the same area keeps its original start.
             same_area = (
-                previous.get("run_id") == run_id
-                and previous.get("plan_id") == plan_id
-                and previous.get("area_id") == area.area_id
+                previous is not None
+                and previous.run_id == run_id
+                and previous.plan_id == plan_id
+                and previous.area_id == area.area_id
             )
             robot["active_plan"] = {
                 "plan_id": plan_id,
                 "plan_name": self.catalog.plan_name(serial_number, plan_id),
                 "area_id": area.area_id,
                 "area": area.name,
-                "started": previous.get("started")
-                if same_area
+                "started": previous.started
+                if previous is not None and same_area
                 else dt_util.utcnow().isoformat(),
                 "status": "running",
                 "run_id": run_id,
@@ -946,15 +937,15 @@ class PlanLedger:
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)
             run = running_run(robot, run_id)
-            active = robot.get("active_plan")
+            active = stored_active_plan(robot)
             if (
                 not acceptance_is_current()
                 or run is None
                 or run.get("plan_id") != plan_id
-                or not isinstance(active, dict)
-                or active.get("run_id") != run_id
-                or active.get("area_id") != area.area_id
-                or active.get("plan_id") != plan_id
+                or active is None
+                or active.run_id != run_id
+                or active.area_id != area.area_id
+                or active.plan_id != plan_id
             ):
                 return False
             now = dt_util.utcnow().isoformat()
@@ -1000,21 +991,21 @@ class PlanLedger:
 
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)
-            active = robot.get("active_plan")
+            active = stored_active_plan(robot)
             run = running_run(robot, run_id)
             if (
-                not isinstance(active, dict)
-                or active.get("run_id") != run_id
-                or active.get("area_id") != area.area_id
+                active is None
+                or active.run_id != run_id
+                or active.area_id != area.area_id
                 or run is None
-                or run.get("plan_id") != active.get("plan_id")
+                or run.get("plan_id") != active.plan_id
                 or (
                     completed
                     and (completion_is_current is None or not completion_is_current())
                 )
             ):
                 return False
-            rotation = robot["rotations"].get(active["plan_id"], {})
+            rotation = robot["rotations"].get(active.plan_id, {})
             record = rotation.get("areas", {}).get(area.area_id, {})
             if completed and (
                 record.get("run_id") != run_id
@@ -1157,7 +1148,7 @@ class PlanLedger:
             else None
         )
         # The robot's own per-room time first, else the time this room ran.
-        active = robot.get("active_plan")
+        active = stored_active_plan(robot)
         duration: int | None = None
         if (
             isinstance(duration_seconds, int)
@@ -1167,8 +1158,8 @@ class PlanLedger:
             duration = duration_seconds
         elif (
             active is not None
-            and active.get("plan_id") == plan_id
-            and active.get("room_id") == room.room_id
+            and active.plan_id == plan_id
+            and active.room_id == room.room_id
         ):
             duration = plan_timing._active_elapsed_seconds(active, now_value) or None
         record_verified_completion(
@@ -1202,11 +1193,8 @@ class PlanLedger:
             self.room(serial_number, plan_id, room),
             now=now_value,
         )
-        active = robot.get("active_plan")
         if run_id is None or (
-            isinstance(active, Mapping)
-            and active.get("run_id") == run_id
-            and active.get("plan_id") == plan_id
+            active is not None and active.run_id == run_id and active.plan_id == plan_id
         ):
             robot["active_plan"] = None
         return True
@@ -1227,7 +1215,7 @@ class PlanLedger:
             record["last_result"] = "ended_unverified"
             record["last_ended_unverified"] = now_value.isoformat()
             record["unverified_runs"] = stored_count(record, "unverified_runs") + 1
-            active = self.repository.robot(serial_number).get("active_plan")
+            active = self.repository.active_plan(serial_number)
             if active is not None:
                 record["last_unverified_duration_seconds"] = (
                     plan_timing._active_elapsed_seconds(active, now_value)
@@ -1448,14 +1436,16 @@ class PlanLedger:
             record["last_suspended"] = now_value.isoformat()
             record["last_suspend_reason"] = reason
             record["suspended_runs"] = stored_count(record, "suspended_runs") + 1
-            active = self.repository.robot(serial_number).get("active_plan")
-            if active is not None:
-                active["active_elapsed_seconds"] = plan_timing._active_elapsed_seconds(
-                    active, now_value
+            robot = self.repository.robot(serial_number)
+            if (active := stored_active_plan(robot)) is not None:
+                robot["active_plan"].update(
+                    active_elapsed_seconds=plan_timing._active_elapsed_seconds(
+                        active, now_value
+                    ),
+                    active_segment_started=None,
+                    status="suspended",
+                    suspend_reason=reason,
                 )
-                active["active_segment_started"] = None
-                active["status"] = "suspended"
-                active["suspend_reason"] = reason
             return True
 
         await self.repository.async_mutate_and_save(serial_number, mutate)
@@ -1472,15 +1462,18 @@ class PlanLedger:
             now_value = dt_util.utcnow()
             record = self.room(serial_number, plan_id, room)
             record["last_result"] = "verifying"
-            active = self.repository.robot(serial_number).get("active_plan")
-            if active is not None:
-                active["active_elapsed_seconds"] = plan_timing._active_elapsed_seconds(
-                    active, now_value
+            robot = self.repository.robot(serial_number)
+            if (active := stored_active_plan(robot)) is not None:
+                stored = robot["active_plan"]
+                stored.update(
+                    active_elapsed_seconds=plan_timing._active_elapsed_seconds(
+                        active, now_value
+                    ),
+                    active_segment_started=None,
+                    status="verifying",
                 )
-                active["active_segment_started"] = None
-                active["status"] = "verifying"
-                active.pop("suspend_reason", None)
-            run = self.repository.robot(serial_number).get("last_run")
+                stored.pop("suspend_reason", None)
+            run = robot.get("last_run")
             stored = run.get("recovery_checkpoint") if run is not None else None
             if stored is not None and checkpoint is not None:
                 checkpoint.apply(stored)
@@ -1496,20 +1489,21 @@ class PlanLedger:
             record = self.room(serial_number, plan_id, room)
             record["last_result"] = "running"
             robot = self.repository.robot(serial_number)
-            active = robot.get("active_plan")
+            active = stored_active_plan(robot)
             if (
                 active is not None
-                and active.get("plan_id") == plan_id
-                and active.get("room_id") == room.room_id
+                and active.plan_id == plan_id
+                and active.room_id == room.room_id
             ):
-                active["status"] = "running"
-                if not isinstance(active.get("cleaning_started"), str):
-                    active["cleaning_started"] = now
+                stored = robot["active_plan"]
+                stored["status"] = "running"
+                if active.cleaning_started is None:
+                    stored["cleaning_started"] = now
                     stats = global_room(robot, room.room_id, room.name)
                     # A room skipped later in this run gets these back.
                     for target in (record, stats):
                         prior = target.get("opportunity_before_run")
-                        run_id = active.get("run_id")
+                        run_id = active.run_id
                         if (
                             run_id is None
                             or not isinstance(prior, dict)
@@ -1522,9 +1516,9 @@ class PlanLedger:
                     record["last_opportunity"] = now
                     stats["name"] = room.name
                     stats["last_opportunity"] = now
-                if active.get("active_segment_started") is None:
-                    active["active_segment_started"] = now
-                active.pop("suspend_reason", None)
+                if active.segment_started is None:
+                    stored["active_segment_started"] = now
+                stored.pop("suspend_reason", None)
             return True
 
         await self.repository.async_mutate_and_save(serial_number, mutate)
@@ -1553,9 +1547,8 @@ class PlanLedger:
                 if pending is not None:
                     native_history._attach_cadence_state(robot, pending)
                     robot["pending_native_reconciliation"] = pending
-            active = robot.get("active_plan")
-            if active is not None:
-                robot["last_interrupted_plan"] = deepcopy(active)
+            if (active := stored_active_plan(robot)) is not None:
+                robot["last_interrupted_plan"] = active.published()
             robot["active_plan"] = None
             return True
 
@@ -1579,10 +1572,8 @@ class PlanLedger:
 
     def skipped_room_ids(self, serial_number: str, run_id: str) -> frozenset[str]:
         """Return the rooms skipped during a run that is still running."""
-        skipped = (self.run_record(serial_number, run_id) or {}).get("skipped_room_ids")
-        if not isinstance(skipped, list):
-            return frozenset()
-        return frozenset(item for item in skipped if isinstance(item, str))
+        run = self.run_record(serial_number, run_id)
+        return run.skipped_room_ids if run is not None else frozenset()
 
     async def async_mark_settled(
         self,
@@ -1621,7 +1612,7 @@ class PlanLedger:
             record["last_result"] = "cancelled"
             record["last_cancelled"] = now_value.isoformat()
             record["cancelled_runs"] = stored_count(record, "cancelled_runs") + 1
-            active = self.repository.robot(serial_number).get("active_plan")
+            active = self.repository.active_plan(serial_number)
             if active is not None:
                 record["last_cancelled_duration_seconds"] = (
                     plan_timing._active_elapsed_seconds(active, now_value)
