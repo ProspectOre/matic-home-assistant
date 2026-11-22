@@ -129,7 +129,8 @@ class _PlanRun:
             self.run = Run()
         else:
             assert recovery.checkpoint is not None
-            self.started_at = str(recovery.started_at)
+            assert recovery.started_at is not None
+            self.started_at = recovery.started_at
             self.provenance = recovery.provenance
             self.checkpoint = recovery.checkpoint
             self.run = Run.from_checkpoint(self.checkpoint)

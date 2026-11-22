@@ -123,7 +123,8 @@ async def _async_stop_interrupted_mixed_dispatch(
     manager = runtime.cleaning_plans
     run_id = run.run_id
     assert run.checkpoint is not None
-    entity_id = str(run.checkpoint.entity_id)
+    entity_id = run.checkpoint.entity_id
+    assert entity_id is not None
     token: int | None = None
     transmitted = False
 
@@ -454,6 +455,8 @@ async def _async_recovery_reason(
         return _CHECKPOINT_UNVERIFIED
     if checkpoint.floor_token is None:
         raise ValueError("checkpoint has no floor")
+    if checkpoint.entity_id is None or run.started_at is None:
+        raise ValueError("the stored run cannot name its vacuum or start time")
     recovery = _Recovery(
         hass,
         entry,
