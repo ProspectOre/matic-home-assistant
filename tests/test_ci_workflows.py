@@ -57,6 +57,7 @@ def test_browser_shards_keep_the_traces_of_retried_tests() -> None:
     assert 'trace: "on-first-retry"' in config
     # The trace is the retry's; a crashed first attempt leaves only this.
     assert steps[run]["env"]["DEBUG"] == "pw:browser"
+    assert steps[run]["env"]["WEBKIT_DISABLE_DMABUF_RENDERER"] == "1"
 
 
 def test_the_household_browser_tests_run_alone_and_in_every_sharded_run() -> None:

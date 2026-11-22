@@ -216,6 +216,9 @@ jobs:
           # under a few firefox-safety tests and the error names no reason;
           # its last lines do. Remove once that crash is explained.
           DEBUG: pw:browser
+          # WebKit's GPU buffer path aborts some WebGL tests on hosted runners
+          # (libepoxy "No provider of eglDestroySync"). Render without it.
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
       # A retried test records a trace, and a retry fails the run.
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
