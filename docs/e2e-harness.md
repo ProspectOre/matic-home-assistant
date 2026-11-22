@@ -122,12 +122,10 @@ replaced before it is committed.
 - A keepalive ping finds a silent link with no request waiting; refused pings
   double its interval; one stream's fault leaves the others open.
 - A lost or unacknowledged plan start fails the run and is not sent again.
-- A revoked credential starts reauthentication.
-- Pairing a discovered robot, every code outcome included, and Matic Map's plan
-  list, previews, delete and progress reset, sent as Matic Map sends them.
-- Client level: unknown credentials, fingerprint and serial
-  pinning, snapshot, tracked and pushed collections, unsupported endpoints,
-  map-tap postures and held photos.
+- A revoked credential starts reauthentication. Setup handles each pairing code outcome.
+- Matic Map's plan list, previews, delete and progress reset, as it sends them.
+- Client level: unknown credentials, fingerprint and serial pinning, snapshot,
+  tracked and pushed collections, unsupported endpoints, map-tap postures and held photos.
 - In a browser against Home Assistant: choosing Kitchen and Study sends one
   coverage command, the panel follows the robot and returns to ready at the
   dock. Open history reflects delayed completion without a page reload.
