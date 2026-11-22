@@ -173,6 +173,22 @@ class PlanRepository:
         """Return the stored last run as ``robot`` would give it, parsed."""
         return stored_last_run(self.robot(serial_number))
 
+    def run_record(self, serial_number: str, run_id: str) -> LastRun | None:
+        """Return the stored record of run ``run_id``, running or finished."""
+        run = self.last_run(serial_number)
+        return run if run is not None and run.run_id == run_id else None
+
+    def draft_run(self, serial_number: str) -> dict[str, Any]:
+        """Return the stored last run for the open commit to edit.
+
+        A writer calls it once ``last_run`` found the run it changes. Outside
+        ``commit`` it raises, so no reader holds the stored record.
+        """
+        robot = self.robot(serial_number)
+        if self.open_draft is None or robot is not self.open_draft[1]:
+            raise RuntimeError("a stored run is edited only inside a commit")
+        return cast(dict[str, Any], robot["last_run"])
+
     def _live(self, serial_number: str) -> dict[str, Any]:
         """Return the committed robot, adding an empty one if it is new."""
         robots = self.data["robots"]

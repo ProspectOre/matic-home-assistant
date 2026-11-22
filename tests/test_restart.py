@@ -39,7 +39,7 @@ from custom_components.matic_robot.restart import (
     async_recover_managed_run,
 )
 from custom_components.matic_robot.robot_commands import CleanPlanArea
-from tests.plans.fakes import save_run_checkpoint
+from tests.plans.fakes import recovery_record, save_run_checkpoint
 from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _session_identity
 
@@ -48,7 +48,7 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
     manager, entry, _, room = recovery_state
 
     async def execute(*args, **kwargs):
-        assert kwargs["recovery"]["run_id"] == "run"
+        assert kwargs["recovery"].run_id == "run"
         assert kwargs["recovered_dispatch"].rooms == (room,)
         assert kwargs["recovered_dispatch"].native_identity == b"synthetic-session"
         assert kwargs["floor_is_current"]()
@@ -98,7 +98,7 @@ async def test_mixed_session_checkpoint_saves_only_fingerprint(recovery_state):
         "serial", "run", expected_hash
     )
 
-    stored = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
+    stored = recovery_record(manager)["recovery_checkpoint"]
     assert stored["mixed_initial_session_hash"] == expected_hash
     assert session_id not in str(stored)
 
@@ -139,7 +139,7 @@ async def test_mixed_session_checkpoint_refuses_a_custom_area_leg(
         await manager.recovery.async_checkpoint_mixed_session(
             "serial", "run", expected_hash
         )
-        stored = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
+        stored = recovery_record(manager)["recovery_checkpoint"]
         assert stored["mixed_initial_session_hash"] == expected_hash
     else:
         with pytest.raises(HomeAssistantError, match="not dispatchable"):
@@ -168,9 +168,9 @@ async def test_mixed_stop_rollback_ignores_changed_fence_owner(recovery_state):
         "serial", "run", expected_hash
     )
 
-    assert manager.recovery.recovery_run("serial")["recovery_checkpoint"][
-        "stop_intent"
-    ] == ("immediate")
+    assert recovery_record(manager)["recovery_checkpoint"]["stop_intent"] == (
+        "immediate"
+    )
 
 
 def test_mixed_session_fingerprint_rejects_malformed_values():
@@ -295,15 +295,13 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
         assert command is UserCommand.STOP
         assert manager.control.pending_stop_run_id("serial") == "run"
         assert (
-            manager.recovery.recovery_run("serial")["recovery_checkpoint"][
+            recovery_record(manager)["recovery_checkpoint"][
                 "mixed_initial_session_hash"
             ]
             == expected_hash
         )
         assert (
-            manager.recovery.recovery_run("serial")["recovery_checkpoint"][
-                "stop_intent"
-            ]
+            recovery_record(manager)["recovery_checkpoint"]["stop_intent"]
             == "immediate"
         )
         assert entry.runtime_data.client.async_get_cleaning_session_identity.await_args
@@ -390,7 +388,7 @@ async def test_restart_rolls_back_locally_rejected_mixed_recovery_stop(
 
     assert manager.control.pending_stop_run_id("serial") is None
     assert manager.history.snapshot("serial")["last_run"]["outcome"] == "unverified"
-    assert manager.recovery.recovery_run("serial") is None
+    assert recovery_record(manager) is None
 
 
 async def test_restart_does_not_replay_ambiguous_mixed_recovery_stop(
@@ -746,7 +744,7 @@ async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
         "cancelled" if case == "stop_intent" else "unverified"
     )
     assert snapshot["active_plan"] is None
-    assert manager.recovery.recovery_run("serial") is None
+    assert recovery_record(manager) is None
 
 
 async def test_repeated_shutdown_preserves_checkpoint(hass, recovery_state):
@@ -757,7 +755,7 @@ async def test_repeated_shutdown_preserves_checkpoint(hass, recovery_state):
     )
     with pytest.raises(asyncio.CancelledError):
         await async_recover_managed_run(hass, entry, "serial")
-    assert manager.recovery.recovery_run("serial") is not None
+    assert recovery_record(manager) is not None
 
 
 async def test_checkpoint_load_preserves_active_room_and_hides_private_state(
@@ -838,14 +836,13 @@ async def test_recovery_storage_ignores_retired_run_and_preserves_stop_intent(
 ):
     manager, entry, checkpoint, _ = recovery_state
     await manager.recovery.async_set_recovery_checkpoint("serial", "different-run", {})
-    assert manager.recovery.recovery_run("serial")["recovery_checkpoint"] == checkpoint
+    assert recovery_record(manager)["recovery_checkpoint"] == checkpoint
     await manager.recovery.async_checkpoint_stop_intent(
         "serial", "after_room", run_id="run"
     )
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     assert (
-        manager.recovery.recovery_run("serial")["recovery_checkpoint"]["stop_intent"]
-        == "after_room"
+        recovery_record(manager)["recovery_checkpoint"]["stop_intent"] == "after_room"
     )
     await manager.ledger.async_finish_run(
         "serial", "run", "cancelled", "managed_stop", 0
@@ -854,7 +851,7 @@ async def test_recovery_storage_ignores_retired_run_and_preserves_stop_intent(
         "serial", "running", reason="obsolete"
     )
     await async_recover_managed_run(hass, entry, "serial")
-    assert manager.recovery.recovery_run("serial") is None
+    assert recovery_record(manager) is None
 
 
 async def test_new_plan_cannot_replace_pending_recovery(hass, recovery_state):
@@ -991,9 +988,10 @@ async def test_reloaded_room_retains_elapsed_and_original_timestamps(
         "serial", "plan", another, run_id="run"
     )
     await restored.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    assert restored.recovery.recovery_run("serial")["recovery_checkpoint"][
-        "started_room_ids"
-    ] == [room.room_id, another.room_id]
+    assert recovery_record(restored)["recovery_checkpoint"]["started_room_ids"] == [
+        room.room_id,
+        another.room_id,
+    ]
     assert not await restored.ledger.async_mark_started(
         "serial", "plan", room, run_id="run"
     )

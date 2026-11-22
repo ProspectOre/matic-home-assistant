@@ -61,6 +61,7 @@ from .plan_model import (
     relink_plan_rooms,
     stored_count,
 )
+from .plan_records import stored_last_run
 from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
@@ -215,9 +216,9 @@ class PlanCatalog:
             ) - room_frame_point_count(area)
         if projected_points > _MAX_PERSISTED_ROOM_FRAME_POINTS_PER_ROBOT:
             return AreaBindingUpgradeResult(0, True)
-        run = robot.get("last_run")
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
-        entries = checkpoint.get("entries") if isinstance(checkpoint, dict) else None
+        run = stored_last_run(robot)
+        stored = robot["last_run"] if run is not None and run.checkpoint else None
+        entries = stored["recovery_checkpoint"].get("entries") if stored else None
         for area_id, area, upgraded in staged:
             before = plan_area_fingerprint(area)
             area["map_binding"] = upgraded

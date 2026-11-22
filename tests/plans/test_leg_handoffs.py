@@ -24,6 +24,7 @@ from tests.plans.fakes import (
     heavy_room,
     memory_manager,
     plan_room,
+    recovery_record,
     run_plan_call,
 )
 from tests.session_fakes import FakeRobot
@@ -237,7 +238,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
         return True
 
     async def block_handoff(*_args, **_kwargs) -> bool:
-        recovery = manager.recovery.recovery_run("serial")
+        recovery = recovery_record(manager)
         assert recovery is not None
         assert recovery["recovery_checkpoint"]["phase"] == "handoff"
         assert recovery["recovery_checkpoint"]["leg_index"] == 1

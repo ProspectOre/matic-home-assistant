@@ -36,7 +36,7 @@ from .plan_model import (
     room_cadence_identity,
     stored_count,
 )
-from .plan_records import stored_active_plan
+from .plan_records import stored_active_plan, stored_last_run
 from .plan_timing import (
     _admit_room_settings,
     _duration_profile_key,
@@ -271,24 +271,22 @@ def _attach_cadence_state(robot: dict[str, Any], pending: dict[str, Any]) -> Non
     """Freeze the dispatched schedule into its exact late-history marker."""
     for child in pending.get("rooms", []):
         _attach_cadence_state(robot, child)
-    run = robot.get("last_run")
+    run = stored_last_run(robot)
     if (
-        not isinstance(run, dict)
-        or run.get("run_id") != pending.get("run_id")
-        or run.get("plan_id") != pending.get("plan_id")
+        run is None
+        or run.run_id != pending.get("run_id")
+        or run.plan_id != pending.get("plan_id")
     ):
         return
-    checkpoint = run.get("recovery_checkpoint")
-    by_room = (
-        checkpoint.get("cadence_by_room") if isinstance(checkpoint, dict) else None
-    )
+    checkpoint = run.checkpoint
+    by_room = checkpoint.cadence_by_room if checkpoint is not None else None
     state = (
-        by_room.get(pending.get("room_id")) if isinstance(by_room, Mapping) else None
+        by_room.get(cast(str, pending.get("room_id"))) if by_room is not None else None
     )
     if (cadence_state := validated_cadence_snapshot(state)) is not None:
         pending["cadence_state"] = cadence_state
     evidence = coverage_evidence_from_storage(
-        checkpoint.get("coverage_evidence") if isinstance(checkpoint, dict) else None
+        checkpoint.coverage_evidence if checkpoint is not None else None
     )
     if evidence is not None and pending["room_id"] in dict(evidence.room_regions):
         pending["coverage_evidence"] = evidence.as_storage()
@@ -512,24 +510,21 @@ def _repair_native_reconciled_run(
     robot: dict[str, Any], pending: Mapping[str, Any], plan_id: str
 ) -> None:
     """Repair the matching managed run after a late native completion."""
-    last_run = robot.get("last_run")
-    if (
-        not isinstance(last_run, dict)
-        or last_run.get("run_id") != pending.get("run_id")
-        or last_run.get("plan_id") != plan_id
-    ):
+    run = stored_last_run(robot)
+    if run is None or run.run_id != pending.get("run_id") or run.plan_id != plan_id:
         return
+    # The caller's commit hands over its draft robot.
+    last_run = robot["last_run"]
     if (
         count_room(last_run, pending["room_id"])
-        and last_run.get("outcome") == "running"
+        and run.running
         and "session_hash" not in pending
     ):
         last_run["native_reconciled_completion"] = True
     if (
         "session_hash" not in pending
-        and stored_count(last_run, "completed_room_count")
-        >= stored_count(last_run, "room_count")
-        and last_run.get("outcome")
+        and stored_count(last_run, "completed_room_count") >= run.room_count
+        and run.outcome
         in {
             "cancelled",
             "failed",

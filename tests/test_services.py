@@ -122,7 +122,7 @@ from custom_components.matic_robot.services import (
     async_register_services,
 )
 from custom_components.matic_robot.stores import LiveState, Store
-from tests.plans.fakes import memory_manager
+from tests.plans.fakes import memory_manager, recovery_record
 from tests.session_fakes import FakeRobot, robot_client, robot_port, verifying_write
 
 
@@ -5949,10 +5949,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
     assert manager.ledger.active_run_id(serial) == "new-run"
     assert manager.control.managed_motion_is_current(serial, replacement_generation)
     assert not manager.control.cancellation_event(serial).is_set()
-    assert (
-        "stop_intent"
-        not in manager.recovery.recovery_run(serial)["recovery_checkpoint"]
-    )
+    assert "stop_intent" not in recovery_record(manager, serial)["recovery_checkpoint"]
     entry.runtime_data.session.client.async_send_user_command.assert_not_awaited()
     schedule_dock.assert_not_called()
 

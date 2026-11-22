@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import Any
 
 from homeassistant.const import ATTR_ENTITY_ID
@@ -27,6 +28,13 @@ from .hermes_sim import Phase, SimulatedRobot
 from .sim_mission import parse_coverage_command
 
 VACUUM = "vacuum.simulated_matic"
+
+
+def recovery_record(plans: Any, serial_number: str) -> dict[str, Any] | None:
+    """The stored run restart recovery resumes, as saved, else None."""
+    if plans.recovery.recovery_run(serial_number) is None:
+        return None
+    return deepcopy(plans.repository.robot(serial_number)["last_run"])
 
 
 async def sighting(entry: MockConfigEntry, robot: SimulatedRobot) -> None:
@@ -225,7 +233,7 @@ class PlanRun:
         """Poll until restart recovery rejoins the run's own native mission."""
         plans = self.entry.runtime_data.cleaning_plans
         async with asyncio.timeout(10):
-            while (plans.recovery.recovery_run(self.robot.serial_number) or {}).get(
+            while (recovery_record(plans, self.robot.serial_number) or {}).get(
                 "recovery_reason"
             ) != "same_native_mission_verified":
                 await self.poll()

@@ -6,6 +6,7 @@ from custom_components.matic_robot import plan_state
 from custom_components.matic_robot.plan_records import (
     ActivePlan,
     LastRun,
+    RecoveryCheckpoint,
     stored_active_plan,
     stored_last_run,
 )
@@ -101,7 +102,86 @@ def test_published_forms_are_copies_of_the_stored_records() -> None:
     }
     run_record["held_rooms"].clear()
     assert robot["last_run"]["held_rooms"] == [{"room_id": "room"}]
-    assert run.checkpoint == {"stop_intent": "after_room"}
+    assert run.checkpoint is not None
+    assert run.checkpoint.stored() == {"stop_intent": "after_room"}
+    run.checkpoint.stored()["stop_intent"] = "immediate"
+    robot["last_run"]["recovery_checkpoint"]["stop_intent"] = "immediate"
+    assert run.checkpoint.stop_intent == "after_room"
+
+
+def test_a_checkpoint_reads_wrong_types_as_absent() -> None:
+    checkpoint = RecoveryCheckpoint.parse(
+        {
+            "version": "1",
+            "mixed_settings": 1,
+            "phase": 3,
+            "leg_index": "0",
+            "rooms": {"room_id": "kitchen"},
+            "data": [],
+            "cadence_by_room": [],
+            "finish_current_room": "yes",
+            "finish_current_room_threshold": True,
+            "completed_room_ids": ["kitchen", 2],
+            "finished_area_legs": [1, "2"],
+            "started_room_ids": "kitchen",
+            "handoff_history": "none",
+            "handoff_revision": None,
+        }
+    )
+    assert (checkpoint.version, checkpoint.phase, checkpoint.leg_index) == (
+        None,
+        None,
+        None,
+    )
+    assert not checkpoint.mixed_settings
+    assert checkpoint.rooms is checkpoint.data is checkpoint.cadence_by_room is None
+    assert checkpoint.finish_current_room is None
+    assert checkpoint.finish_current_room_threshold is None
+    assert checkpoint.stop_policy is None
+    assert checkpoint.completed_room_ids == frozenset({"kitchen"})
+    assert checkpoint.finished_area_legs == frozenset({1})
+    assert checkpoint.started_room_ids is checkpoint.handoff_history is None
+    assert (
+        RecoveryCheckpoint.parse({"handoff_history": ["a", 2]}).handoff_history is None
+    )
+    # A saved None revision is kept apart from one never saved.
+    assert checkpoint.handoff_revision is None
+    assert checkpoint.handoff_revision_saved
+    assert not RecoveryCheckpoint.parse({}).handoff_revision_saved
+    with pytest.raises(ValueError):
+        checkpoint.legs()
+    with pytest.raises(TypeError):
+        RecoveryCheckpoint.parse({"rooms": ["kitchen"]}).cleaning_rooms()
+
+
+def test_only_a_running_run_has_a_live_checkpoint() -> None:
+    record = {
+        "run_id": "run",
+        "plan_id": "plan",
+        "outcome": "running",
+        "service": "run_selected_plan",
+        "provenance": "account-name",
+        "recovery_checkpoint": {"phase": "accepted"},
+    }
+    run = LastRun.parse(record)
+    assert run.live_checkpoint is run.checkpoint is not None
+    assert run.provenance == "external_unknown"
+    assert run.started() == {
+        "plan_id": "plan",
+        "run_id": "run",
+        "trigger": None,
+        "provenance": "account-name",
+        "service": "run_selected_plan",
+        "started_at": None,
+        "room_count": None,
+    }
+    assert LastRun.parse({**record, "outcome": "failed"}).live_checkpoint is None
+
+
+async def test_a_stored_run_is_edited_only_inside_a_commit(hass) -> None:
+    manager = memory_manager(hass)
+    with pytest.raises(RuntimeError):
+        manager.repository.draft_run("serial")
 
 
 def test_last_run_reads_counts_and_skipped_rooms() -> None:

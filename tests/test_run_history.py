@@ -16,6 +16,7 @@ from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
 )
+from custom_components.matic_robot.plan_records import LastRun
 from custom_components.matic_robot.run_history import (
     LIVE_TRAIL_ID,
     MAX_HISTORY_ROOMS,
@@ -26,6 +27,7 @@ from custom_components.matic_robot.run_history import (
     RunTrails,
     append_run_history,
     history_entries,
+    history_record,
     managed_entry,
     native_entry,
     native_run_id,
@@ -104,8 +106,12 @@ def _run(**changes) -> dict:
     }
 
 
+def _last(**changes) -> LastRun:
+    return LastRun.parse(_run(**changes))
+
+
 def test_run_rooms_keep_plan_order_and_each_room_result() -> None:
-    assert run_rooms(_robot(), _run()) == [
+    assert run_rooms(_robot(), _last()) == [
         {"name": "Hall", "result": "stopped"},
         {"name": "Kitchen", "result": "completed"},
         {"name": "office", "result": "not_started"},
@@ -124,14 +130,14 @@ def test_run_rooms_without_a_checkpoint_use_records_and_stay_bounded() -> None:
             }
         }
     }
-    rooms = run_rooms(robot, _run(recovery_checkpoint=None))
+    rooms = run_rooms(robot, _last(recovery_checkpoint=None))
     assert len(rooms) == MAX_HISTORY_ROOMS
     assert rooms[0] == {"name": "room-0", "result": "running"}
-    assert run_rooms({}, {"run_id": "x"}) == []
+    assert run_rooms({}, LastRun.parse({"run_id": "x", "plan_id": "plan"})) == []
 
 
 def test_run_areas_merge_plan_and_area_history_once() -> None:
-    assert run_areas(_robot(), _run()) == [
+    assert run_areas(_robot(), _last()) == [
         {"name": "Living rug", "result": "completed"},
         {"name": "Door", "result": "unconfirmed"},
     ]
@@ -140,7 +146,7 @@ def test_run_areas_merge_plan_and_area_history_once() -> None:
             str(index): {"run_id": "run-1"} for index in range(MAX_HISTORY_ROOMS + 1)
         }
     }
-    areas = run_areas(many, _run())
+    areas = run_areas(many, _last())
     assert len(areas) == MAX_HISTORY_ROOMS
     assert areas[0] == {"name": "Area", "result": "unconfirmed"}
 
@@ -159,7 +165,7 @@ def test_run_areas_list_checkpoint_legs_in_plan_order() -> None:
             "junk",
         ]
     }
-    assert run_areas(robot, _run(recovery_checkpoint=checkpoint)) == [
+    assert run_areas(robot, _last(recovery_checkpoint=checkpoint)) == [
         {"name": "Old door", "result": "interrupted"},
         {"name": "Sofa", "result": "not_started"},
         {"name": "Living rug", "result": "completed"},
@@ -174,13 +180,6 @@ def test_run_areas_list_checkpoint_legs_in_plan_order() -> None:
         ({"outcome": "stopped_docked"}, "stopped"),
         ({"outcome": "stopped_docked", "stop_intent": "after_room"}, "smart_stop"),
         ({"reason_code": "managed_stop", "stop_intent": "after_room"}, "smart_stop"),
-        (
-            {
-                "reason_code": "managed_stop",
-                "recovery_checkpoint": {"stop_intent": "after_room"},
-            },
-            "smart_stop",
-        ),
         # Stop now overrides a Smart Stop plan's policy.
         (
             {
@@ -217,7 +216,7 @@ def test_append_run_history_freezes_results_replaces_and_bounds() -> None:
     ]
     run = _run(finish_current_room=True, reason_code="managed_stop", extra="dropped")
     run["recovery_checkpoint"]["stop_intent"] = "after_room"
-    append_run_history(robot, run)
+    append_run_history(robot, LastRun.parse(run))
     assert [item["run_id"] for item in robot["run_history"]] == ["old-0", "run-1"]
     record = robot["run_history"][-1]
     assert "extra" not in record
@@ -231,23 +230,23 @@ def test_append_run_history_freezes_results_replaces_and_bounds() -> None:
     robot["run_history"] = [
         {"run_id": f"old-{index}"} for index in range(RUN_HISTORY_LIMIT)
     ]
-    append_run_history(robot, _run())
+    append_run_history(robot, _last())
     assert len(robot["run_history"]) == RUN_HISTORY_LIMIT
     assert robot["run_history"][0]["run_id"] == "old-1"
     assert robot["run_history"][-1]["run_id"] == "run-1"
 
     robot["run_history"] = "corrupt"
-    append_run_history(robot, _run())
+    append_run_history(robot, _last())
     assert [item["run_id"] for item in robot["run_history"]] == ["run-1"]
     assert "stop_intent" not in robot["run_history"][0]
 
 
 def test_managed_entry_projects_stored_and_live_runs() -> None:
     robot = _robot()
-    append_run_history(robot, _run())
+    append_run_history(robot, _last())
     stored = robot["run_history"][0]
     stored["rooms"].append({"name": 1, "result": "completed"})
-    entry = managed_entry(robot, stored, manual=False)
+    entry = managed_entry(stored, manual=False)
     assert entry == {
         "id": "run-1",
         "source": "home_assistant",
@@ -256,16 +255,16 @@ def test_managed_entry_projects_stored_and_live_runs() -> None:
         "plan_name": "Daily",
         "outcome": "not_finished",
         "ending": "unknown",
-        "rooms": run_rooms(robot, _run()),
-        "areas": run_areas(robot, _run()),
+        "rooms": run_rooms(robot, _last()),
+        "areas": run_areas(robot, _last()),
         "thumbnail": None,
     }
-    manual = managed_entry(robot, {**stored, "rooms": "bad"}, manual=True)
+    manual = managed_entry({**stored, "rooms": "bad"}, manual=True)
     assert manual["plan_name"] is None
     assert manual["rooms"] == []
-    live = managed_entry(robot, _run(outcome="running"), manual=False, live=True)
+    live = managed_entry(history_record(robot, _last(outcome="running")), manual=False)
     assert live["outcome"] == "running"
-    assert live["rooms"] == run_rooms(robot, _run())
+    assert live["rooms"] == run_rooms(robot, _last())
 
 
 @pytest.mark.parametrize(
@@ -279,7 +278,7 @@ def test_managed_entry_projects_stored_and_live_runs() -> None:
 )
 def test_managed_outcome_needs_evidence(ending_run, items, outcome) -> None:
     run = {"run_id": "r", "rooms": items, "areas": [], **ending_run}
-    assert managed_entry({}, run, manual=False)["outcome"] == outcome
+    assert managed_entry(run, manual=False)["outcome"] == outcome
 
 
 @pytest.mark.parametrize(
@@ -292,7 +291,7 @@ def test_managed_outcome_needs_evidence(ending_run, items, outcome) -> None:
     ],
 )
 def test_timestamps_need_a_time_zone(value, expected) -> None:
-    entry = managed_entry({}, {"run_id": "r", "started_at": value}, manual=False)
+    entry = managed_entry({"run_id": "r", "started_at": value}, manual=False)
     assert entry["started_at"] == expected
 
 
@@ -361,7 +360,7 @@ def test_native_entry_reports_robot_results_without_reasons() -> None:
 
 def test_history_merges_newest_first_without_duplicate_missions() -> None:
     robot = _robot()
-    append_run_history(robot, _run())
+    append_run_history(robot, _last())
     robot["last_run"] = _run(
         run_id="run-2",
         started_at="2026-10-30T10:00:00+00:00",
@@ -437,7 +436,8 @@ def test_history_merges_newest_first_without_duplicate_missions() -> None:
         "run-1",
     ]
 
-    robot["last_run"] = {"outcome": "running", "run_id": None, "started_at": None}
+    # Storage clears a last run without an ID.
+    robot["last_run"] = None
     robot["run_history"][0]["started_at"] = None
     entries = history_entries(robot, native[:1], manual=lambda plan_id: True)
     assert [entry["source"] for entry in entries] == ["robot", "home_assistant"]
@@ -754,7 +754,7 @@ def test_a_finished_run_saved_before_history_existed_is_listed() -> None:
     )
     assert entry["rooms"][0] == {"name": "Hall", "result": "stopped"}
 
-    append_run_history(robot, robot["last_run"])
+    append_run_history(robot, LastRun.parse(robot["last_run"]))
     assert len(history_entries(robot, (), manual=lambda plan_id: False)) == 1
 
 

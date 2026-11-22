@@ -16,7 +16,7 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
 from custom_components.matic_robot.plan_model import CleaningRoom, _managed_stop_policy
 from custom_components.matic_robot.restart import async_recover_managed_run
-from tests.plans.fakes import interrupted_run, memory_manager
+from tests.plans.fakes import interrupted_run, memory_manager, recovery_record
 from tests.session_fakes import robot_port
 
 
@@ -667,7 +667,7 @@ async def test_rejected_restart_recovery_releases_restored_reservation(hass) -> 
         await async_recover_managed_run(hass, entry, "serial")
 
     executor.assert_not_awaited()
-    assert manager.recovery.recovery_run("serial") is None
+    assert recovery_record(manager) is None
     assert "serial" not in manager.cadence.prepared_runs
     await manager.cadence.async_reset_cadence("serial", "plan", [room.room_id])
 
