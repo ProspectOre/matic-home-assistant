@@ -98,8 +98,10 @@ const maticEntryKey = (entity: HassEntityLike): string | null => {
 };
 
 const RUN_ID = /^[a-zA-Z0-9_-]{1,128}$/u;
-const SMART_STOP_PHASES: ReadonlySet<unknown> = new Set<SmartStopPhase>(
-  ["finishing_room", "finishing_area", "verifying_completion", "returning_to_dock"]);
+// A Record keyed by the generated union fails the build when a phase is added or removed.
+const SMART_STOP_PHASES: ReadonlySet<unknown> = new Set(Object.keys({
+  finishing_room: true, finishing_area: true, verifying_completion: true, returning_to_dock: true,
+} satisfies Record<SmartStopPhase, true>));
 const PARTIAL_OUTCOMES: ReadonlySet<unknown> = new Set(["stopped_docked", "failed", "cancelled", "recharge_suspended"]);
 
 /**
