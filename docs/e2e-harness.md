@@ -33,7 +33,7 @@ with `curl -X POST http://127.0.0.1:8124/step/<name>` for a name in `STEPS`;
 | Name resolution | The robot's `.local` name resolves to loopback. |
 | Network path | A loopback relay in front of the server, which tests reset, cut or silence. TLS passes through it, so pinning still sees the robot. |
 | `HermesDiscoveryRPC` | `GetBotInfo` returns the simulated identity. |
-| Credentials | Pairing is not served. A test issues the credential with `add_credential`, as a completed pairing would. |
+| Credentials | Bluetooth is not served. A test issues the credential with `add_credential`, as a completed pairing would. For setup, `sim_pairing.py` stands in for the Bluetooth bond alone: it asks for the code through the flow's real passkey exchange and issues a credential for the right one. Scanning, the BlueZ agent, bonds, the GATT exchange and real code timing are not simulated. |
 | `Hermes` | `Handshake` and `FetchCollection` require a credential the robot issued. Properties answer snapshots; tracked subscriptions wait for each sequence acknowledgment and then push changes. Unserved names return `UNIMPLEMENTED`. |
 | `user_command` | STOP, PAUSE, RESUME and DOCK are matched against the captured official-app bytes, which the simulator holds separately from the integration's encoders, and move the robot between phases. A coverage START starts a native task; an UPDATE with the task's session ID keeps finished rooms and replaces the rest. A NavigateTo with a room goal, a sink posture or a map-tap posture moves the robot (see below). |
 | Robot state | `kabuki_state` for docked, charging, cleaning, paused, returning, stopped, low-charge recharge and a blocking fault, using state-code sets seen on real robots, with battery, errors, software version and current area. |
@@ -122,10 +122,10 @@ replaced before it is committed.
 - A keepalive ping finds a silent link with no request waiting; refused pings
   double its interval; one stream's fault leaves the others open.
 - A lost or unacknowledged plan start fails the run and is not sent again.
-- A revoked credential starts reauthentication.
-- Client level: unknown credentials, fingerprint and serial
-  pinning, snapshot, tracked and pushed collections, unsupported endpoints,
-  map-tap postures and held photos.
+- A revoked credential starts reauthentication. Setup handles each pairing code outcome.
+- Matic Map's plan list, previews, delete and progress reset, as it sends them.
+- Client level: unknown credentials, fingerprint and serial pinning, snapshot,
+  tracked and pushed collections, unsupported endpoints, map-tap postures and held photos.
 - In a browser against Home Assistant: choosing Kitchen and Study sends one
   coverage command, the panel follows the robot and returns to ready at the
   dock. Open history reflects delayed completion without a page reload.
