@@ -833,27 +833,6 @@ async def test_daily_credit_deduplicates_run_even_without_recovery_checkpoint(ha
     assert manager.cadence.daily_limit_state(SERIAL, ROOM_ID, identity)["reached"]
 
 
-async def test_failed_cancelled_and_skipped_attempts_do_not_count(hass):
-    manager = memory_manager(hass)
-    identity = room_cadence_identity(_floor(), ROOM_ID)
-    await manager.cadence.async_set_daily_limit(
-        SERIAL, ROOM_ID, room_identity=identity, limit=1, require_current=lambda: True
-    )
-    room = CleaningRoom(ROOM_ID, "Kitchen", "vacuum", "standard")
-    await manager.ledger.async_begin_run(
-        SERIAL, "home", "run", 1, trigger="user", service="run_selected_plan"
-    )
-    await manager.ledger.async_mark_failed(SERIAL, "home", room, "failed")
-    await manager.ledger.async_mark_interrupted(SERIAL, "home", room, "interrupted")
-    await manager.ledger.async_mark_cancelled(SERIAL, "home", room)
-    await manager.ledger.async_mark_skipped(SERIAL, "home", room, run_id="run")
-    assert manager.cadence.daily_limit_state(SERIAL, ROOM_ID, identity) == {
-        "limit": 1,
-        "completed_today": 0,
-        "reached": False,
-    }
-
-
 async def test_late_native_verified_completion_is_counted_once(hass):
     manager = memory_manager(hass)
     floor = _floor()

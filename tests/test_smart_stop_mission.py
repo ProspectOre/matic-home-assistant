@@ -30,7 +30,7 @@ from custom_components.matic_robot.native_completion import leg_room_results
 from custom_components.matic_robot.robot_commands import PlanStart, RobotCommands
 from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
-from tests.session_fakes import FakeRobot
+from tests.session_fakes import FakeRobot, take_robot_after_room_completed
 from tests.test_entities import _entry
 from tests.test_queue_changes import (
     CURRENT,
@@ -470,3 +470,35 @@ async def test_a_settled_room_is_saved_with_the_credit_before_it(hass) -> None:
     assert settled_save["settled_room_ids"] == [STUDY.room_id]
     (finished,) = _events(events, "plan_finished")
     assert finished["reason_code"] == "all_rooms_settled"
+
+
+@pytest.mark.parametrize("during_write", [False, True])
+@pytest.mark.parametrize("owner_skipped", [False, True])
+async def test_a_room_is_not_settled_after_the_run_loses_the_robot(
+    hass, owner_skipped, during_write
+) -> None:
+    """A takeover after the kitchen's credit leaves the study unsettled."""
+    managers = []
+
+    def make_robot(manager):
+        managers.append(manager)
+        if owner_skipped:
+            manager.ledger.skipped_room_ids = lambda *_: frozenset({STUDY.room_id})
+        take_robot_after_room_completed(hass, manager, during_write=during_write)
+        return _StudyUnreachableRobot(hass, manager, study=False)
+
+    _robot, events, _error = await _run(hass, make_robot, smart_stop=False)
+
+    assert [e["room_id"] for e in _events(events, "room_completed")] == [
+        KITCHEN.room_id
+    ]
+    assert not _events(events, "room_skipped")
+    manager = managers[0]
+    run = manager.history.snapshot("serial")["last_run"]
+    assert (run["outcome"], run["reason_code"], run["completed_room_count"]) == (
+        "unverified",
+        "cancellation_unattributed",
+        1,
+    )
+    study = manager.ledger.room("serial", "test-plan", STUDY)
+    assert study.get("last_result") not in {"skipped", "unreachable"}

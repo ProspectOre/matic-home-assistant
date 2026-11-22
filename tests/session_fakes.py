@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
+from homeassistant.core import HomeAssistant, callback
 
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -432,3 +433,43 @@ def stub_viewpoints() -> Iterator[None]:
     """
     with patch("custom_components.matic_robot.Viewpoints", autospec=True):
         yield
+
+
+def take_robot_after_room_completed(
+    hass: HomeAssistant, manager: Any, *, during_write: bool
+) -> None:
+    """Take the robot over once a room is credited.
+
+    Between rooms, the motion generation moves as the completion is announced.
+    During the write, it moves inside the next plan write, after its locks
+    and after any check made before them.
+    """
+    if not during_write:
+        hass.bus.async_listen(
+            "matic_robot_room_completed",
+            callback(lambda _event: manager.control.begin_managed_motion("serial")),
+        )
+        return
+    repository = manager.repository
+    save = repository.async_mutate_and_save
+    armed = False
+
+    @callback
+    def arm(_event: Any) -> None:
+        nonlocal armed
+        armed = True
+
+    async def mutate_and_save(serial_number: str, mutate: Any, **kwargs: Any) -> Any:
+        nonlocal armed
+        if not armed:
+            return await save(serial_number, mutate, **kwargs)
+        armed = False
+
+        def taken_over() -> Any:
+            manager.control.begin_managed_motion(serial_number)
+            return mutate()
+
+        return await save(serial_number, taken_over, **kwargs)
+
+    hass.bus.async_listen("matic_robot_room_completed", arm)
+    repository.async_mutate_and_save = mutate_and_save
