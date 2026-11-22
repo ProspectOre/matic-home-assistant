@@ -259,7 +259,10 @@ def test_stop_fence_restore_extends_deadline_without_changing_identity(hass) -> 
 async def test_immediate_stop_records_managed_stop_reason(hass) -> None:
     """The default stop policy is distinguishable from motion replacement."""
     manager = memory_manager(hass)
-    manager.repository.robot("serial")["active_plan"] = {"plan_id": "away"}
+    manager.repository.robot("serial")["active_plan"] = {
+        "plan_id": "away",
+        "room_id": "room-kitchen",
+    }
     await manager.control.lock("serial").acquire()
     try:
         generation = manager.control.motion_generation("serial")

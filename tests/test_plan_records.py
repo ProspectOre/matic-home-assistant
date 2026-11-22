@@ -2,6 +2,7 @@
 
 import pytest
 
+from custom_components.matic_robot import plan_state
 from custom_components.matic_robot.plan_records import (
     ActivePlan,
     LastRun,
@@ -33,6 +34,22 @@ def test_a_record_without_a_plan_and_target_is_no_active_plan(record) -> None:
     assert ActivePlan.parse(record) is None
     robot = {"active_plan": dict(record)}
     assert stored_active_plan(robot) is None
+
+
+@pytest.mark.parametrize(
+    ("stored", "kept"),
+    [
+        ({"plan_id": "plan", "room_id": None, "area_id": "rug"}, True),
+        ({"plan_id": "plan", "room_id": None}, False),
+        ({"plan_id": "plan", "area_id": 3}, False),
+    ],
+    ids=["null room, area", "null room only", "malformed area"],
+)
+def test_loading_keeps_exactly_the_plans_that_parse(stored, kept) -> None:
+    robot = {"active_plan": dict(stored)}
+    plan_state.parse_robot(robot)
+    assert (robot["active_plan"] == stored) is kept
+    assert (robot["active_plan"] is None) is not kept
 
 
 @pytest.mark.parametrize(
