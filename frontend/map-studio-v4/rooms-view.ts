@@ -312,7 +312,7 @@ export class MaticRoomsViewV4 extends LitElement {
     `;
   }
 
-  #checkLines(state: WorkspaceState, preview: readonly NextRunPreviewRoom[] | null, boundaries: number, blocker: string | null) {
+  #checkLines(state: WorkspaceState, preview: readonly NextRunPreviewRoom[] | null, blocker: string | null) {
     const t = this.#t;
     const failed = state.manualRoomPreview.status === "error";
     const due = preview ? dueLines(t, state.locale, preview) : [];
@@ -329,12 +329,11 @@ export class MaticRoomsViewV4 extends LitElement {
         && state.selection.roomSettings.some((room) => room.cleaningMode !== "vacuum")
         ? t("v4_room_preview_schedule_override", "Turn off \"Use room schedules\" to use this cleaning mode.")
         : t("v4_room_preview_blocked", "These rooms can't be cleaned with the current settings. Change the settings or the rooms, then try again.");
-    if (!due.length && !boundaries && !failed && !blockedLine && !dailyHeldCopy) return nothing;
+    if (!due.length && !failed && !blockedLine && !dailyHeldCopy) return nothing;
     return html`
       <div class="check-lines">
         ${due.map((line) => html`<p class="line" data-tone="due">${icon(iconDue)}<span>${line}</span></p>`)}
         ${dailyHeldCopy ? html`<p class="line" data-tone="warning">${icon(iconNoticeWarning)}<span>${dailyHeldCopy}</span></p>` : nothing}
-        ${boundaries ? html`<p class="line" data-tone="info">${icon(iconDue)}<span>${t("v4_room_parts", "The robot cleans in {count} parts and may stop at the dock between parts.", { count: formatNumber(state.locale, boundaries + 1) })}</span></p>` : nothing}
         ${failed ? html`
           <p class="line" data-tone="warning">${icon(iconNoticeWarning)}<span>${t("v4_room_preview_unavailable", "Home Assistant couldn't check the room settings.")}</span>
             <button class="ms-btn ms-btn--sm ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "retry-room-preview" })}>${t("v4_retry", "Try again")}</button>
@@ -492,7 +491,7 @@ export class MaticRoomsViewV4 extends LitElement {
           </div>
           ${atLimit ? html`<p class="limit" id="rooms-limit">${t("v4_room_limit_reached", "Up to {limit} rooms fit in one clean, so remove one to add another.", { limit: MAX_ROOM_SEQUENCE_SIZE })}</p>` : nothing}
           ${this.#settingsRow(state, held, anyDue, preview)}
-          ${this.#checkLines(state, preview, admitted?.missionBoundaries.length ?? 0, admitted?.blocker ?? null)}
+          ${this.#checkLines(state, preview, admitted?.blocker ?? null)}
           <div class="room-list" role="group" aria-labelledby="rooms-heading">
             ${rooms.map((room, index) => this.#row(state, room, index, held, atLimit, previewRoom(room.roomId)))}
           </div>
