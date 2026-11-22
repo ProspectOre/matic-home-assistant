@@ -759,7 +759,7 @@ const heldPlanController = async (t, failModule = false) => {
   globalThis.document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
   const store = new Store();
   const entry = entryFor();
-  const plan = { ...store.value.planDraft, id: "saved-plan", name: "Saved", enabled: true, roomOrder: [], nextRunPreview: { previewToken: "a".repeat(64), blocker: null, rooms: [], missionBoundaries: [] } };
+  const plan = { ...store.value.planDraft, id: "saved-plan", name: "Saved", enabled: true, roomOrder: [], nextRunPreview: { previewToken: "a".repeat(64), blocker: null, rooms: [], steps: [], missionBoundaries: [] } };
   const plans = { selectedPlan: plan.id, plans: [plan] };
   const service = deferred();
   const calls = [];
@@ -902,7 +902,7 @@ const heldRoomController = async (t, failModule = false) => {
         entryId: initial.selection.entryId, floorToken: "f".repeat(64), previewToken: "b".repeat(64),
         rooms: rooms.map((room) => ({ roomId: room.room, name: room.room === "room-a" ? "Kitchen" : room.room,
           cleaningMode: room.cleaning_mode, coverageSetting: room.coverage_setting, cadenceReasons: [] })),
-        missionBoundaries: [], blocker: null,
+        blocker: null,
       };
     },
     service: (_domain, name, data, entityId) => { calls.push({ name, data, entityId }); return service.promise; },

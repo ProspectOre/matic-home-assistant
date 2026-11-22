@@ -567,6 +567,7 @@ const PLAN_CATALOG = {
     next_run_preview: {
       preview_token: "e".repeat(64),
       rooms: [{ room_id: "room-a", name: "Kitchen", cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] }],
+      entries: [{ kind: "room", room_id: "room-a", name: "Kitchen", cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] }],
       mission_boundaries: [],
       blocker: null,
     },

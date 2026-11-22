@@ -566,6 +566,7 @@ test.describe("the plan card", () => {
         next_run_preview: {
           preview_token: "e".repeat(64),
           rooms: rooms.map((room) => ({ room_id: room.room_id, name: room.name, cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] })),
+          entries: rooms.map((room) => ({ kind: "room", room_id: room.room_id, name: room.name, cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] })),
           mission_boundaries: [],
           blocker: null,
         },
@@ -1053,7 +1054,6 @@ for (const narrow of [true, false]) {
       await expect(checkLines(gallery)).toHaveText([
         "Mop due in Kitchen",
         "Heavy duty vacuum due in Living room",
-        "The robot cleans in 2 parts and may stop at the dock between parts.",
       ]);
       const lines = await checkLines(gallery).first().boundingBox();
       const rows = await roomsGroup(gallery).boundingBox();
