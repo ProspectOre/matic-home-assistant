@@ -469,6 +469,22 @@ def test_the_zip_test_built_is_checked_against_the_checkout(
         release.verify_zip(archive, checkout)
 
 
+def test_a_zip_missing_a_tracked_file_is_not_released(
+    checkout: Path, tmp_path: Path
+) -> None:
+    archive = tmp_path / "matic_robot.zip"
+    release.build_zip(archive, checkout)
+    with zipfile.ZipFile(archive) as bundle:
+        entries = {name: bundle.read(name) for name in bundle.namelist()}
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for name, data in entries.items():
+            if name != "manifest.json":
+                bundle.writestr(name, data)
+
+    with pytest.raises(release.ReleaseError, match=r"checkout: manifest\.json$"):
+        release.verify_zip(archive, checkout)
+
+
 @pytest.mark.parametrize("missing", ["matic_icons.js", "map_studio_v4/index.js"])
 def test_a_zip_without_the_built_panel_is_not_released(
     checkout: Path, tmp_path: Path, missing: str
