@@ -1,9 +1,10 @@
 // Shared helpers for the Map Studio v4 UX audit measurement scripts. Mirrors the
 // harness in tests/browser/map_studio_v4_ux_audit.spec.mjs (openScenario/settle)
-// without importing it. Requires `node tests/browser/server.mjs` on port 4173.
+// without importing it. Requires `node tests/browser/server.mjs` running.
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { GALLERY_ORIGIN } from "../gallery_server.mjs";
 
 // Scripts print to stdout. The only files written are screenshots, and they go to
 // the git-ignored tests/browser/.generated/ux-audit-tools/ directory.
@@ -13,7 +14,6 @@ export function outputPath(name) {
   return dir + name;
 }
 
-export const BASE = "http://127.0.0.1:4173";
 export const AUDIT_PAGE = "/map-studio-v4-audit";
 export const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
 // The shell's own narrow rule (shell.ts ResizeObserver): width < 1024 || height < 480.
@@ -22,7 +22,7 @@ export const NARROW_BELOW_HEIGHT = 480;
 
 export async function launch() {
   const browser = await chromium.launch();
-  const context = await browser.newContext({ baseURL: BASE });
+  const context = await browser.newContext({ baseURL: GALLERY_ORIGIN });
   return { browser, context };
 }
 
@@ -33,7 +33,7 @@ export async function openScenario(page, scenario, { width, height, theme = "lig
     forcedColors: forced ? "active" : "none",
     reducedMotion: reduced ?? (forced ? "reduce" : "no-preference"),
   });
-  await page.goto(BASE + AUDIT_PAGE, { waitUntil: "domcontentloaded" });
+  await page.goto(AUDIT_PAGE, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(
     (tag) => Boolean(document.querySelector(tag)?.shadowRoot?.querySelector(".stage")),
     GALLERY_TAG,

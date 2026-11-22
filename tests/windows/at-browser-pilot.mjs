@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile, appendFile, mkdir } from "node:fs/promises";
 import { chromium } from "@playwright/test";
-import { createGalleryServer } from "../browser/gallery_server.mjs";
+import { createGalleryServer, GALLERY_ORIGIN, GALLERY_PORT } from "../browser/gallery_server.mjs";
 import { installPanelFixture } from "../browser/map_studio_v4_panel_fixture.mjs";
 
 const root = process.env.NVDA_PILOT_DIR;
@@ -55,14 +55,14 @@ try {
   await recordDiagnostic("server-listen-start");
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(4173, "127.0.0.1", resolve);
+    server.listen(GALLERY_PORT, "127.0.0.1", resolve);
   });
   stage = "edge-launch";
   await recordDiagnostic("edge-launch-start");
   browser = await chromium.launch({ channel: "msedge", headless: false });
   await recordDiagnostic("edge-launched", { browserVersion: browser.version() });
   const context = await browser.newContext({
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: GALLERY_ORIGIN,
     viewport: { width: 1180, height: 760 },
     forcedColors: null,
   });
