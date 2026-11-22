@@ -65,7 +65,6 @@ from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
 )
-from .run_machine import running_run
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -97,19 +96,16 @@ class PlanCatalog:
             serial_number, set()
         )
         unavailable = set(reservations)
-        last_run = running_run(robot)
-        if last_run is not None and _is_manual_room_sequence_plan_id(
-            last_run.get("plan_id")
-        ):
-            unavailable.add(str(last_run["plan_id"]))
+        last_run = self.repository.last_run(serial_number)
+        active = self.repository.active_plan(serial_number)
+        pending = robot.get("pending_native_reconciliation")
         for owner in (
-            robot.get("active_plan"),
-            robot.get("pending_native_reconciliation"),
+            last_run.plan_id if last_run is not None and last_run.running else None,
+            active.plan_id if active is not None else None,
+            pending.get("plan_id") if isinstance(pending, Mapping) else None,
         ):
-            if isinstance(owner, Mapping) and _is_manual_room_sequence_plan_id(
-                owner.get("plan_id")
-            ):
-                unavailable.add(str(owner["plan_id"]))
+            if _is_manual_room_sequence_plan_id(owner):
+                unavailable.add(str(owner))
         plan_id = _next_manual_room_sequence_plan_id(robot["plans"], unavailable)
         reservations.add(plan_id)
         return plan_id
@@ -497,11 +493,11 @@ class PlanCatalog:
     ) -> _CadenceMutation:
         """Delete one saved plan in the open commit, keeping unrelated history."""
         robot = self.repository.robot(serial_number)
-        active = robot.get("active_plan")
+        active = self.repository.active_plan(serial_number)
         pending = native_history._validated_native_reconciliation(
             robot.get("pending_native_reconciliation")
         )
-        if isinstance(active, Mapping) and active.get("plan_id") == plan_id:
+        if active is not None and active.plan_id == plan_id:
             raise ValueError("plan cannot be deleted while it is running")
         if pending is not None and pending["plan_id"] == plan_id:
             raise ValueError(

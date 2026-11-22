@@ -89,7 +89,7 @@ def _stored_outcome(plan: PlanRun) -> object:
     assert plan.run_id is not None
     run = ledger.run_record(plan.robot.serial_number, plan.run_id)
     assert run is not None
-    return run["outcome"]
+    return run.outcome
 
 
 async def _stop(hass: HomeAssistant, **data: object) -> None:

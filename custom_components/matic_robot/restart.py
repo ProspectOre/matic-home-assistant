@@ -49,7 +49,6 @@ from .plan_model import (
     PlanLeg,
     checkpoint_legs,
     plan_floor_token,
-    stored_count,
 )
 from .robot_port import RobotPort
 from .room_coherence import current_floor_plan, room_completion_names_are_current
@@ -868,6 +867,7 @@ async def _async_finish_recovered_run(
     )
     if cancellation == "config_entry_unload":
         reason = "config_entry_unload"
+    stored = manager.ledger.run_record(serial_number, run["run_id"])
     await async_finish_plan_run(
         hass,
         manager,
@@ -887,10 +887,7 @@ async def _async_finish_recovered_run(
         else "verified_completion"
         if completed
         else "home_assistant",
-        stored_count(
-            manager.ledger.run_record(serial_number, run["run_id"]),
-            "completed_room_count",
-        ),
+        stored.completed_room_count if stored is not None else 0,
     )
     entity_id = checkpoint.get("entity_id")
     if (

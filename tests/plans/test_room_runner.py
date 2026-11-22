@@ -20,6 +20,7 @@ from custom_components.matic_robot.managed_run import (
     RoomTakenOverError,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
+from custom_components.matic_robot.plan_records import ActivePlan
 from custom_components.matic_robot.robot_commands import CleanRooms
 from tests.plans.fakes import mission_ends, plan_room, run_plan_call
 from tests.session_fakes import FakeRobot, run_step
@@ -82,7 +83,14 @@ async def test_room_cancellation_preserves_low_charge_reason() -> None:
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             active_target=MagicMock(
-                return_value={"status": "suspended", "suspend_reason": "low_charge"}
+                return_value=ActivePlan.parse(
+                    {
+                        "plan_id": "plan",
+                        "room_id": "kitchen",
+                        "status": "suspended",
+                        "suspend_reason": "low_charge",
+                    }
+                )
             ),
             async_mark_started=AsyncMock(),
             async_claim_native_session=AsyncMock(),
