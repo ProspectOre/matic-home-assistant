@@ -16,40 +16,45 @@ test("retained outcomes are entry-scoped, invalidate on outcome-only changes, an
   const result = await page.evaluate(async (url) => {
     const { HassAdapter, WorkspaceStore, initialWorkspaceState } = await import(url);
     const adapter = new HassAdapter();
-    const run = (overrides = {}) => ({ run_id: "run-1", outcome: "failed", room_count: 4, completed_room_count: 2, ...overrides });
+    const run = (overrides = {}) => ({ run_id: "run-1", outcome: "failed", room_count: 4, completed_room_count: 2,
+      target: null, smart_stop_phase: null, ...overrides });
     const states = {
       "vacuum.one": { state: "docked", attributes: { matic_entry_id: "one" } },
       "vacuum.two": { state: "docked", attributes: { matic_entry_id: "two" } },
-      "sensor.one_history": { state: "ready", attributes: { matic_entry_id: "one", plans: {}, last_run: run() } },
-      "sensor.two_history": { state: "ready", attributes: { matic_entry_id: "two", plans: {}, last_run: run({ run_id: "other", outcome: "unverified", completed_room_count: 1 }) } },
+      "sensor.one_history": { state: "ready", attributes: { matic_entry_id: "one", plans: {}, run: run() } },
+      "sensor.two_history": { state: "ready", attributes: { matic_entry_id: "two", plans: {}, run: run({ run_id: "other", outcome: "unverified", completed_room_count: 1 }) } },
     };
     const hass = { connected: true, user: { is_admin: true }, states };
     const first = adapter.project(hass, undefined, "one");
     const second = adapter.project(hass, undefined, "two");
-    states["sensor.one_history"].attributes.last_run = run({ completed_room_count: 3 });
+    states["sensor.one_history"].attributes.run = run({ completed_room_count: 3 });
     const updated = adapter.project(hass, undefined, "one");
     const unchanged = adapter.project(hass, undefined, "one");
-    states["sensor.one_history"].attributes.last_run = run({ outcome: "running" });
+    states["sensor.one_history"].attributes.run = run({ outcome: "running" });
     const running = adapter.project(hass, undefined, "one");
-    states["sensor.one_history"].attributes.last_run = run({ run_id: "bad/id" });
+    states["sensor.one_history"].attributes.run = run({ run_id: "bad/id" });
     const malformed = adapter.project(hass, undefined, "one");
     const invalidCounts = [];
     for (const fields of [{ room_count: -1 }, { room_count: 1.5 }, { completed_room_count: 5 },
       { completed_room_count: "2" }, { room_count: Number.MAX_SAFE_INTEGER + 1 }]) {
-      states["sensor.one_history"].attributes.last_run = run(fields);
+      states["sensor.one_history"].attributes.run = run(fields);
       invalidCounts.push(adapter.project(hass, undefined, "one").lastRun);
     }
     const terminalOutcomes = {};
     for (const outcome of ["failed", "stopped_docked", "cancelled", "unverified", "completed", "recharge_suspended", "running"]) {
-      states["sensor.one_history"].attributes.last_run = run({ outcome });
+      states["sensor.one_history"].attributes.run = run({ outcome });
       terminalOutcomes[outcome] = adapter.project(hass, undefined, "one").lastRun?.outcome ?? null;
     }
     const activeResults = [];
-    for (const activePlan of [null, false, [], {}, "run-1", { run_id: "older" }, { run_id: "run-1" }]) {
-      states["sensor.one_history"].attributes.active_plan = activePlan;
+    for (const fields of [{ target: false }, { target: [] }, { target: {} }, { target: "run-1" },
+      { target: { kind: "dock", id: "kitchen" } }, { target: { kind: "room", id: 7 } },
+      { target: { kind: "room", id: "kitchen", name: null } }, { smart_stop_phase: "returning_to_dock" },
+      { smart_stop_phase: "unrecognized" }]) {
+      states["sensor.one_history"].attributes.run = run({ outcome: "running", ...fields });
       activeResults.push(adapter.project(hass, undefined, "one").lastRun);
     }
-    states["sensor.one_history"].attributes.last_run = run({ outcome: "running", room_count: 0, completed_room_count: 0 });
+    states["sensor.one_history"].attributes.run = run({ outcome: "running", room_count: 0, completed_room_count: 0,
+      target: { kind: "area", id: "rug", name: "Rug" } });
     const areaOnly = adapter.project(hass, undefined, "one").lastRun;
     const store = new WorkspaceStore(initialWorkspaceState());
     return { first: first.lastRun, second: second.lastRun, changedIdentity: updated !== first,
@@ -67,7 +72,9 @@ test("retained outcomes are entry-scoped, invalidate on outcome-only changes, an
     reduced: null,
     invalidCounts: [null, null, null, null, null],
     terminalOutcomes: { failed: "partial", stopped_docked: "partial", cancelled: "partial", unverified: "unverified", completed: null, recharge_suspended: "partial", running: null },
-    activeResults: [null, null, null, null, null, null, { runId: "run-1", outcome: "running", completedRoomCount: 2, roomCount: 4 }],
+    activeResults: [null, null, null, null, null, null,
+      { runId: "run-1", outcome: "running", completedRoomCount: 2, roomCount: 4 },
+      { runId: "run-1", outcome: "running", completedRoomCount: 2, roomCount: 4 }, null],
     areaOnly: null,
   });
 });
@@ -99,27 +106,26 @@ for (const narrow of [false, true]) {
     const update = (fields) => page.evaluate((fields) => {
       const panel = document.querySelector(window.__panelFixture.panelTag);
       const states = structuredClone(panel.hass.states);
-      Object.assign(states["sensor.synthetic_cleaning_history"].attributes.last_run, fields.lastRun ?? {});
-      if (Object.hasOwn(fields, "activeRunId")) states["sensor.synthetic_cleaning_history"].attributes.active_plan.run_id = fields.activeRunId;
+      Object.assign(states["sensor.synthetic_cleaning_history"].attributes.run, fields.run ?? {});
       if (fields.activity) states["vacuum.synthetic"].state = fields.activity;
       if (Object.hasOwn(fields, "currentArea")) states["sensor.synthetic_current_room"].state = fields.currentArea ?? "unknown";
       panel.hass = { ...panel.hass, states };
     }, fields);
-    await update({ lastRun: { completed_room_count: 1 } });
+    await update({ run: { completed_room_count: 1 } });
     await expectStatus("Cleaning", "1 of 3 rooms confirmed");
-    await update({ activeRunId: "replacement" });
+    await update({ run: { target: null } });
     await expectStatus("Cleaning", "70% battery");
     await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().lastRun)).toBeNull();
-    await update({ lastRun: { run_id: "replacement", completed_room_count: 2 } });
+    await update({ run: { run_id: "replacement", completed_room_count: 2, target: ACTIVE_HISTORY_PAYLOAD.run.target } });
     await expectStatus("Cleaning", "2 of 3 rooms confirmed");
     await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().coherence)).toBe("current");
     await update({ currentArea: "Kitchen" });
     await expectStatus("Cleaning", "2 of 3 rooms confirmed · In Kitchen");
     await update({ activity: "docked", currentArea: null });
     await expectStatus("Docked", "70% battery");
-    await update({ activity: "cleaning", lastRun: { outcome: "failed" } });
+    await update({ activity: "cleaning", run: { outcome: "failed", target: null } });
     await expectStatus("Cleaning", "70% battery");
-    await update({ activity: "docked", lastRun: { outcome: "completed", completed_room_count: 3 } });
+    await update({ activity: "docked", run: { outcome: "completed", completed_room_count: 3 } });
     await expectStatus("Docked", "70% battery");
   });
 }
@@ -129,11 +135,11 @@ test("selected robot changes its retained outcome without another HA state updat
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialRobotStates: {
     "vacuum.one": { state: "docked", attributes: { matic_entry_id: "synthetic-entry", friendly_name: "One" } },
     "vacuum.two": { state: "docked", attributes: { matic_entry_id: "other-entry", friendly_name: "Two" } },
-    "sensor.one_history": { state: "ready", attributes: { matic_entry_id: "synthetic-entry", plans: {}, last_run: {
-      run_id: "one-run", outcome: "failed", room_count: 3, completed_room_count: 1,
+    "sensor.one_history": { state: "ready", attributes: { matic_entry_id: "synthetic-entry", plans: {}, run: {
+      run_id: "one-run", outcome: "failed", room_count: 3, completed_room_count: 1, target: null, smart_stop_phase: null,
     } } },
-    "sensor.two_history": { state: "ready", attributes: { matic_entry_id: "other-entry", plans: {}, last_run: {
-      run_id: "two-run", outcome: "unverified", room_count: 4, completed_room_count: 2,
+    "sensor.two_history": { state: "ready", attributes: { matic_entry_id: "other-entry", plans: {}, run: {
+      run_id: "two-run", outcome: "unverified", room_count: 4, completed_room_count: 2, target: null, smart_stop_phase: null,
     } } },
   } });
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
@@ -225,8 +231,9 @@ test("Home panel keeps a partial result after dock and refresh, hides it for a n
   await page.evaluate(() => {
     const panel = document.querySelector(window.__panelFixture.panelTag);
     const states = structuredClone(panel.hass.states);
-    states["sensor.synthetic_cleaning_history"].attributes.last_run = {
+    states["sensor.synthetic_cleaning_history"].attributes.run = {
       run_id: "partial-2", outcome: "running", room_count: 3, completed_room_count: 0,
+      target: { kind: "room", id: "room-kitchen", name: "Kitchen" }, smart_stop_phase: null,
     };
     panel.hass = { ...panel.hass, states };
   });
@@ -234,8 +241,8 @@ test("Home panel keeps a partial result after dock and refresh, hides it for a n
   await page.evaluate(() => {
     const panel = document.querySelector(window.__panelFixture.panelTag);
     const states = structuredClone(panel.hass.states);
-    states["sensor.synthetic_cleaning_history"].attributes.last_run = {
-      run_id: "completed-3", outcome: "completed", room_count: 3, completed_room_count: 3,
+    states["sensor.synthetic_cleaning_history"].attributes.run = {
+      run_id: "completed-3", outcome: "completed", room_count: 3, completed_room_count: 3, target: null, smart_stop_phase: null,
     };
     panel.hass = { ...panel.hass, states };
   });
@@ -245,7 +252,7 @@ test("Home panel keeps a partial result after dock and refresh, hides it for a n
 test("low-charge suspension stays visible when settled and yields to live charging or cleaning", async ({ page }) => {
   const { installPanelFixture } = await import("./map_studio_v4_panel_fixture.mjs");
   const history = structuredClone(HISTORY_PAYLOAD);
-  history.last_run.outcome = "recharge_suspended";
+  history.run.outcome = "recharge_suspended";
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialRobotStates: {
     "vacuum.synthetic": { state: "docked", attributes: { matic_entry_id: "synthetic-entry" } },
     "sensor.synthetic_cleaning_history": { state: "ready", attributes: history },

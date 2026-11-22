@@ -502,7 +502,24 @@ class MaticStateSensor(MaticEntity, SensorEntity):
         return None
 
 
-class MaticCleaningHistorySensor(MaticPlanDataEntity, SensorEntity):
+class _MaticPlanSensor(MaticPlanDataEntity, SensorEntity):
+    """Base for storage-backed saved-plan sensors."""
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._serial_number = self.session.info.serial_number
+        self._history = entry.runtime_data.cleaning_plans
+
+    def _stores(self) -> Iterable[Store[Any]]:
+        return ()
+
+    @property
+    def available(self) -> bool:
+        """Keep locally persisted orchestration state available offline."""
+        return True
+
+
+class MaticCleaningHistorySensor(_MaticPlanSensor):
     """Expose durable managed-plan outcomes for advanced automations."""
 
     entity_description = HISTORY_DESCRIPTION
@@ -518,22 +535,13 @@ class MaticCleaningHistorySensor(MaticPlanDataEntity, SensorEntity):
             "active_plan",
             "last_interrupted_plan",
             "last_run",
+            "run",
         }
     )
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
-        self._serial_number = self.session.info.serial_number
-        self._history = entry.runtime_data.cleaning_plans
         self._attr_unique_id = f"{self._serial_number}_cleaning_history"
-
-    def _stores(self) -> Iterable[Store[Any]]:
-        return ()
-
-    @property
-    def available(self) -> bool:
-        """Keep local history available when the robot is temporarily offline."""
-        return True
 
     @property
     def native_value(self) -> int:
@@ -551,24 +559,8 @@ class MaticCleaningHistorySensor(MaticPlanDataEntity, SensorEntity):
             "matic_entry_id": self._config_entry.entry_id,
             "plan_count": len(snapshot["plans"]),
             "plan_running": snapshot["active_plan"] is not None,
+            "run": self._history.history.run_summary(self._serial_number),
         }
-
-
-class _MaticPlanSensor(MaticPlanDataEntity, SensorEntity):
-    """Base for storage-backed saved-plan sensors."""
-
-    def __init__(self, entry: MaticConfigEntry) -> None:
-        super().__init__(entry)
-        self._serial_number = self.session.info.serial_number
-        self._history = entry.runtime_data.cleaning_plans
-
-    def _stores(self) -> Iterable[Store[Any]]:
-        return ()
-
-    @property
-    def available(self) -> bool:
-        """Keep locally persisted orchestration state available offline."""
-        return True
 
 
 class _RoomTimingPublisher:
