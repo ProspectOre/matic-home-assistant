@@ -43,12 +43,8 @@ class PlanHistory:
         self.catalog = catalog
         self.control = control
 
-    def current_room_timing(self, serial_number: str) -> dict[str, Any] | None:
-        """Read the canonical active-time estimate for a confirmed managed room.
-
-        This read never learns history, advances completion or writes storage.
-        Stop uses the same calculation, including its unknown-baseline fallback.
-        """
+    def current_room(self, serial_number: str) -> dict[str, Any] | None:
+        """Return the confirmed managed room's run, room and status, or None."""
         robot = self.repository.robot(serial_number)
         active = robot.get("active_plan")
         run = running_run(robot)
@@ -71,7 +67,21 @@ class PlanHistory:
             "room_id": active["room_id"],
             "room": active.get("room"),
             "status": active["status"],
-            **plan_timing._room_timing(robot, active, dt_util.utcnow()),
+        }
+
+    def current_room_timing(self, serial_number: str) -> dict[str, Any] | None:
+        """Read the canonical active-time estimate for the confirmed managed room.
+
+        This read never learns history, advances completion or writes storage.
+        Stop uses the same calculation, including its unknown-baseline fallback.
+        """
+        room = self.current_room(serial_number)
+        if room is None:
+            return None
+        robot = self.repository.robot(serial_number)
+        return {
+            **room,
+            **plan_timing._room_timing(robot, robot["active_plan"], dt_util.utcnow()),
         }
 
     def run_history(
