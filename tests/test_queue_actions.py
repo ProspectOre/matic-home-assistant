@@ -6,7 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -206,7 +206,14 @@ async def test_a_skipped_room_keeps_its_rotation_turn(hass) -> None:
     assert await manager.ledger.async_note_room_skipped(SERIAL, "run-1", "room-2")
     assert await manager.ledger.async_note_room_skipped(SERIAL, "run-1", "room-2")
     assert manager.ledger.skipped_room_ids(SERIAL, "run-1") == {"room-2"}
-    await manager.ledger.async_mark_skipped(SERIAL, "plan", ROOM, run_id="run-1")
+    await manager.ledger.async_mark_settled(
+        SERIAL,
+        "plan",
+        ROOM,
+        "skipped",
+        run_id="run-1",
+        completion_is_current=lambda: True,
+    )
 
     record = manager.ledger.room(SERIAL, "plan", ROOM)
     assert record["last_result"] == "skipped"
@@ -238,7 +245,14 @@ async def test_a_skip_from_another_run_is_not_kept(hass) -> None:
     record = manager.ledger.room(SERIAL, "plan", ROOM)
     record["last_opportunity"] = "2026-10-02T00:00:00+00:00"
     record["opportunity_before_run"] = {"run_id": "run-0", "value": None}
-    await manager.ledger.async_mark_skipped(SERIAL, "plan", ROOM, run_id="run-1")
+    await manager.ledger.async_mark_settled(
+        SERIAL,
+        "plan",
+        ROOM,
+        "skipped",
+        run_id="run-1",
+        completion_is_current=lambda: True,
+    )
     assert record["last_opportunity"] == "2026-10-02T00:00:00+00:00"
 
 
@@ -318,7 +332,7 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
     rooms = [plan_room("Kitchen", "room-kitchen"), plan_room("Office", "room-office")]
     manager = leg_manager()
     manager.ledger.skipped_room_ids = MagicMock(return_value=frozenset({"room-office"}))
-    manager.ledger.async_mark_skipped = AsyncMock()
+    manager.ledger.async_mark_settled = AsyncMock(return_value=True)
     skipped = []
     hass.bus.async_listen("matic_robot_room_skipped", skipped.append)
 
@@ -353,8 +367,8 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
     assert completed is True
     advance.assert_any_await(RoomSettled("room-office"))
     manager.ledger.async_mark_ended_unverified.assert_not_awaited()
-    manager.ledger.async_mark_skipped.assert_awaited_once_with(
-        "serial", "away", rooms[1], run_id="run-1"
+    manager.ledger.async_mark_settled.assert_awaited_once_with(
+        "serial", "away", rooms[1], "skipped", run_id="run-1", completion_is_current=ANY
     )
     assert [event.data["run_id"] for event in skipped] == ["run-1"]
 
@@ -370,7 +384,7 @@ async def test_one_room_leg_settles_a_skipped_room(monkeypatch) -> None:
     hass = SimpleNamespace(bus=bus)
     manager = leg_manager()
     manager.ledger.skipped_room_ids = MagicMock(return_value=frozenset({"room-study"}))
-    manager.ledger.async_mark_skipped = AsyncMock()
+    manager.ledger.async_mark_settled = AsyncMock(return_value=True)
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
 
     async def mission_ends(*_args, **_kwargs):
@@ -406,8 +420,8 @@ async def test_one_room_leg_settles_a_skipped_room(monkeypatch) -> None:
         )
 
     assert settled is True
-    manager.ledger.async_mark_skipped.assert_awaited_once_with(
-        "serial", "away", room, run_id="run-1"
+    manager.ledger.async_mark_settled.assert_awaited_once_with(
+        "serial", "away", room, "skipped", run_id="run-1", completion_is_current=ANY
     )
     manager.ledger.async_mark_ended_unverified.assert_not_awaited()
     manager.ledger.async_mark_completed.assert_not_awaited()

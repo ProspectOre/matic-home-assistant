@@ -792,13 +792,19 @@ class _LegRun:
     async def async_settle_uncredited(
         self,
         room: CleaningRoom,
-        mark: Callable[..., Awaitable[None]],
+        result: Literal["skipped", "unreachable"],
         **fields: str,
     ) -> None:
         """Settle a room without credit, as a credit would, while the run owns it."""
-        if not self.evidence_is_current():
+        if not await self.manager.ledger.async_mark_settled(
+            self.serial_number,
+            self.plan_id,
+            room,
+            result,
+            run_id=self.run_id,
+            completion_is_current=self.evidence_is_current,
+        ):
             raise PlanCancelledError(_OWNERSHIP_CHANGED)
-        await mark(self.serial_number, self.plan_id, room, run_id=self.run_id)
         await self.advance(RoomSettled(room.room_id))
         self.announce(room, "skipped", **fields)
 
@@ -848,7 +854,7 @@ class _LegRun:
             elif self.run_id is not None and room.room_id in skipped:
                 # Skipped without credit, but settled, so the run goes on.
                 await self.async_settle_uncredited(
-                    room, ledger.async_mark_skipped, reason_code="owner_skipped"
+                    room, "skipped", reason_code="owner_skipped"
                 )
             elif self.ending_early() and room.room_id not in self.observed_ids:
                 await ledger.async_mark_cancelled(
@@ -865,7 +871,7 @@ class _LegRun:
                 # Settle it without credit so it stays due; the run goes on.
                 await self.async_settle_uncredited(
                     room,
-                    ledger.async_mark_unreachable,
+                    "unreachable",
                     reason_code="room_unreachable",
                     cause="robot",
                 )
