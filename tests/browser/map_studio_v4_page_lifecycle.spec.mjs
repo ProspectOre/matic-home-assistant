@@ -348,6 +348,10 @@ test("@safety page suspension aborts saved-plan preflight and preserves its draf
             room_id: "room-a", name: "Kitchen", cleaning_mode: "vacuum",
             coverage_setting: "standard", cadence_reasons: [],
           }],
+          entries: [{
+            kind: "room", room_id: "room-a", name: "Kitchen", cleaning_mode: "vacuum",
+            coverage_setting: "standard", cadence_reasons: [],
+          }],
           mission_boundaries: [],
           blocker: null,
         },
@@ -441,6 +445,8 @@ test("@safety page suspension aborts saved-plan preflight and preserves its draf
         next_run_preview: {
           preview_token: "e".repeat(64),
           rooms: [{ room_id: "room-a", name: "Kitchen", cleaning_mode: "vacuum",
+            coverage_setting: "standard", cadence_reasons: [] }],
+          entries: [{ kind: "room", room_id: "room-a", name: "Kitchen", cleaning_mode: "vacuum",
             coverage_setting: "standard", cadence_reasons: [] }],
           mission_boundaries: [],
           blocker: null,
