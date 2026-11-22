@@ -256,6 +256,10 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       return state;
     case "cleaning":
       return { ...state, activity: "cleaning", currentArea: "Kitchen" };
+    case "cleaning-between-rooms":
+      // A run stays shown after one room is confirmed and before the next starts.
+      return { ...state, activity: "cleaning", currentArea: null,
+        lastRun: { runId: "gallery-run", outcome: "running", completedRoomCount: 1, roomCount: 3 } };
     case "paused":
       return { ...state, activity: "paused" };
     case "returning":

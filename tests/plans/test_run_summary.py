@@ -69,3 +69,20 @@ async def test_no_stored_run_has_no_summary(hass, recovery_state):
     manager, _, _, _ = recovery_state
     manager.repository.robot("serial")["last_run"] = None
     assert _summary(manager) is None
+
+
+async def test_summary_keeps_the_running_run_once_its_room_closes(hass, recovery_state):
+    manager, _, _, room = recovery_state
+    await manager.ledger.async_mark_completed(
+        "serial", "plan", room, duration_seconds=30
+    )
+    # The room's close clears the stored target, not the run the card shows.
+    assert manager.repository.active_plan("serial") is None
+    assert _summary(manager) == {
+        "run_id": "run",
+        "outcome": "running",
+        "completed_room_count": 1,
+        "room_count": 1,
+        "target": None,
+        "smart_stop_phase": None,
+    }
