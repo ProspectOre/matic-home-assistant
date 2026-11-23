@@ -59,13 +59,13 @@ completion scope and nullable completion flags.
 (`completed`, `recharge_suspended`, `cancelled`, `failed`, or `unverified`),
 verified room count, and `reason_code` explain what the runner
 observed. Common reasons include `all_rooms_verified`, `all_rooms_settled`
-(every room completed, skipped by the owner, or unreachable), `partial_native_result`,
+(every room completed, skipped by the owner, unreachable or partly cleaned), `partial_native_result`,
 `stopped_in_place`, `native_task_ended`, `native_task_taken_over`, `managed_stop`, `low_charge`,
 `start_timeout`, `completion_timeout`, and `robot_error`; reasons starting with
 `restart_` say why [restart recovery](restart-recovery.md) could not continue.
 Room events use `verified_completion` and `unverified_completion` instead;
-`room_skipped` carries `owner_skipped` or, for a room the robot could not reach,
-`room_unreachable`. `native_task_ended` means the mission the run started ended
+`room_skipped` carries `owner_skipped`, or `room_unreachable` or
+`room_partly_cleaned` for a room the robot could not reach or finish. `native_task_ended` means the mission the run started ended
 without proof of completion; `native_task_taken_over` means a different native
 task replaced it.
 `cause: unknown` means the source was not established. A stopped run that

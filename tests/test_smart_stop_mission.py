@@ -26,7 +26,11 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.leg_finish import async_end_after_current_room
 from custom_components.matic_robot.managed_executor import async_execute_rooms
-from custom_components.matic_robot.native_completion import leg_room_results
+from custom_components.matic_robot.native_completion import (
+    RobotEnded,
+    leg_room_results,
+)
+from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.robot_commands import PlanStart, RobotCommands
 from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
@@ -197,16 +201,24 @@ def _record(key: bytes, statuses: dict[str, str]) -> CleaningSessionRecord:
     )
 
 
-def test_a_leg_record_credits_finished_rooms_and_names_unreached_ones():
-    record = _record(b"one", {"Kitchen": "unattempted", "Study": "completed"})
+def test_a_leg_record_credits_finished_rooms_and_names_unfinished_ones():
+    hall = CleaningRoom("room-hall", "Hall", "vacuum", "standard")
+    record = _record(
+        b"one", {"Kitchen": "unattempted", "Study": "completed", "Hall": "partial"}
+    )
 
-    evidence, unreached = leg_room_results(
-        record.session, [KITCHEN, STUDY], {KITCHEN.room_id, STUDY.room_id}
+    evidence, robot_ended = leg_room_results(
+        record.session,
+        [KITCHEN, STUDY, hall],
+        {KITCHEN.room_id, STUDY.room_id, hall.room_id},
     )
 
     assert set(evidence) == {STUDY.room_id}
-    assert unreached == {KITCHEN.room_id}
-    assert leg_room_results(record.session, [KITCHEN, STUDY], set()) == ({}, set())
+    assert robot_ended == {
+        KITCHEN.room_id: RobotEnded("unreachable", None),
+        hall.room_id: RobotEnded("partly_cleaned", "vacuum"),
+    }
+    assert leg_room_results(record.session, [KITCHEN, STUDY], set()) == ({}, {})
 
 
 class _Robot:

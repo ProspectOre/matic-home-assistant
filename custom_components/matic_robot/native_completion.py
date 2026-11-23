@@ -167,46 +167,74 @@ _REQUESTED_MODES = {
 }
 
 
-def room_unreached(
-    session: CleaningSession, room_name: str, cleaning_mode: str | None
-) -> bool:
-    """Return whether a finished mission left the room unattempted.
+_MODE_STATUSES = frozenset({"unattempted", "partial", "completed"})
+_ATTEMPTED_MODE = {
+    frozenset({"vacuum"}): "vacuum",
+    frozenset({"mop"}): "mop",
+    frozenset({"vacuum", "mop"}): "vacuum_and_mop",
+}
 
-    The OEM app titles a ``Finished`` stop reason "Area inaccessible" when the
-    requested room stayed unattempted (Matic 1.183.1). A cancelled, unknown or
-    partly attempted record is never unreachable: the robot reached the room,
-    or someone stopped the mission.
+
+@dataclass(frozen=True, slots=True)
+class RobotEnded:
+    """How a finished mission left a room the robot did not complete."""
+
+    result: Literal["unreachable", "partly_cleaned"]
+    # The requested modes the robot started in the room; None if it started none.
+    attempted_mode: str | None
+
+
+def room_robot_ended(
+    session: CleaningSession, room_name: str, cleaning_mode: str | None
+) -> RobotEnded | None:
+    """Return how a finished mission left a room it did not complete.
+
+    The OEM app titles a ``Finished`` stop reason "Area inaccessible" (Matic
+    1.183.1), both when the requested room stayed unattempted and when the
+    robot cleaned only part of it. Every requested mode unattempted means the
+    room was unreachable; any other result short of every mode completed means
+    it was partly cleaned. A cancelled or unknown stop reason is neither:
+    someone stopped the mission.
     """
     requested = _REQUESTED_MODES.get(cleaning_mode or "")
     if requested is None or session.stop_reason != "finished":
-        return False
+        return None
     target = native_room_key(room_name)
     results = [
         result
         for result in session.mode_results
         if native_room_key(result.room) == target
     ]
-    return (
-        bool(results)
-        and {result.cleaning_mode for result in results} == requested
-        and all(result.status == "unattempted" for result in results)
+    statuses = {result.status for result in results}
+    if (
+        not results
+        or {result.cleaning_mode for result in results} != requested
+        or not statuses <= _MODE_STATUSES
+        or statuses == {"completed"}
+    ):
+        return None
+    attempted = _ATTEMPTED_MODE.get(
+        frozenset(r.cleaning_mode for r in results if r.status != "unattempted")
     )
+    return RobotEnded("partly_cleaned" if attempted else "unreachable", attempted)
 
 
 def leg_room_results(
     session: CleaningSession,
     rooms: Sequence[CleaningRoom],
     room_ids: Collection[str],
-) -> tuple[dict[str, tuple[str, int]], set[str]]:
-    """Return a leg record's credit for ``room_ids`` and the rooms it left unreached.
+) -> tuple[dict[str, tuple[str, int]], dict[str, RobotEnded]]:
+    """Return a leg record's credit for ``room_ids`` and the rooms it left unfinished.
 
     Credit maps ``room_id -> (ended_at, duration_seconds)`` for each room the
-    record marks completed with a positive duration.
+    record marks completed with a positive duration. The rooms the robot
+    finished its mission without reaching or completing map to how it left
+    them.
     """
     ended_at = session.ended_at
     assert isinstance(ended_at, str)
     evidence: dict[str, tuple[str, int]] = {}
-    unreached: set[str] = set()
+    robot_ended: dict[str, RobotEnded] = {}
     for room in rooms:
         if room.room_id not in room_ids:
             continue
@@ -227,12 +255,12 @@ def leg_room_results(
             and duration > 0
         ):
             evidence[room.room_id] = (ended_at, duration)
-        elif room_unreached(session, room.name, room.cleaning_mode):
-            unreached.add(room.room_id)
-    return evidence, unreached
+        elif ended := room_robot_ended(session, room.name, room.cleaning_mode):
+            robot_ended[room.room_id] = ended
+    return evidence, robot_ended
 
 
-def match_single_room_unreachable(
+def match_single_room_robot_ended(
     records: Iterable[CleaningSessionRecord],
     *,
     room_name: str,
@@ -241,19 +269,19 @@ def match_single_room_unreachable(
     now: datetime,
     baseline: Collection[bytes] | None = None,
     session_hash: str | None = None,
-) -> tuple[CleaningSessionRecord, ...]:
-    """Return at most two one-room records proving the robot could not reach it."""
+) -> tuple[tuple[CleaningSessionRecord, RobotEnded], ...]:
+    """Return at most two one-room records the robot finished short of the room."""
     target = native_room_key(room_name)
-    matches: list[CleaningSessionRecord] = []
+    matches: list[tuple[CleaningSessionRecord, RobotEnded]] = []
     for record in records_for_dispatch(records, baseline, session_hash) or ():
         session = record.session
         if not session_overlaps_dispatch(session, dispatched_at, now):
             continue
         if tuple(native_room_key(name) for name in session.rooms) != (target,):
             continue
-        if not room_unreached(session, room_name, cleaning_mode):
+        if not (ended := room_robot_ended(session, room_name, cleaning_mode)):
             continue
-        matches.append(record)
+        matches.append((record, ended))
         if len(matches) == 2:
             break
     return tuple(matches)

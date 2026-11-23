@@ -31,10 +31,11 @@ from .managed_run import (
     validation_error,
 )
 from .native_completion import (
+    RobotEnded,
     has_cancelled_single_room_record,
     leg_room_results,
     match_single_room_completions,
-    match_single_room_unreachable,
+    match_single_room_robot_ended,
     native_room_key,
     records_for_dispatch,
     session_overlaps_dispatch,
@@ -78,23 +79,23 @@ async def async_verify_leg_completion(
     timeout_seconds: float | None = None,
     on_verified_session: Callable[[str], None] | None = None,
     skipped_room_ids: Collection[str] = (),
-    on_unreached: Callable[[str], None] | None = None,
+    on_robot_ended: Callable[[dict[str, RobotEnded]], None] | None = None,
     session_hash: str | None = None,
 ) -> dict[str, tuple[str, int]] | None:
     """Match one new native leg record and return per-room completion evidence.
 
-    The returned mapping holds ``room_id -> (ended_at, duration_seconds)`` for
-    every leg room the record marks completed with a positive duration, and
-    ``on_unreached`` gets each room the record shows the robot could not
-    reach. A missing or ambiguous record returns ``None`` and credits nothing.
-    With ``session_hash`` only the mission's own record counts.
+    The returned mapping holds ``room_id -> (ended_at, duration_seconds)`` for every
+    leg room the record marks completed with a positive duration; ``on_robot_ended``
+    gets the rooms the robot could not reach or finish. A missing or ambiguous
+    record returns ``None`` and credits nothing. With ``session_hash`` only the
+    mission's own record counts.
     """
     if baseline is None and session_hash is None:
         return None
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     required_room_ids = set(targets.values()) - set(skipped_room_ids)
     evidence: dict[str, tuple[str, int]] | None = None
-    unreached: set[str] = set()
+    robot_ended: dict[str, RobotEnded] = {}
     matched_key: bytes | None = None
     try:
         async with asyncio.timeout(
@@ -147,13 +148,12 @@ async def async_verify_leg_completion(
                     if matched_key is not None and matched_key != matches[0].key:
                         return None
                     matched_key = matches[0].key
-                    evidence, unreached = leg_room_results(
+                    evidence, robot_ended = leg_room_results(
                         matches[0].session, rooms, required_room_ids
                     )
-                    # Native history can publish timestamps before per-room results.
-                    # Keep polling the same record until complete or the bounded window
-                    # expires; never combine evidence from different physical sessions.
-                    if evidence.keys() | unreached == required_room_ids:
+                    # History can publish timestamps before per-room results: poll the
+                    # same record until complete or timed out, never mixing sessions.
+                    if evidence.keys() | robot_ended.keys() == required_room_ids:
                         break
                 if len(matches) > 1:
                     return None
@@ -163,9 +163,8 @@ async def async_verify_leg_completion(
                     )
     except TimeoutError:
         pass
-    if evidence is not None and on_unreached is not None:
-        for room_id in unreached:
-            on_unreached(room_id)
+    if evidence is not None and on_robot_ended is not None:
+        on_robot_ended(robot_ended)
     if evidence and matched_key is not None and on_verified_session is not None:
         if session_hash := native_session_hash(matched_key):
             on_verified_session(session_hash)
@@ -462,10 +461,9 @@ async def async_active_session_state(
 
 
 class NativeRoomVerdict(StrEnum):
-    """What native history proves about one owned single-room mission."""
+    """What history proves of an owned one-room mission, besides ``RobotEnded``."""
 
     COMPLETED = "completed"
-    UNREACHABLE = "unreachable"
     UNVERIFIED = "unverified"
 
 
@@ -482,13 +480,13 @@ async def async_adjudicate_room_end(
     on_verified_session: Callable[[str], None] | None = None,
     on_verified_completion: Callable[[str, int], None] | None = None,
     session_hash: str | None = None,
-) -> NativeRoomVerdict:
+) -> NativeRoomVerdict | RobotEnded:
     """Settle an ended single-room mission from one new native record.
 
-    Completion needs one new, completed, overlapping record for the room.
-    Unreachable needs one new, overlapping record the robot finished with the
-    room unattempted. Anything else, including ambiguity, earns no verdict.
-    With ``session_hash`` only the mission's own record counts.
+    Completion needs one new, completed, overlapping record for the room; an
+    unreachable or partly cleaned room needs one the robot finished short of it.
+    Anything else, including ambiguity, earns no verdict. With ``session_hash``
+    only the mission's own record counts.
     """
     if baseline is None and session_hash is None:
         return NativeRoomVerdict.UNVERIFIED
@@ -525,7 +523,7 @@ async def async_adjudicate_room_end(
                     dispatched_at=dispatched_at,
                     now=now,
                 )
-                unreachable = match_single_room_unreachable(
+                robot_ended = match_single_room_robot_ended(
                     records,
                     baseline=baseline,
                     session_hash=session_hash,
@@ -534,7 +532,7 @@ async def async_adjudicate_room_end(
                     dispatched_at=dispatched_at,
                     now=now,
                 )
-                if len(matches) + len(unreachable) > 1:
+                if len(matches) + len(robot_ended) > 1:
                     return NativeRoomVerdict.UNVERIFIED
                 if matches:
                     if on_verified_completion is not None:
@@ -545,8 +543,8 @@ async def async_adjudicate_room_end(
                         if session_hash := native_session_hash(matches[0].record.key):
                             on_verified_session(session_hash)
                     return NativeRoomVerdict.COMPLETED
-                if unreachable:
-                    return NativeRoomVerdict.UNREACHABLE
+                if robot_ended:
+                    return robot_ended[0][1]
                 if has_cancelled_single_room_record(
                     records,
                     baseline=baseline,
