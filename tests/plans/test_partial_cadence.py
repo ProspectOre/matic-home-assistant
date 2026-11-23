@@ -84,6 +84,8 @@ async def _settle(
         ROOM.room_id, {}
     )
     assert "last_completed" not in record  # Never counted as cleaned.
+    if current and not isinstance(settled, str):
+        assert record[f"{settled.result}_runs"] == 1
     assert snapshots[ROOM.room_id]["mop_due"] is mop_next
     policy = manager.repository.robot("serial")["plans"]["home"]["rooms"][0]["cadence"]
     progress = manager.cadence.cadence_progress("serial", "home", ROOM.room_id)
@@ -133,7 +135,9 @@ async def test_partial_work_from_another_run_counts_nothing(hass) -> None:
     assert progress == {"mop": 0, "coverage": 0}
 
 
-async def test_partial_work_counts_once_per_run(hass) -> None:
+async def test_a_replayed_settlement_counts_once(hass) -> None:
+    # Recovery can settle the room again if it stopped before the checkpoint
+    # recorded the first settlement.
     progress, _mop_next = await _settle(
         hass, RobotEnded("partly_cleaned", "vacuum"), mop_every_n=3, settlements=2
     )
