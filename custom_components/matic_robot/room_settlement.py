@@ -38,7 +38,9 @@ def settle_room_record(
 
 def count_partial_work(
     robot: dict[str, Any],
+    record: dict[str, Any],
     run: LastRun | None,
+    plan_id: str,
     room: CleaningRoom,
     settled: Literal["skipped"] | RobotEnded,
     *,
@@ -47,26 +49,32 @@ def count_partial_work(
 ) -> None:
     """Count a partly cleaned room toward its schedule as the modes it started.
 
-    A started mop counts as the mop, as a vacuum level is never proven by
-    partial work: a due level stays due.
+    A started mop counts as the due mop, even if the vacuum never ran. A
+    vacuum level is never proven by partial work, so a due level stays due.
+    The run and room's completion id, kept on the room, counts it once.
     """
     attempted = None if isinstance(settled, str) else settled.attempted_mode
+    completion_id = hashlib.sha256(f"{run_id}:{room.room_id}".encode()).hexdigest()
     if (
         attempted is None
         or run is None
         or run.run_id != run_id
+        or run.plan_id != plan_id
         or run.checkpoint is None
         or run.checkpoint.cadence_by_room is None
+        or record.get("partial_credit_id") == completion_id
     ):
         return
+    mode = room.cleaning_mode if attempted in {"mop", "vacuum_and_mop"} else attempted
     apply_verified_cadence(
         robot,
         run.plan_id,
-        replace(room, cleaning_mode=attempted),
+        replace(room, cleaning_mode=mode),
         run.checkpoint.cadence_by_room.get(room.room_id),
-        completion_id=hashlib.sha256(f"{run_id}:{room.room_id}".encode()).hexdigest(),
+        completion_id=completion_id,
         completed_at=settled_at.timestamp(),
     )
+    record["partial_credit_id"] = completion_id
 
 
 def _restore_opportunity(

@@ -1553,8 +1553,9 @@ class PlanLedger:
         def mutate() -> bool:
             robot = self.repository.robot(serial_number)
             now = dt_util.utcnow()
+            record = self.room(serial_number, plan_id, room)
             settle_room_record(
-                self.room(serial_number, plan_id, room),
+                record,
                 global_room(robot, room.room_id, room.name),
                 settled if isinstance(settled, str) else settled.result,
                 run_id=run_id or "",
@@ -1562,7 +1563,9 @@ class PlanLedger:
             )
             count_partial_work(
                 robot,
+                record,
                 self.repository.last_run(serial_number),
+                plan_id,
                 room,
                 settled,
                 run_id=run_id,

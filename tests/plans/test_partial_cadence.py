@@ -19,7 +19,14 @@ ROOM = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
 
 
 async def _settle(
-    hass, settled, *, mop_every_n: int, mop_next: bool = False, run_id: str = "run-1"
+    hass,
+    settled,
+    *,
+    mop_every_n: int,
+    mop_next: bool = False,
+    run_id: str = "run-1",
+    settlements: int = 1,
+    current: bool = True,
 ):
     manager = memory_manager(hass)
     identity = room_cadence_identity(_floor(), ROOM.room_id)
@@ -61,17 +68,21 @@ async def _settle(
             "completed_room_ids": [],
         },
     )
-    assert await manager.ledger.async_mark_settled(
-        "serial",
-        "home",
-        rooms[0],
-        settled,
-        run_id=run_id,
-        completion_is_current=lambda: True,
+    for _ in range(settlements):
+        assert (
+            await manager.ledger.async_mark_settled(
+                "serial",
+                "home",
+                rooms[0],
+                settled,
+                run_id=run_id,
+                completion_is_current=lambda: current,
+            )
+            is current
+        )
+    record = manager.repository.robot("serial")["rotations"]["home"]["rooms"].get(
+        ROOM.room_id, {}
     )
-    record = manager.repository.robot("serial")["rotations"]["home"]["rooms"][
-        ROOM.room_id
-    ]
     assert "last_completed" not in record  # Never counted as cleaned.
     assert snapshots[ROOM.room_id]["mop_due"] is mop_next
     policy = manager.repository.robot("serial")["plans"]["home"]["rooms"][0]["cadence"]
@@ -99,6 +110,8 @@ async def test_partial_work_counts_toward_a_mop_not_yet_due(hass, settled, mop) 
     [
         # The robot started the due mop, so it counts and the count restarts.
         ("vacuum_and_mop", 0, False),
+        # A started mop is the due mop even if the vacuum never ran.
+        ("mop", 0, False),
         # It never started mopping, so the mop stays due.
         ("vacuum", 2, True),
     ],
@@ -116,5 +129,21 @@ async def test_a_started_mop_counts_as_the_due_mop(
 async def test_partial_work_from_another_run_counts_nothing(hass) -> None:
     progress, _mop_next = await _settle(
         hass, RobotEnded("partly_cleaned", "vacuum"), mop_every_n=3, run_id="run-2"
+    )
+    assert progress == {"mop": 0, "coverage": 0}
+
+
+async def test_partial_work_counts_once_per_run(hass) -> None:
+    progress, _mop_next = await _settle(
+        hass, RobotEnded("partly_cleaned", "vacuum"), mop_every_n=3, settlements=2
+    )
+    assert progress == {"mop": 1, "coverage": 0}
+
+
+async def test_partial_work_after_the_run_lost_the_robot_counts_nothing(
+    hass,
+) -> None:
+    progress, _mop_next = await _settle(
+        hass, RobotEnded("partly_cleaned", "vacuum"), mop_every_n=3, current=False
     )
     assert progress == {"mop": 0, "coverage": 0}
