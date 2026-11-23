@@ -39,8 +39,7 @@ def settle_room_record(
         and record.get("last_result") == result
     ):
         return False
-    if run_id:
-        record["settled_run_id"] = run_id
+    record["settled_run_id"] = run_id
     record["last_result"] = result
     record[f"last_{result}"] = settled_at
     record[f"{result}_runs"] = stored_count(record, f"{result}_runs") + 1
