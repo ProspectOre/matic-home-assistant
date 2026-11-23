@@ -27,6 +27,7 @@ async def _settle(
     settlements: int = 1,
     current: bool = True,
     scope: str = "plan",
+    active_plan: dict[str, str] | None = None,
 ):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -70,6 +71,8 @@ async def _settle(
         "run-1",
         {"cadence_by_room": dict(snapshots), "completed_room_ids": []},
     )
+    if active_plan is not None:
+        manager._robot("serial")["active_plan"] = dict(active_plan)
     for _ in range(settlements):
         assert (
             await manager.async_mark_robot_ended(
@@ -83,6 +86,11 @@ async def _settle(
             is current
         )
     robot = manager._robot("serial")
+    if active_plan is not None:
+        # Only this run's own active plan is cleared.
+        owned = (active_plan["plan_id"], active_plan["run_id"]) == ("home", run_id)
+        cleared = current and owned
+        assert robot["active_plan"] == (None if cleared else active_plan)
     rotation = robot["rotations"].get("home", {"rooms": {}})
     record = rotation["rooms"].get(ROOM.room_id, {})
     assert "last_completed" not in record  # Never counted as cleaned.
@@ -166,3 +174,20 @@ async def test_partial_work_after_the_run_lost_the_robot_counts_nothing(
 ) -> None:
     ended = RobotEnded("partly_cleaned", "vacuum")
     assert await _settle(hass, ended, current=False) == (0, False)
+
+
+@pytest.mark.parametrize(
+    "active_plan",
+    [
+        {"plan_id": "home", "run_id": "run-1", "room_id": ROOM.room_id},
+        {"plan_id": "home", "run_id": "run-2", "room_id": ROOM.room_id},
+        {"plan_id": "other", "run_id": "run-1", "room_id": ROOM.room_id},
+    ],
+    ids=["this-run", "another-run", "another-plan"],
+)
+@pytest.mark.parametrize("current", [True, False])
+async def test_settling_clears_only_this_runs_active_plan(
+    hass, active_plan, current
+) -> None:
+    ended = RobotEnded("partly_cleaned", "vacuum")
+    await _settle(hass, ended, current=current, active_plan=active_plan)
