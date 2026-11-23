@@ -7,12 +7,15 @@ work nor the settlement counts the room as cleaned.
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 import pytest
+from homeassistant.util import dt as dt_util
 
-from custom_components.matic_robot.cadence_accounting import apply_verified_cadence
+from custom_components.matic_robot.cadence_accounting import (
+    apply_verified_cadence,
+    managed_completion_id,
+)
 from custom_components.matic_robot.native_completion import RobotEnded
 from custom_components.matic_robot.plan_model import CleaningRoom, plan_floor_token
 from custom_components.matic_robot.room_identity import room_cadence_identity
@@ -102,14 +105,15 @@ async def _settle(
             is current
         )
     if then_complete:
-        # The run's completion of the room uses its own ledger id.
+        # The run's later completion of the room, under the id every managed
+        # completion uses.
         apply_verified_cadence(
             robot,
             "home",
             ROOM,
             snapshot,
-            completion_id=hashlib.sha256(f"run-1:{ROOM.room_id}".encode()).hexdigest(),
-            completed_at=1.0,
+            completion_id=managed_completion_id("run-1", ROOM.room_id),
+            completed_at=dt_util.utcnow().timestamp() + 60,
         )
     record = robot["rotations"]["home"]["rooms"].get(ROOM.room_id, {})
     assert "last_completed" not in record  # Never counted as cleaned.
