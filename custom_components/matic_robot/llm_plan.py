@@ -100,12 +100,10 @@ class MaticGetPlanTool(MaticTool):
             room["room_id"]: room["cadence"] for room in preview["rooms"]
         }
         rotation = preview["rotation"]
-        snapshot = runtime.cleaning_plans.history.snapshot(serial_number)
-        active = snapshot.get("active_plan")
-        active_plan_id = active.get("plan_id") if isinstance(active, dict) else None
+        running = runtime.cleaning_plans.history.running_run(serial_number)
         active_run_for_plan = (
-            active_plan_id == plan_id
-            if active_plan_id is not None
+            running.plan_id == plan_id
+            if running is not None
             else (
                 None
                 if runtime.cleaning_plans.control.lock(serial_number).locked()

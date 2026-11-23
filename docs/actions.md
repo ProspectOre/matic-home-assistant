@@ -73,10 +73,10 @@ linked to the Home Assistant Areas you pick, with the default mode and coverage.
 Stop cleaning never starts another room. Without Smart Stop, the robot stops
 and docks at once. With Smart Stop, the current room finishes first if it has
 reached the plan's share of its estimated time or has no estimate yet, and a
-custom area always finishes first. While it finishes, `stop_now: true` with the
-run's `expected_run_id` (`run_id` in Active cleaning plan's `active` attribute)
-acts as **Stop now & dock**. `include_unmanaged: true` also stops a one-time
-clean, or one started in the Matic app, when no plan is running.
+custom area always finishes first. While it finishes, `stop_now: true` with
+`expected_run_id` (`run.run_id` on Rooms cleaned by plans) acts as **Stop now &
+dock**. `include_unmanaged: true` also stops a one-time clean, or one started
+in the Matic app, when no plan is running.
 
 ## Sink refill
 

@@ -138,7 +138,7 @@ test("entry change hides the previous entry choices until the new owner's pins s
     map_truncated: false, selected_floor_ordinal: 1, map_floor_ordinal: 1, history_count: 1, history_floor_count: 2,
     map_health: "ready", stream_failures: 0, bootstrap_state: "complete", bootstrap_photo_seen: true,
     bootstrap_structure_seen: true, bootstrap_failures: 0, runner_locked: false, stop_settle_pending: false,
-    active_plan: false, native_reconciliation_pending: false, native_session_active: false };
+    plan_running: false, native_reconciliation_pending: false, native_session_active: false };
   const b = { ...a, entry_id: "synthetic-entry-b", scene_url: a.scene_url.replace("synthetic", "synthetic-b"),
     history_url: a.history_url.replace("synthetic", "synthetic-b"),
     areas_url: a.areas_url.replace("synthetic", "synthetic-b"), plans_url: a.plans_url.replace("synthetic", "synthetic-b"), map_session_key: "b".repeat(64) };
@@ -220,7 +220,7 @@ test("same entry recovery restores the saved home shortcuts without writing user
       map_complete: true, map_truncated: false, selected_floor_ordinal: 1, map_floor_ordinal: 1,
       history_count: 1, history_floor_count: 2, map_health: "ready", stream_failures: 0,
       bootstrap_state: "complete", bootstrap_photo_seen: true, bootstrap_structure_seen: true,
-      bootstrap_failures: 0, runner_locked: false, stop_settle_pending: false, active_plan: false,
+      bootstrap_failures: 0, runner_locked: false, stop_settle_pending: false, plan_running: false,
       native_reconciliation_pending: false, native_session_active: false,
     };
     window.__panelFixture.setCatalogEntries([entry]);

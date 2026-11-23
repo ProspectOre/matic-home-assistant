@@ -443,7 +443,7 @@ class PanelRobot:
         return bool(
             self.activity in ("cleaning", "paused", "returning", "recharging")
             or projection["runner_locked"]
-            or projection["active_plan"]
+            or projection["plan_running"]
             or projection["native_session_active"] is True
         )
 
@@ -464,7 +464,7 @@ class PanelRobot:
             return "v4_reason_stop_settle_pending"
         if (
             projection["runner_locked"]
-            or projection["active_plan"]
+            or projection["plan_running"]
             or projection["native_reconciliation_pending"]
             or projection["native_session_active"] is True
             or self.activity not in ("idle", "docked")

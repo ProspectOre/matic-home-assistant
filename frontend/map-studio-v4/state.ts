@@ -1134,7 +1134,7 @@ export const hasStoppableWork = (state: WorkspaceState): boolean =>
   || state.activity === "returning" || state.activity === "recharging"
   || (state.resources.entry?.entryId === state.selection.entryId
     && (state.resources.entry?.runnerLocked === true
-      || state.resources.entry?.activePlan === true
+      || state.resources.entry?.planRunning === true
       || state.resources.entry?.nativeSessionActive === true));
 
 /** Rooms can be picked only on an editable map with no robot work to stop. */

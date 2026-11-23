@@ -494,7 +494,7 @@ test("same-generation snapshot scene revisions read the new manifest; new identi
       map_floor_coherent: entry.mapFloorCoherent, map_session_verified: entry.mapSessionVerified,
       map_session_key: entry.mapSessionKey, map_block_reason: entry.mapBlockReason,
       runner_locked: entry.runnerLocked, stop_settle_pending: entry.stopSettlePending,
-      active_plan: entry.activePlan, native_reconciliation_pending: entry.nativeReconciliationPending,
+      plan_running: entry.planRunning, native_reconciliation_pending: entry.nativeReconciliationPending,
       native_session_active: entry.nativeSessionActive, map_complete: entry.mapComplete,
       map_truncated: entry.mapTruncated, selected_floor_ordinal: entry.selectedFloorOrdinal,
       map_floor_ordinal: entry.mapFloorOrdinal, history_count: entry.historyCount,

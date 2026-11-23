@@ -55,7 +55,7 @@ test("Python workspace snapshot fixture is admitted by the frontend transport pa
         entry: {
           entryId: "synthetic-entry",
           runnerLocked: false,
-          activePlan: false,
+          planRunning: false,
           nativeReconciliationPending: false,
           mapSessionVerified: true,
           mapSessionKey: "45a72b74293517b688bdc37326e5fed522fdaf097072b3eb6bec130ff726322e",

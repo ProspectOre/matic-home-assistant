@@ -38,7 +38,9 @@ call the Run plan action with [`run_behavior`](actions.md#cleaning). To stop a
 plan from a dashboard, use the vacuum's Stop. **Clean custom area** cleans the
 area chosen in **Custom cleaning area**, so enable both. **Next room to clean**
 names the first room or custom area of the default plan's next run; its
-`preview` attribute holds the whole preview.
+`preview` attribute holds the whole preview. **Active cleaning plan** names a
+running plan from start to end, with the current room or area in its `active`
+attribute; **Rooms cleaned by plans** has `plan_running` on for the same span.
 
 ## Cleaning run
 

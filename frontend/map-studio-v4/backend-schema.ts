@@ -25,7 +25,7 @@ export interface CatalogEntry {
   readonly map_block_reason: MapBlockReason | null;
   readonly runner_locked: boolean;
   readonly stop_settle_pending: boolean;
-  readonly active_plan: boolean;
+  readonly plan_running: boolean;
   readonly native_reconciliation_pending: boolean;
   readonly native_session_active: boolean | null;
   readonly map_health: MapHealthState;

@@ -25,7 +25,7 @@ const entry = (id, slug, session) => ({
   bootstrap_failures: 0,
   runner_locked: false,
   stop_settle_pending: false,
-  active_plan: false,
+  plan_running: false,
   native_reconciliation_pending: false,
   native_session_active: false,
 });

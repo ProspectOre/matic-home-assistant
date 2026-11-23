@@ -153,7 +153,7 @@ test("catalog ignores the retired live workspace flag; scene revision is optiona
       map_block_reason: null,
       runner_locked: false,
       stop_settle_pending: false,
-      active_plan: false,
+      plan_running: false,
       native_reconciliation_pending: false,
       native_session_active: null,
       map_complete: false,

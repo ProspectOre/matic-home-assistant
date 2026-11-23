@@ -2113,7 +2113,7 @@ _READY_PROJECTION = {
     "map_health": "healthy",
     "runner_locked": False,
     "stop_settle_pending": False,
-    "active_plan": False,
+    "plan_running": False,
     "native_reconciliation_pending": False,
     "native_session_active": False,
 }
@@ -2217,7 +2217,7 @@ def _refused(result: llm.ToolResult, category: str, key: str, **placeholders: st
             "v4_reason_stop_settle_pending",
         ),
         ("docked", None, {"runner_locked": True}, "v4_reason_robot_operation_waiting"),
-        ("docked", None, {"active_plan": True}, "v4_reason_robot_operation_waiting"),
+        ("docked", None, {"plan_running": True}, "v4_reason_robot_operation_waiting"),
         (
             "docked",
             None,
@@ -2508,7 +2508,7 @@ async def test_stop_refuses_like_the_panel(state, projection, category, reason) 
         ("returning", None, {}),
         ("docked", {"recharge_and_resume": True, "charging": True}, {}),
         ("docked", None, {"runner_locked": True}),
-        ("docked", None, {"active_plan": True}),
+        ("docked", None, {"plan_running": True}),
         ("docked", None, {"native_session_active": True}),
     ],
 )

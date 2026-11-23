@@ -99,7 +99,7 @@ const entry = (id, key, extra = {}) => ({
   map_session_key: key.repeat(64), map_complete: true, map_truncated: false, selected_floor_ordinal: 1, map_floor_ordinal: 1,
   history_count: 1, history_floor_count: 2, map_health: "ready", stream_failures: 0, bootstrap_state: "complete",
   bootstrap_photo_seen: true, bootstrap_structure_seen: true, bootstrap_failures: 0, runner_locked: false,
-  stop_settle_pending: false, active_plan: false, native_reconciliation_pending: false, native_session_active: false,
+  stop_settle_pending: false, plan_running: false, native_reconciliation_pending: false, native_session_active: false,
   floor_layers_url: "/api/matic_robot/floor_layers/synthetic", ...extra,
 });
 

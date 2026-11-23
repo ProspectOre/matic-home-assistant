@@ -669,7 +669,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
         resources: {
           ...state.resources,
           entry: state.resources.entry
-            ? { ...state.resources.entry, runnerLocked: true, activePlan: true }
+            ? { ...state.resources.entry, runnerLocked: true, planRunning: true }
             : null,
         },
       };
@@ -743,7 +743,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
     case "home-shortcut-running": {
       // A pinned plan's run is under way: Stop holds the bar, shortcuts wait.
       const pinned = createGalleryState("home-shortcuts");
-      return { ...pinned, activity: "cleaning", currentArea: "Kitchen", resources: { ...pinned.resources, entry: { ...syntheticEntry(), activePlan: true } } };
+      return { ...pinned, activity: "cleaning", currentArea: "Kitchen", resources: { ...pinned.resources, entry: { ...syntheticEntry(), planRunning: true } } };
     }
     case "home-pins-error":
       return { ...state, homePins: { status: "error", pins: [] } };

@@ -91,7 +91,7 @@ class PlanPublisher(Publisher):
         self.area_data: dict[str, dict[str, Any]] = {}
         self.catalog = self
         self.repository = self
-        self.history = SimpleNamespace(snapshot=lambda _serial: {})
+        self.history = SimpleNamespace(running_run=lambda _serial: None)
         self.control = SimpleNamespace(
             lock=lambda _serial: SimpleNamespace(locked=lambda: False),
             stop_pending=lambda _serial: False,

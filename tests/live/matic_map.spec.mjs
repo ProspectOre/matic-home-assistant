@@ -45,8 +45,8 @@ async function expectReadyToClean(page, robot) {
         map: state.map,
         floor: state.floor,
         entry: state.resources.entry && {
-          activePlan: state.resources.entry.activePlan,
-          activePlanProjection: state.resources.entry.activePlan,
+          planRunning: state.resources.entry.planRunning,
+          planRunningProjection: state.resources.entry.planRunning,
           runnerLocked: state.resources.entry.runnerLocked,
           stopSettlePending: state.resources.entry.stopSettlePending,
           nativeSessionActive: state.resources.entry.nativeSessionActive,
@@ -144,7 +144,7 @@ async function captureNativeOwnership(page, robot, testInfo, label) {
       coherence: workspace.coherence,
       command: workspace.command,
       nativeSessionActive: entry?.nativeSessionActive,
-      activePlan: entry?.activePlan,
+      planRunning: entry?.planRunning,
       runnerLocked: entry?.runnerLocked,
       stopSettlePending: entry?.stopSettlePending,
       lastRun: workspace.lastRun && {

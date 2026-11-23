@@ -142,7 +142,7 @@ test("@safety stale catalog work cannot stop idle B, while active B stops only B
     const staleCatalogEntry = {
       ...initial.resources.entry,
       entryId: "synthetic-entry",
-      activePlan: true,
+      planRunning: true,
       runnerLocked: true,
     };
     const store = new WorkspaceStore({

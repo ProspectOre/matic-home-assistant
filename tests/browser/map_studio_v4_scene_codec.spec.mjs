@@ -610,7 +610,7 @@ test("@safety EffectController serializes requested history/live scenes and drop
       map_block_reason: entry.mapBlockReason,
       runner_locked: entry.runnerLocked,
       stop_settle_pending: entry.stopSettlePending,
-      active_plan: entry.activePlan,
+      plan_running: entry.planRunning,
       native_reconciliation_pending: entry.nativeReconciliationPending,
       native_session_active: entry.nativeSessionActive,
       map_complete: entry.mapComplete,
