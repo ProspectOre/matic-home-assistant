@@ -384,6 +384,9 @@ async def test_robot_ended_room_is_not_settled_after_the_run_lost_the_robot(
     robot = _Robot(hass, lambda: _session("Kitchen", "partial"), enters_room=True)
     manager, events, _error = await _run_plan(hass, robot, owns_robot=False)
 
+    # The executor reached the settlement and its fence turned it away.
+    run_id = manager._robot("serial")["last_run"]["run_id"]
+    assert robot.settled_runs == [(run_id, True)]
     assert len(robot.dispatches) == 1
     assert "room_partly_cleaned" not in {
         e["reason_code"] for e in _events(events, "room_ended_unverified")
