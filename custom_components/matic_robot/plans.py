@@ -5604,17 +5604,19 @@ class CleaningPlanManager:
         *,
         run_id: str | None,
         completion_is_current: Callable[[], bool] | None = None,
-    ) -> None:
+    ) -> bool:
         """Close a room the robot could not reach or finish, without credit.
 
         Work the robot started in a partly cleaned room still counts toward
         the room's schedule, like any clean, so a started mop counts as the
         due mop. A room the robot never entered counts for nothing. Like a
-        completion, the credit needs the run to still own the robot, and the
-        run and room's completion id counts it once.
+        completion, nothing is written once the run no longer owns the robot,
+        and the credit counts once per run and room.
         """
 
-        def mutate() -> bool:
+        def mutate() -> bool | None:
+            if completion_is_current is not None and not completion_is_current():
+                return None
             now = dt_util.utcnow()
             robot = self._robot(serial_number)
             record = self._room(serial_number, plan_id, room)
@@ -5622,7 +5624,13 @@ class CleaningPlanManager:
             record["last_result"] = result
             record[f"last_{result}"] = now.isoformat()
             record[f"{result}_runs"] = _stored_count(record, f"{result}_runs") + 1
-            robot["active_plan"] = None
+            active = robot.get("active_plan")
+            if run_id is None or (
+                isinstance(active, Mapping)
+                and active.get("run_id") == run_id
+                and active.get("plan_id") == plan_id
+            ):
+                robot["active_plan"] = None
             run = robot.get("last_run")
             checkpoint = (
                 run.get("recovery_checkpoint") if isinstance(run, dict) else None
@@ -5632,8 +5640,9 @@ class CleaningPlanManager:
                 if isinstance(checkpoint, dict)
                 else None
             )
-            completion_id = hashlib.sha256(
-                f"{run_id}:{room.room_id}".encode()
+            # Its own id, so a later completion of the room is a second clean.
+            credit_id = hashlib.sha256(
+                f"{run_id}:{room.room_id}:partial".encode()
             ).hexdigest()
             if (
                 ended.attempted_mode is not None
@@ -5643,8 +5652,7 @@ class CleaningPlanManager:
                 and run.get("plan_id") == plan_id
                 and run.get("outcome") == "running"
                 and isinstance(cadence_by_room, Mapping)
-                and record.get("partial_credit_id") != completion_id
-                and (completion_is_current is None or completion_is_current())
+                and record.get("partial_credit_id") != credit_id
             ):
                 # A started mop is the due mop even if the vacuum never ran.
                 mode = (
@@ -5657,14 +5665,18 @@ class CleaningPlanManager:
                     plan_id,
                     replace(room, cleaning_mode=mode),
                     cadence_by_room.get(room.room_id),
-                    completion_id=completion_id,
+                    completion_id=credit_id,
                     completed_at=now.timestamp(),
                 )
-                record["partial_credit_id"] = completion_id
+                record["partial_credit_id"] = credit_id
             return True
 
-        await self._async_mutate_and_save(
-            serial_number, mutate, domain_locks=(self.plan_write_lock(serial_number),)
+        return bool(
+            await self._async_mutate_and_save(
+                serial_number,
+                mutate,
+                domain_locks=(self.plan_write_lock(serial_number),),
+            )
         )
 
     async def async_mark_failed(

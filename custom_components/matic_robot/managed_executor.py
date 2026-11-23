@@ -1107,14 +1107,17 @@ async def _async_run_room(
     elif isinstance(room_verdict, RobotEnded):
         # The robot finished its mission without reaching or finishing the
         # room. Settle it without completion credit and go on to the next room.
-        await manager.async_mark_robot_ended(
+        if not await manager.async_mark_robot_ended(
             serial_number,
             call.data["plan_id"],
             room,
             room_verdict,
             run_id=run_id,
             completion_is_current=run_still_owns_robot,
-        )
+        ):
+            raise PlanCancelledError(
+                "Run ownership changed before the room could be settled"
+            )
         hass.bus.async_fire(
             f"{DOMAIN}_room_ended_unverified",
             {
