@@ -8,13 +8,12 @@ schedule as the modes it started; a room it never started gets its turn back.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Literal
 
-from .cadence_accounting import apply_verified_cadence
+from .cadence_accounting import apply_verified_cadence, managed_completion_id
 from .native_completion import RobotEnded
 from .plan_model import CleaningRoom, stored_count
 from .plan_records import LastRun
@@ -62,6 +61,8 @@ def count_partial_work(
 
     A started mop counts as the due mop, even if the vacuum never ran. A
     vacuum level is never proven by partial work, so a due level stays due.
+    The credit has its own ledger id, so a later completion of the room in the
+    same run counts as a second clean on a shared schedule too.
     """
     attempted = None if isinstance(settled, str) else settled.attempted_mode
     if (
@@ -80,7 +81,7 @@ def count_partial_work(
         run.plan_id,
         replace(room, cleaning_mode=mode),
         run.checkpoint.cadence_by_room.get(room.room_id),
-        completion_id=hashlib.sha256(f"{run_id}:{room.room_id}".encode()).hexdigest(),
+        completion_id=managed_completion_id(run.run_id, room.room_id, partial=True),
         completed_at=settled_at.timestamp(),
     )
 

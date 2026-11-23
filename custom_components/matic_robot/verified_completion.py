@@ -10,7 +10,6 @@ it inside the repository commit that saves the result.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
@@ -18,7 +17,7 @@ from typing import Any, cast
 from homeassistant.util import dt as dt_util
 
 from . import daily_room_limit
-from .cadence_accounting import apply_verified_cadence
+from .cadence_accounting import apply_verified_cadence, managed_completion_id
 from .plan_model import CleaningRoom, stored_count
 from .plan_timing import record_duration_sample
 
@@ -98,9 +97,7 @@ def record_verified_completion(
         completion.plan_id,
         completion.settings,
         completion.cadence_state,
-        completion_id=hashlib.sha256(
-            f"{completion.cadence_key}:{completion.room_id}".encode()
-        ).hexdigest(),
+        completion_id=managed_completion_id(completion.cadence_key, completion.room_id),
         completed_at=cast(
             datetime, dt_util.parse_datetime(completion.completed_at)
         ).timestamp(),

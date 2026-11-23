@@ -5,6 +5,7 @@ This module owns recovery-snapshot admission and applying one verified credit;
 it has no transport, service, Home Assistant or execution dependencies.
 """
 
+import hashlib
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -105,6 +106,12 @@ def validated_cadence_snapshots(value: object) -> dict[str, dict[str, Any]] | No
         if reservation:
             result[room_id] = reservation
     return result
+
+
+def managed_completion_id(run_key: str, room_id: str, *, partial: bool = False) -> str:
+    """Ledger id of a run's credit for one room; partial work has its own."""
+    suffix = ":partial" if partial else ""
+    return hashlib.sha256(f"{run_key}:{room_id}{suffix}".encode()).hexdigest()
 
 
 def apply_verified_cadence(
