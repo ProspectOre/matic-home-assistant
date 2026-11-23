@@ -8218,15 +8218,15 @@ for (const dirty of [false, true]) {
 }
 
 for (const activity of ["docked", "idle"]) {
-  for (const betweenLegs of [false, true]) {
-    test(`an active plan remains in progress while the robot is ${activity}${betweenLegs ? " between legs" : ""}`, async ({ page }) => {
+  for (const lockOnly of [false, true]) {
+    test(`an active plan remains in progress while the robot is ${activity}${lockOnly ? " and only the runner lock is held" : ""}`, async ({ page }) => {
       const gallery = await loadGallery(page);
-      await page.evaluate(({ tag, activity, betweenLegs }) => {
+      await page.evaluate(({ tag, activity, lockOnly }) => {
         const module = window.__galleryModule;
         const state = module.createGalleryState("ready");
         document.querySelector(tag).replaceWorkspaceState({ ...state, activity,
-          managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, planRunning: !betweenLegs, runnerLocked: betweenLegs } } });
-      }, { tag: GALLERY_TAG, activity, betweenLegs });
+          managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, planRunning: !lockOnly, runnerLocked: lockOnly } } });
+      }, { tag: GALLERY_TAG, activity, lockOnly });
       await expect(gallery.locator(".status-copy strong")).toHaveText("Run in progress");
       await expect(gallery.locator(".status-copy small")).toHaveText(activity === "docked"
         ? "Robot docked; the clean has not finished." : "Waiting for the clean to continue or finish.");
