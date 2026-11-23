@@ -28,6 +28,7 @@ async def _settle(
     current: bool = True,
     scope: str = "plan",
     active_plan: dict[str, str] | None = None,
+    then_complete: bool = False,
 ):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -85,6 +86,11 @@ async def _settle(
             )
             is current
         )
+    if then_complete:
+        # The robot cleans the same room again later in the run.
+        assert await manager.async_mark_completed(
+            "serial", "home", rooms[0], run_id="run-1"
+        )
     robot = manager._robot("serial")
     if active_plan is not None:
         # Only this run's own active plan is cleared.
@@ -93,9 +99,10 @@ async def _settle(
         assert robot["active_plan"] == (None if cleared else active_plan)
     rotation = robot["rotations"].get("home", {"rooms": {}})
     record = rotation["rooms"].get(ROOM.room_id, {})
-    assert "last_completed" not in record  # Never counted as cleaned.
+    # Partial work is never counted as cleaning the room.
+    assert ("last_completed" in record) is then_complete
     if current:
-        assert record["last_result"] == ended.result
+        assert record["last_result"] == ("completed" if then_complete else ended.result)
         assert record[f"{ended.result}_runs"] == settlements
     else:
         assert "last_result" not in record  # Nothing written for a lost run.
@@ -191,3 +198,11 @@ async def test_settling_clears_only_this_runs_active_plan(
 ) -> None:
     ended = RobotEnded("partly_cleaned", "vacuum")
     await _settle(hass, ended, current=current, active_plan=active_plan)
+
+
+@pytest.mark.parametrize("scope", ["plan", "shared"])
+async def test_a_later_completion_in_the_run_counts_as_a_second_clean(
+    hass, scope
+) -> None:
+    ended = RobotEnded("partly_cleaned", "vacuum")
+    assert await _settle(hass, ended, scope=scope, then_complete=True) == (2, False)
