@@ -539,7 +539,9 @@ async def _async_run_room(
     """Run one room and report whether the plan may go on to the next one.
 
     That is a verified completion, or a room native history proves the robot
-    could not reach. Only a completion earns credit.
+    could not reach or finish. Only a completion counts the room as cleaned;
+    the modes the robot started in a partly cleaned room count toward its
+    schedule.
     """
     if not room_name_is_unique:
         raise _validation_error(
@@ -1066,6 +1068,16 @@ async def _async_run_room(
             ) from err
         raise
 
+    def run_still_owns_robot() -> bool:
+        return (
+            (cancel_event is None or not cancel_event.is_set())
+            and (
+                motion_token is None
+                or manager.managed_motion_is_current(serial_number, motion_token)
+            )
+            and (floor_is_current is None or floor_is_current())
+        )
+
     if completion_verified:
         verified_coverage = await async_confirm_completed_coverage(
             manager.coverage_receipt(serial_number, run_id),
@@ -1078,14 +1090,7 @@ async def _async_run_room(
             room,
             run_id=run_id,
             verified_coverage_receipt=verified_coverage,
-            completion_is_current=lambda: (
-                (cancel_event is None or not cancel_event.is_set())
-                and (
-                    motion_token is None
-                    or manager.managed_motion_is_current(serial_number, motion_token)
-                )
-                and (floor_is_current is None or floor_is_current())
-            ),
+            completion_is_current=run_still_owns_robot,
         ):
             raise PlanCancelledError(
                 "Run ownership changed before room completion could be credited"
@@ -1103,7 +1108,12 @@ async def _async_run_room(
         # The robot finished its mission without reaching or finishing the
         # room. Settle it without completion credit and go on to the next room.
         await manager.async_mark_robot_ended(
-            serial_number, call.data["plan_id"], room, room_verdict, run_id=run_id
+            serial_number,
+            call.data["plan_id"],
+            room,
+            room_verdict,
+            run_id=run_id,
+            completion_is_current=run_still_owns_robot,
         )
         hass.bus.async_fire(
             f"{DOMAIN}_room_ended_unverified",

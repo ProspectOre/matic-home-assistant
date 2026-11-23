@@ -5603,12 +5603,15 @@ class CleaningPlanManager:
         ended: RobotEnded,
         *,
         run_id: str | None,
+        completion_is_current: Callable[[], bool] | None = None,
     ) -> None:
         """Close a room the robot could not reach or finish, without credit.
 
         Work the robot started in a partly cleaned room still counts toward
         the room's schedule, like any clean, so a started mop counts as the
-        due mop. A room the robot never entered counts for nothing.
+        due mop. A room the robot never entered counts for nothing. Like a
+        completion, the credit needs the run to still own the robot, and the
+        run and room's completion id counts it once.
         """
 
         def mutate() -> bool:
@@ -5629,6 +5632,9 @@ class CleaningPlanManager:
                 if isinstance(checkpoint, dict)
                 else None
             )
+            completion_id = hashlib.sha256(
+                f"{run_id}:{room.room_id}".encode()
+            ).hexdigest()
             if (
                 ended.attempted_mode is not None
                 and run_id is not None
@@ -5637,20 +5643,29 @@ class CleaningPlanManager:
                 and run.get("plan_id") == plan_id
                 and run.get("outcome") == "running"
                 and isinstance(cadence_by_room, Mapping)
+                and record.get("partial_credit_id") != completion_id
+                and (completion_is_current is None or completion_is_current())
             ):
+                # A started mop is the due mop even if the vacuum never ran.
+                mode = (
+                    room.cleaning_mode
+                    if ended.attempted_mode in {"mop", "vacuum_and_mop"}
+                    else ended.attempted_mode
+                )
                 _apply_verified_cadence(
                     robot,
                     plan_id,
-                    replace(room, cleaning_mode=ended.attempted_mode),
+                    replace(room, cleaning_mode=mode),
                     cadence_by_room.get(room.room_id),
-                    completion_id=hashlib.sha256(
-                        f"{run_id}:{room.room_id}".encode()
-                    ).hexdigest(),
+                    completion_id=completion_id,
                     completed_at=now.timestamp(),
                 )
+                record["partial_credit_id"] = completion_id
             return True
 
-        await self._async_mutate_and_save(serial_number, mutate)
+        await self._async_mutate_and_save(
+            serial_number, mutate, domain_locks=(self.plan_write_lock(serial_number),)
+        )
 
     async def async_mark_failed(
         self,

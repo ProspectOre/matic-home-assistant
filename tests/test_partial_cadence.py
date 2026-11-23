@@ -19,7 +19,13 @@ ROOM = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
 
 
 async def _settle(
-    hass, ended: RobotEnded, *, mop_next: bool = False, run_id: str = "run-1"
+    hass,
+    ended: RobotEnded,
+    *,
+    mop_next: bool = False,
+    run_id: str = "run-1",
+    settlements: int = 1,
+    current: bool = True,
 ):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -53,9 +59,15 @@ async def _settle(
         "run-1",
         {"cadence_by_room": dict(snapshots), "completed_room_ids": []},
     )
-    await manager.async_mark_robot_ended(
-        "serial", "home", rooms[0], ended, run_id=run_id
-    )
+    for _ in range(settlements):
+        await manager.async_mark_robot_ended(
+            "serial",
+            "home",
+            rooms[0],
+            ended,
+            run_id=run_id,
+            completion_is_current=lambda: current,
+        )
     robot = manager._robot("serial")
     record = robot["rotations"]["home"]["rooms"][ROOM.room_id]
     assert record["last_result"] == ended.result
@@ -85,6 +97,8 @@ async def test_partial_work_counts_toward_a_mop_not_yet_due(hass, ended, mop) ->
     [
         # The robot started the due mop, so it counts and the count restarts.
         ("vacuum_and_mop", 0, False),
+        # A started mop is the due mop even if the vacuum never ran.
+        ("mop", 0, False),
         # It never started mopping, so the mop stays due.
         ("vacuum", 2, True),
     ],
@@ -99,3 +113,15 @@ async def test_a_started_mop_counts_as_the_due_mop(
 async def test_partial_work_from_another_run_counts_nothing(hass) -> None:
     ended = RobotEnded("partly_cleaned", "vacuum")
     assert await _settle(hass, ended, run_id="run-2") == (0, False)
+
+
+async def test_partial_work_counts_once_per_run(hass) -> None:
+    ended = RobotEnded("partly_cleaned", "vacuum")
+    assert await _settle(hass, ended, settlements=2) == (1, False)
+
+
+async def test_partial_work_after_the_run_lost_the_robot_counts_nothing(
+    hass,
+) -> None:
+    ended = RobotEnded("partly_cleaned", "vacuum")
+    assert await _settle(hass, ended, current=False) == (0, False)

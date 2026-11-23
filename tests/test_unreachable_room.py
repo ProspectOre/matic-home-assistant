@@ -258,6 +258,16 @@ class _Robot:
 async def _run_plan(hass, robot: _Robot):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
+    mark_robot_ended = manager.async_mark_robot_ended
+    robot.settled_runs = []
+
+    async def record_settled_run(*args, run_id, completion_is_current):
+        robot.settled_runs.append((run_id, completion_is_current()))
+        await mark_robot_ended(
+            *args, run_id=run_id, completion_is_current=completion_is_current
+        )
+
+    manager.async_mark_robot_ended = record_settled_run
     hass.states.async_set("vacuum.matic", "docked", {"current_area": None})
     hass.services.async_register("vacuum", "send_command", robot.send_command)
     events: list = []
@@ -360,6 +370,10 @@ async def test_partly_cleaned_room_ends_without_credit_and_the_plan_moves_on(
     assert "last_partly_cleaned" in kitchen
     assert "unreachable_runs" not in kitchen
     assert "last_completed" not in kitchen  # No credit: the room stays due.
+    # The schedule credit is keyed to this run and fenced by its ownership.
+    run_id = manager._robot("serial")["last_run"]["run_id"]
+    assert run_id
+    assert robot.settled_runs == [(run_id, True)]
 
 
 @pytest.mark.parametrize("stop_reason", ["user_cancelled", "bot_cancelled", None])
