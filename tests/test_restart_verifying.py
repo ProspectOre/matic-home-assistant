@@ -219,7 +219,7 @@ async def test_multiroom_verification_deduplicates_prior_credit(
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
-def _hall_unattempted_record() -> CleaningSessionRecord:
+def _hall_unattempted_record(hall: str = "unattempted") -> CleaningSessionRecord:
     now = dt_util.utcnow()
     return CleaningSessionRecord(
         b"finished",
@@ -234,7 +234,7 @@ def _hall_unattempted_record() -> CleaningSessionRecord:
             ("Kitchen",),
             mode_results=(
                 CleaningModeResult("Kitchen", "vacuum", "completed", 30),
-                CleaningModeResult("Hall", "vacuum", "unattempted", 0),
+                CleaningModeResult("Hall", "vacuum", hall, 0),
             ),
             stop_reason="finished",
         ),
@@ -242,13 +242,17 @@ def _hall_unattempted_record() -> CleaningSessionRecord:
 
 
 @pytest.mark.parametrize(
-    ("owner_skipped", "reason_code"),
-    [(False, "room_unreachable"), (True, "owner_skipped")],
+    ("owner_skipped", "hall", "reason_code"),
+    [
+        (False, "unattempted", "room_unreachable"),
+        (False, "partial", "room_partly_cleaned"),
+        (True, "unattempted", "owner_skipped"),
+    ],
 )
 async def test_recovery_settles_a_room_without_credit_as_the_leg_runner_does(
-    hass, recovery_state, owner_skipped, reason_code
+    hass, recovery_state, owner_skipped, hall, reason_code
 ):
-    """An unattempted or owner-skipped room settles without credit, as live."""
+    """An unreached, partly cleaned or skipped room settles without credit."""
     manager, entry, checkpoint, _ = recovery_state
     checkpoint["rooms"].append(
         asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
@@ -259,7 +263,7 @@ async def test_recovery_settles_a_room_without_credit_as_the_leg_runner_does(
         last_run["skipped_room_ids"] = ["hall"]
     await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
-        _hall_unattempted_record(),
+        _hall_unattempted_record(hall),
     )
     skipped = []
     hass.bus.async_listen("matic_robot_room_skipped", skipped.append)

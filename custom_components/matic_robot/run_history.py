@@ -59,6 +59,7 @@ _ROOM_RESULTS = {
     "ended_unverified": "unconfirmed",
     "skipped": "skipped",
     "unreachable": "unreachable",
+    "partly_cleaned": "partial",
     "running": "running",
     "suspended": "running",
     "verifying": "running",

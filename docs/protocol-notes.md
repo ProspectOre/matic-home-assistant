@@ -37,10 +37,12 @@ holds the decoder.
   `5/6/1/2/5`) do not change the app's answer and are ignored.
 - Cancelling keeps the work already completed.
 - A record without a mission, a floor or a start reason is rejected.
-- The app titles a finished clean whose room was never attempted "Area
-  inaccessible", a clean the robot cancelled "Stopped unexpectedly" and one the
-  user cancelled "Cancelled". The integration reads the first as
-  [a room the robot could not reach](native-cleaning-results.md#rooms-the-robot-could-not-reach).
+- The app titles a finished clean whose room was never attempted or only
+  partly done "Area inaccessible" (the second shown in #566 as a Finished
+  clean with the room "Partially vacuumed"), a clean the robot cancelled
+  "Stopped unexpectedly" and one the user cancelled "Cancelled". The
+  integration reads the first as
+  [a room the robot could not reach or finish](native-cleaning-results.md#rooms-the-robot-could-not-reach-or-finish).
 
 ## Robot errors (`kabuki_state`)
 

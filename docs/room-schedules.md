@@ -88,9 +88,12 @@ A room can also cap how often it's cleaned in a day. In **Clean rooms**, open
 
 ## Understand progress and results
 
-Only confirmed completed room work advances progress. Partial, failed, stopped,
-skipped, and unconfirmed work does not. A due rule stays due until the requested
-mode and coverage are confirmed. When a vacuum rotation is due, it remains due
+Confirmed completed room work advances progress, and so does a room in a plan
+the robot could only partly clean before it finished on its own: it counts as a
+clean, and a mop the robot started counts as the due mop. Failed, stopped,
+skipped and unconfirmed work does not, nor does a room the robot never started.
+Otherwise a due rule stays due until the requested mode and coverage are
+confirmed; partial work never confirms a vacuum level. When a vacuum rotation is due, it remains due
 until Home Assistant can confirm that a clean used the selected setting; it can therefore
 be requested again on later cleans. Delayed results and restart recovery cannot
 count the same clean twice.
