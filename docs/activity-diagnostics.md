@@ -64,7 +64,7 @@ observed. Common reasons include `all_rooms_verified`, `partial_native_result`,
 `restart_` say why [restart recovery](restart-recovery.md) could not continue.
 Room events use `verified_completion` and `unverified_completion` instead;
 `room_ended_unverified` carries `room_unreachable` for a room the robot could
-not reach. `native_task_ended` means the mission the run started ended without
+not reach and `room_partly_cleaned` for one it cleaned only part of. `native_task_ended` means the mission the run started ended without
 proof of completion; `native_task_taken_over` means a different native task
 replaced it.
 `cause: unknown` means the source was not established.

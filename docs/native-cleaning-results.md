@@ -92,22 +92,28 @@ The [OEM replay evidence](native-history-floor-evidence.md) establishes parser
 semantics. [PR #391](https://github.com/ProspectOre/matic-home-assistant/pull/391)
 records the implementation and its independent source and deployment checks.
 
-## Rooms the robot could not reach
+## Rooms the robot could not reach or finish
 
 When a plan sends the robot to a room it cannot reach, such as one behind a
 closed door, the robot ends its mission and docks without entering the room.
 The integration does not treat that as a takeover. It reads the robot's record
 of the mission it started: a new single-room record with the stop reason
 `finished` and every requested mode **unattempted** means the room was
-unreachable. The room's last result becomes `unreachable`, it gets no completion
-credit so it stays due, and the plan moves on to the next room.
+unreachable. The same record with the room attempted but not every requested
+mode **completed** means the robot cleaned what it could reach and gave up on
+the rest: the room was partly cleaned. Either way the room's last result
+becomes `unreachable` or `partly_cleaned`, it gets no completion credit so it
+stays due, and the plan moves on to the next room. The modes the robot started
+in a partly cleaned room count toward the room's mop schedule like any clean:
+a started mop counts as the due mop, and vacuum work alone adds one clean
+toward the next mop. An unreachable room counts for nothing.
 `matic_robot_room_ended_unverified` fires with `reason_code: room_unreachable`
-and `cause: robot`. The plan finishes as `unverified` with
-`partial_native_result`, since that room was not cleaned.
+or `room_partly_cleaned` and `cause: robot`. The plan finishes as `unverified`
+with `partial_native_result`, since that room was not fully cleaned.
 
-Any other ending is not unreachable. A mission the owner cancelled, one the
-robot cancelled, one with no stop reason, or one where the robot reached the
-room ends the plan as before, with `reason_code: native_task_ended`. Only a
+Any other ending is neither. A mission the owner cancelled, one the robot
+cancelled, or one with no stop reason ends the plan as before, with
+`reason_code: native_task_ended`. Only a
 different active native task is reported as `native_task_taken_over`.
 
 The Matic app shows the same record as **Area inaccessible**. In the installed
@@ -115,7 +121,8 @@ app (1.183.1, build 108; base APK SHA-256 `15f1ec48…c979fc546`, arm64 split
 `e7907cb2…dab2e43`), the native `sessionstopreason_title` binding returns
 "Area inaccessible" for `SessionStopReason.Finished`, "Stopped unexpectedly"
 for `BotCancelled`, and "Cancelled" for `UserCancelled`. The reported mission
-showed that title above its unattempted room. The robot's history keeps
+showed that title above its unattempted room, and a mission reported in #566
+showed it above a partly vacuumed room. The robot's history keeps
 `Finished` at stop-reason field `5`, which the integration already decodes.
 How the app chooses where to show the title was not traced.
 

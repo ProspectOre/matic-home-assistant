@@ -22,7 +22,7 @@ from collections.abc import (
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from statistics import median
 from time import monotonic
@@ -93,7 +93,11 @@ from .coverage_accounting import (
     verified_room_coverage,
 )
 from .native_cadence import import_native_cadence
-from .native_completion import is_session_hash, match_single_room_completions
+from .native_completion import (
+    RobotEnded,
+    is_session_hash,
+    match_single_room_completions,
+)
 from .native_completion import native_room_key as _native_room_key
 from .room_identity import room_cadence_identity as room_cadence_identity
 from .room_statistics import (
@@ -5591,20 +5595,77 @@ class CleaningPlanManager:
 
         await self._async_mutate_and_save(serial_number, mutate)
 
-    async def async_mark_unreachable(
-        self, serial_number: str, plan_id: str, room: CleaningRoom
+    async def async_mark_robot_ended(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        ended: RobotEnded,
+        *,
+        run_id: str | None,
+        completion_is_current: Callable[[], bool] | None = None,
     ) -> None:
-        """Close a room the robot could not reach, without credit."""
+        """Close a room the robot could not reach or finish, without credit.
+
+        Work the robot started in a partly cleaned room still counts toward
+        the room's schedule, like any clean, so a started mop counts as the
+        due mop. A room the robot never entered counts for nothing. Like a
+        completion, the credit needs the run to still own the robot, and the
+        run and room's completion id counts it once.
+        """
 
         def mutate() -> bool:
+            now = dt_util.utcnow()
+            robot = self._robot(serial_number)
             record = self._room(serial_number, plan_id, room)
-            record["last_result"] = "unreachable"
-            record["last_unreachable"] = dt_util.utcnow().isoformat()
-            record["unreachable_runs"] = _stored_count(record, "unreachable_runs") + 1
-            self._robot(serial_number)["active_plan"] = None
+            result = ended.result
+            record["last_result"] = result
+            record[f"last_{result}"] = now.isoformat()
+            record[f"{result}_runs"] = _stored_count(record, f"{result}_runs") + 1
+            robot["active_plan"] = None
+            run = robot.get("last_run")
+            checkpoint = (
+                run.get("recovery_checkpoint") if isinstance(run, dict) else None
+            )
+            cadence_by_room = (
+                checkpoint.get("cadence_by_room")
+                if isinstance(checkpoint, dict)
+                else None
+            )
+            completion_id = hashlib.sha256(
+                f"{run_id}:{room.room_id}".encode()
+            ).hexdigest()
+            if (
+                ended.attempted_mode is not None
+                and run_id is not None
+                and isinstance(run, dict)
+                and run.get("run_id") == run_id
+                and run.get("plan_id") == plan_id
+                and run.get("outcome") == "running"
+                and isinstance(cadence_by_room, Mapping)
+                and record.get("partial_credit_id") != completion_id
+                and (completion_is_current is None or completion_is_current())
+            ):
+                # A started mop is the due mop even if the vacuum never ran.
+                mode = (
+                    room.cleaning_mode
+                    if ended.attempted_mode in {"mop", "vacuum_and_mop"}
+                    else ended.attempted_mode
+                )
+                _apply_verified_cadence(
+                    robot,
+                    plan_id,
+                    replace(room, cleaning_mode=mode),
+                    cadence_by_room.get(room.room_id),
+                    completion_id=completion_id,
+                    completed_at=now.timestamp(),
+                )
+                record["partial_credit_id"] = completion_id
             return True
 
-        await self._async_mutate_and_save(serial_number, mutate)
+        await self._async_mutate_and_save(
+            serial_number, mutate, domain_locks=(self.plan_write_lock(serial_number),)
+        )
 
     async def async_mark_failed(
         self,
