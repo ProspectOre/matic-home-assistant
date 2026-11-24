@@ -54,11 +54,15 @@ test("a plan room no longer on the map can be removed in Edit", async ({ page })
   await gallery.getByRole("button", { name: /^Edit / }).click();
   const list = gallery.getByRole("list", { name: "Rooms", exact: true });
   const stale = list.locator("li", { has: page.locator("[data-room-missing]") });
+  const draftIds = async () => (await gallery.evaluate((element) => element.getWorkspaceSnapshot().planDraft.rooms)).map((room) => room.roomId);
+  const before = await draftIds();
+  expect(before).toContain("room-gone");
   // click, not uncheck: the unticked row leaves the list, so its state can't be read back.
   await stale.getByRole("checkbox", { name: "Include Bedroom", exact: true }).click();
 
   await expect(list.locator("[data-room-missing]")).toHaveCount(0);
   const draft = await gallery.evaluate((element) => element.getWorkspaceSnapshot().planDraft);
   expect(draft.dirty).toBe(true);
-  expect(draft.rooms.map((room) => room.roomId)).not.toContain("room-gone");
+  // Only the missing room leaves; the others keep their place.
+  expect(draft.rooms.map((room) => room.roomId)).toEqual(before.filter((id) => id !== "room-gone"));
 });
