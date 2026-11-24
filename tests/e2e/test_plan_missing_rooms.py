@@ -187,4 +187,8 @@ async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
         rooms=[{"room": "Kitchen"}, {"room": "Study"}],
     )
     await hass.async_block_till_done()
+    # Saving the plan without the hall removes it, the 0.6 replacement for
+    # delete_plan_room on a room the map no longer has.
+    saved = [room["room_id"] for room in catalog.plan(serial, PLAN)["rooms"]]
+    assert saved == [kitchen, new_study]
     assert issues.async_get_issue(DOMAIN, issue_id) is None
