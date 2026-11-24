@@ -255,7 +255,7 @@ class _Robot:
         self.hass.states.async_set("vacuum.matic", "docked", {"current_area": None})
 
 
-async def _run_plan(hass, robot: _Robot):
+async def _run_plan(hass, robot: _Robot, *, owns_robot: bool = True):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     mark_robot_ended = manager.async_mark_robot_ended
@@ -263,8 +263,10 @@ async def _run_plan(hass, robot: _Robot):
 
     async def record_settled_run(*args, run_id, completion_is_current):
         robot.settled_runs.append((run_id, completion_is_current()))
-        await mark_robot_ended(
-            *args, run_id=run_id, completion_is_current=completion_is_current
+        return await mark_robot_ended(
+            *args,
+            run_id=run_id,
+            completion_is_current=lambda: owns_robot and completion_is_current(),
         )
 
     manager.async_mark_robot_ended = record_settled_run
@@ -374,6 +376,23 @@ async def test_partly_cleaned_room_ends_without_credit_and_the_plan_moves_on(
     run_id = manager._robot("serial")["last_run"]["run_id"]
     assert run_id
     assert robot.settled_runs == [(run_id, True)]
+
+
+async def test_robot_ended_room_is_not_settled_after_the_run_lost_the_robot(
+    hass,
+) -> None:
+    robot = _Robot(hass, lambda: _session("Kitchen", "partial"), enters_room=True)
+    manager, events, _error = await _run_plan(hass, robot, owns_robot=False)
+
+    # The executor reached the settlement and its fence turned it away.
+    run_id = manager._robot("serial")["last_run"]["run_id"]
+    assert robot.settled_runs == [(run_id, True)]
+    assert len(robot.dispatches) == 1
+    assert "room_partly_cleaned" not in {
+        e["reason_code"] for e in _events(events, "room_ended_unverified")
+    }
+    rooms = manager._robot("serial")["rotations"]["test-plan"]["rooms"]
+    assert "partly_cleaned_runs" not in rooms["room-kitchen"]
 
 
 @pytest.mark.parametrize("stop_reason", ["user_cancelled", "bot_cancelled", None])

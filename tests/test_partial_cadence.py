@@ -26,9 +26,13 @@ async def _settle(
     run_id: str = "run-1",
     settlements: int = 1,
     current: bool = True,
+    scope: str = "plan",
+    active_plan: dict[str, str] | None = None,
+    then_complete: bool = False,
 ):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
+    identities = {ROOM.room_id: "a" * 64}
     await manager.async_save_plan(
         "serial",
         "home",
@@ -41,15 +45,24 @@ async def _settle(
                     "cleaning_mode": "vacuum",
                     "coverage_setting": "standard",
                     "cadence": {
-                        "scope": "plan",
+                        "scope": scope,
                         "mop_every_n": 3,
                         "do_mop_next": mop_next,
                     },
                 }
             ],
         },
+        floor_token="f" * 64,
+        room_identities=identities,
     )
-    rooms, snapshots = manager.resolve_cadence("serial", "home", [ROOM])
+    rooms, snapshots = manager.resolve_cadence(
+        "serial",
+        "home",
+        [ROOM],
+        floor_token="f" * 64,
+        room_identities=identities,
+        use_shared_schedule=scope == "shared",
+    )
     assert snapshots[ROOM.room_id]["mop_due"] is mop_next
     await manager.async_begin_run(
         "serial", "home", "run-1", 1, trigger="user", service="test"
@@ -59,24 +72,47 @@ async def _settle(
         "run-1",
         {"cadence_by_room": dict(snapshots), "completed_room_ids": []},
     )
+    if active_plan is not None:
+        manager._robot("serial")["active_plan"] = dict(active_plan)
     for _ in range(settlements):
-        await manager.async_mark_robot_ended(
-            "serial",
-            "home",
-            rooms[0],
-            ended,
-            run_id=run_id,
-            completion_is_current=lambda: current,
+        assert (
+            await manager.async_mark_robot_ended(
+                "serial",
+                "home",
+                rooms[0],
+                ended,
+                run_id=run_id,
+                completion_is_current=lambda: current,
+            )
+            is current
+        )
+    if then_complete:
+        # The robot cleans the same room again later in the run.
+        assert await manager.async_mark_completed(
+            "serial", "home", rooms[0], run_id="run-1"
         )
     robot = manager._robot("serial")
-    record = robot["rotations"]["home"]["rooms"][ROOM.room_id]
-    assert record["last_result"] == ended.result
-    assert "last_completed" not in record  # Never counted as cleaned.
-    progress = (
-        robot["plan_room_cadence"].get("home", {}).get(ROOM.room_id, {}).get("progress")
+    if active_plan is not None:
+        # Only this run's own active plan is cleared.
+        owned = (active_plan["plan_id"], active_plan["run_id"]) == ("home", run_id)
+        cleared = current and owned
+        assert robot["active_plan"] == (None if cleared else active_plan)
+    rotation = robot["rotations"].get("home", {"rooms": {}})
+    record = rotation["rooms"].get(ROOM.room_id, {})
+    # Partial work is never counted as cleaning the room.
+    assert ("last_completed" in record) is then_complete
+    if current:
+        assert record["last_result"] == ("completed" if then_complete else ended.result)
+        assert record[f"{ended.result}_runs"] == settlements
+    else:
+        assert "last_result" not in record  # Nothing written for a lost run.
+    policy = (
+        robot["shared_room_cadence"][ROOM.room_id]["policy"]
+        if scope == "shared"
+        else robot["plans"]["home"]["rooms"][0]["cadence"]
     )
-    mop = progress["mop"] if progress else 0
-    return mop, robot["plans"]["home"]["rooms"][0]["cadence"]["do_mop_next"]
+    mop = manager.cadence_progress("serial", "home", ROOM.room_id)["mop"]
+    return mop, policy.get("do_mop_next", False)
 
 
 @pytest.mark.parametrize(
@@ -117,7 +153,27 @@ async def test_partial_work_from_another_run_counts_nothing(hass) -> None:
 
 async def test_partial_work_counts_once_per_run(hass) -> None:
     ended = RobotEnded("partly_cleaned", "vacuum")
-    assert await _settle(hass, ended, settlements=2) == (1, False)
+    assert (await _settle(hass, ended, settlements=2))[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("attempted", "mop_next", "expected"),
+    [
+        ("vacuum", False, (1, False)),
+        ("vacuum", True, (2, True)),
+        ("mop", True, (0, False)),
+    ],
+)
+async def test_partial_work_counts_toward_a_shared_schedule(
+    hass, attempted, mop_next, expected
+) -> None:
+    ended = RobotEnded("partly_cleaned", attempted)
+    assert await _settle(hass, ended, mop_next=mop_next, scope="shared") == expected
+
+
+async def test_partial_work_counts_once_per_run_on_a_shared_schedule(hass) -> None:
+    ended = RobotEnded("partly_cleaned", "vacuum")
+    assert (await _settle(hass, ended, settlements=2, scope="shared"))[0] == 1
 
 
 async def test_partial_work_after_the_run_lost_the_robot_counts_nothing(
@@ -125,3 +181,28 @@ async def test_partial_work_after_the_run_lost_the_robot_counts_nothing(
 ) -> None:
     ended = RobotEnded("partly_cleaned", "vacuum")
     assert await _settle(hass, ended, current=False) == (0, False)
+
+
+@pytest.mark.parametrize(
+    "active_plan",
+    [
+        {"plan_id": "home", "run_id": "run-1", "room_id": ROOM.room_id},
+        {"plan_id": "home", "run_id": "run-2", "room_id": ROOM.room_id},
+        {"plan_id": "other", "run_id": "run-1", "room_id": ROOM.room_id},
+    ],
+    ids=["this-run", "another-run", "another-plan"],
+)
+@pytest.mark.parametrize("current", [True, False])
+async def test_settling_clears_only_this_runs_active_plan(
+    hass, active_plan, current
+) -> None:
+    ended = RobotEnded("partly_cleaned", "vacuum")
+    await _settle(hass, ended, current=current, active_plan=active_plan)
+
+
+@pytest.mark.parametrize("scope", ["plan", "shared"])
+async def test_a_later_completion_in_the_run_counts_as_a_second_clean(
+    hass, scope
+) -> None:
+    ended = RobotEnded("partly_cleaned", "vacuum")
+    assert await _settle(hass, ended, scope=scope, then_complete=True) == (2, False)
