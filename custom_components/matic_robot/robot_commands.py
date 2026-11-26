@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
 from functools import partial
@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError
 
 from .area_binding import AreaBindingStatus, area_binding_status
 from .client import (
@@ -30,10 +30,7 @@ from .plan_model import (
     resolve_room_reference,
     room_cadence_identity,
 )
-from .stop_return import (
-    async_clear_ownerless_stop_if_settled,
-    schedule_dock_after_stop,
-)
+from .stop_return import ensure_stop_settled, schedule_dock_after_stop
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry, MaticRuntimeData
@@ -241,21 +238,14 @@ class RobotCommands:
 
     async def async_ensure_stop_settled(self, serial_number: str) -> None:
         """Reject new motion while the firmware's graceful STOP is counting down."""
-        if not self._plans.control.stop_pending(serial_number):
-            return
-        if self._entity_id is not None and await async_clear_ownerless_stop_if_settled(
+        await ensure_stop_settled(
             self._hass,
-            native_active=self._session.client.async_get_active_cleaning_session_state,
-            fresh_state=self._session.client.async_get_state,
-            manager=self._plans,
-            serial_number=serial_number,
-            entity_id=self._entity_id,
-        ):
-            return
-        raise ServiceValidationError(
-            "The robot is stopping; wait until it docks",
-            translation_domain=DOMAIN,
-            translation_key="robot_stop_pending",
+            self._plans,
+            serial_number,
+            self._entity_id,
+            # Read the client only once a stop is pending.
+            lambda: self._session.client.async_get_active_cleaning_session_state(),
+            lambda: self._session.client.async_get_state(),
         )
 
     def floor_plan(self) -> FloorPlan:
@@ -428,7 +418,14 @@ class RobotCommands:
             # The client invokes this only after STOP bytes reached the
             # transport. Start settlement watching before the partial
             # dispatch error unwinds to managed-plan cleanup.
-            self.schedule_dock_after_stop(serial_number, run_id=stop_fence_run_id)
+            schedule_dock_after_stop(
+                self._hass,
+                self._entry,
+                self._plans,
+                serial_number,
+                self._entity_id,
+                run_id=stop_fence_run_id,
+            )
 
         try:
             return await self._session.client.async_start_mixed_coverage(
@@ -607,38 +604,6 @@ class RobotCommands:
                     translation_key="robot_command_failed",
                 ) from err
             await self._session.heartbeat.async_request_refresh()
-
-    def schedule_dock_after_stop(
-        self, serial_number: str, *, run_id: str | None = None
-    ) -> None:
-        """Dock the robot as soon as its accepted stop settles."""
-        if self._entity_id is None:
-            return
-        on_docked: Callable[[], Awaitable[bool | None]] | None = None
-        if run_id is not None:
-            stop_fence_token = self._plans.control.stop_fence_token(serial_number)
-
-            async def mark_docked() -> bool:
-                return await self._plans.ledger.async_mark_run_docked(
-                    serial_number,
-                    run_id,
-                    entity_id=self._entity_id,
-                    stop_fence_token=stop_fence_token,
-                )
-
-            on_docked = mark_docked
-        schedule_dock_after_stop(
-            self._hass,
-            client=self._session.client,
-            refresh=self._session.heartbeat.async_request_refresh,
-            manager=self._plans,
-            serial_number=serial_number,
-            entity_id=self._entity_id,
-            run_id=run_id,
-            set_run_id=self._session.client.activity_journal.set_run_id,
-            get_run_id=self._session.client.activity_journal.current_run_id,
-            on_docked=on_docked,
-        )
 
     def resolve_rooms(self, identifiers: list[str]) -> list[Room]:
         if not identifiers:

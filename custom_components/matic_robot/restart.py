@@ -31,7 +31,6 @@ from .const import DOMAIN
 from .coverage_accounting import async_confirm_completed_coverage
 from .managed_dispatch import (
     async_managed_user_command,
-    schedule_managed_dock_after_stop,
     schedule_run_dock_confirmation,
     shutdown_suspends_run,
 )
@@ -63,6 +62,7 @@ from .run_machine import (
     transition,
 )
 from .service_names import SERVICE_RUN_SELECTED_PLAN
+from .stop_return import schedule_dock_after_stop
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry, MaticRuntimeData
@@ -196,8 +196,8 @@ async def _async_stop_interrupted_mixed_dispatch(
             if transmitted:
                 manager.control.request_stop(serial_number)
                 manager.control.end_managed_motion(serial_number, token)
-                schedule_managed_dock_after_stop(
-                    hass, entry, manager, serial_number, entity_id, run_id, None
+                schedule_dock_after_stop(
+                    hass, entry, manager, serial_number, entity_id, run_id=run_id
                 )
             else:
                 await manager.recovery.async_rollback_mixed_dispatch_stop(
@@ -221,8 +221,8 @@ async def _async_stop_interrupted_mixed_dispatch(
                 raise
         manager.control.request_stop(serial_number)
         manager.control.end_managed_motion(serial_number, token)
-        schedule_managed_dock_after_stop(
-            hass, entry, manager, serial_number, entity_id, run_id, None
+        schedule_dock_after_stop(
+            hass, entry, manager, serial_number, entity_id, run_id=run_id
         )
         await runtime.session.heartbeat.async_request_refresh()
     return "restart_mixed_dispatch_stop_requested"
@@ -251,8 +251,8 @@ def _restore_stop_settlement(
         and entity_id is not None
         and not manager.control.dock_reconciliation_active(serial_number)
     ):
-        schedule_managed_dock_after_stop(
-            hass, entry, manager, serial_number, entity_id, owner, None
+        schedule_dock_after_stop(
+            hass, entry, manager, serial_number, entity_id, run_id=owner
         )
 
 

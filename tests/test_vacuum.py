@@ -12,7 +12,7 @@ from uuid import UUID
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.matic_robot import robot_commands, vacuum
+from custom_components.matic_robot import vacuum
 from custom_components.matic_robot.area_binding import binding_for_area
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.client.commands import (
@@ -678,7 +678,7 @@ async def test_stop_retains_run_id_when_run_finishes_during_checkpoint(hass) -> 
         await checkpoint(serial, behavior, **kwargs)
 
     manager.recovery.async_checkpoint_stop_intent = delayed_checkpoint
-    with patch.object(robot_commands, "schedule_dock_after_stop") as schedule_dock:
+    with patch.object(vacuum, "schedule_dock_after_stop") as schedule_dock:
         stop = asyncio.create_task(entity.async_stop())
         try:
             await checkpoint_started.wait()

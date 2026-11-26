@@ -12,6 +12,7 @@ from uuid import UUID
 import pytest
 from google.protobuf.message import DecodeError
 
+from custom_components.matic_robot import robot_commands
 from custom_components.matic_robot.client import MaticHermesClient
 from custom_components.matic_robot.client import wire as wire_module
 from custom_components.matic_robot.client.commands import (
@@ -54,7 +55,6 @@ from custom_components.matic_robot.client.wire import (
 from custom_components.matic_robot.plan_model import (
     CleaningRoom,
 )
-from custom_components.matic_robot.robot_commands import RobotCommands
 from tests.plans.fakes import memory_manager, recovery_record
 from tests.session_fakes import FakeRobot, managed_clean_rooms
 from tests.wire_builders import _field, _varint_field
@@ -1829,7 +1829,7 @@ async def test_entity_mixed_dispatch_guards(hass, failure, monkeypatch):
     client = entry.runtime_data.session.client
     client.async_start_mixed_coverage = AsyncMock(side_effect=send)
     schedule_dock = Mock()
-    monkeypatch.setattr(RobotCommands, "schedule_dock_after_stop", schedule_dock)
+    monkeypatch.setattr(robot_commands, "schedule_dock_after_stop", schedule_dock)
 
     def clean():
         return managed_clean_rooms(
@@ -1890,7 +1890,9 @@ async def test_entity_mixed_dispatch_guards(hass, failure, monkeypatch):
             "synthetic-serial", run_id=None
         )
     if failure == "transmitted_stop":
-        schedule_dock.assert_called_once_with("synthetic-serial", run_id=None)
+        schedule_dock.assert_called_once()
+        assert schedule_dock.call_args.args[3] == "synthetic-serial"
+        assert schedule_dock.call_args.kwargs == {"run_id": None}
 
 
 async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):

@@ -287,7 +287,10 @@ async def interrupted_run(
     heartbeat = SimpleNamespace(
         async_request_refresh=AsyncMock(), async_confirm_room_completed=MagicMock()
     )
-    session = SimpleNamespace(floor=SimpleNamespace(value=floor), heartbeat=heartbeat)
+    # The session holds the entry's one client, as in production.
+    session = SimpleNamespace(
+        floor=SimpleNamespace(value=floor), heartbeat=heartbeat, client=client
+    )
     session.state, session.error = robot.state, robot.error
     slam_map = SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True))
     runtime = SimpleNamespace(

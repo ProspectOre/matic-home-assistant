@@ -21,14 +21,18 @@ from collections.abc import Awaitable, Callable
 from enum import Enum, auto
 from functools import partial
 from time import monotonic
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 
 from .client import MaticError, UserCommand
 from .const import DOMAIN
 from .native_history import OEM_STOP_FENCE_SECONDS
 from .plans import CleaningPlanManager
+
+if TYPE_CHECKING:
+    from . import MaticConfigEntry
 
 DOCK_SETTLE_POLL_SECONDS = 3
 DOCK_SETTLE_TIMEOUT_SECONDS = OEM_STOP_FENCE_SECONDS
@@ -347,39 +351,119 @@ async def async_dock_when_stop_settles(
             set_run_id(None)
 
 
-def schedule_dock_after_stop(
-    hass: HomeAssistant,
-    *,
-    client: StopReturnClient,
-    refresh: Callable[[], Awaitable[None]],
+async def async_send_stop(
+    entry: MaticConfigEntry,
     manager: CleaningPlanManager,
     serial_number: str,
-    entity_id: str,
-    run_id: str | None = None,
-    set_run_id: Callable[[str | None], None] | None = None,
-    get_run_id: Callable[[], str | None] | None = None,
-    on_docked: Callable[[], Awaitable[bool | None]] | None = None,
+    run_id: str | None,
 ) -> None:
-    """Start a lifecycle-bound watcher that docks a settled stop."""
+    """Send STOP and fence new motion until it settles.
+
+    The caller holds the command lease and calls ``schedule_dock_after_stop``
+    once it has released it.
+    """
+    session = entry.runtime_data.session
+    await session.client.async_send_user_command(UserCommand.STOP)
+    await manager.control.async_mark_stop_pending(serial_number, run_id=run_id)
+    await session.heartbeat.async_request_refresh()
+
+
+def schedule_dock_after_stop(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str | None,
+    *,
+    run_id: str | None,
+    context: Context | None = None,
+) -> None:
+    """Dock once the robot reports the accepted STOP settled, then close ``run_id``.
+
+    Without ``run_id`` the stop's own fence clears once the robot is home. It
+    needs the vacuum's state, so nothing is watched before the vacuum is added.
+    """
+    if entity_id is None:
+        return
+    session = entry.runtime_data.session
+    journal = session.client.activity_journal
     stop_fence_token = manager.control.stop_fence_token(serial_number)
     task = hass.async_create_background_task(
         async_dock_when_stop_settles(
             hass,
-            client=client,
-            refresh=refresh,
+            client=session.client,
+            refresh=session.heartbeat.async_request_refresh,
             manager=manager,
             serial_number=serial_number,
             entity_id=entity_id,
             run_id=run_id,
-            set_run_id=set_run_id,
-            get_run_id=get_run_id,
-            on_docked=on_docked,
+            set_run_id=journal.set_run_id,
+            get_run_id=journal.current_run_id,
+            on_docked=None
+            if run_id is None
+            else partial(
+                async_mark_run_docked,
+                manager,
+                serial_number,
+                run_id,
+                entity_id,
+                context,
+                stop_fence_token,
+            ),
             stop_fence_token=stop_fence_token,
         ),
         f"{DOMAIN} dock after stop",
     )
     manager.control.register_reconciliation_task(
         serial_number, task, dock=True, run_id=run_id
+    )
+
+
+async def async_mark_run_docked(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    run_id: str,
+    entity_id: str,
+    context: Context | None,
+    stop_fence_token: int | None = None,
+) -> bool:
+    """Close ``run_id`` at the dock; with ``stop_fence_token``, only its own stop."""
+    return await manager.ledger.async_mark_run_docked(
+        serial_number,
+        run_id,
+        entity_id=entity_id,
+        context=context,
+        stop_fence_token=stop_fence_token,
+    )
+
+
+async def ensure_stop_settled(
+    hass: HomeAssistant,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str | None,
+    native_active: Callable[[], Awaitable[bool | None]],
+    fresh_state: Callable[[], Awaitable[object]],
+) -> None:
+    """Refuse new motion while the robot's STOP countdown is still running.
+
+    A stop no run owns clears here once the robot reports it settled at home.
+    """
+    if not manager.control.stop_pending(serial_number):
+        return
+    if entity_id is not None and await async_clear_ownerless_stop_if_settled(
+        hass,
+        native_active=native_active,
+        fresh_state=fresh_state,
+        manager=manager,
+        serial_number=serial_number,
+        entity_id=entity_id,
+    ):
+        return
+    raise ServiceValidationError(
+        "The robot is stopping; wait until it docks",
+        translation_domain=DOMAIN,
+        translation_key="robot_stop_pending",
     )
 
 

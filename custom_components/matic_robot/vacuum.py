@@ -18,6 +18,8 @@ from .const import DOMAIN
 from .entity import MaticEntity
 from .managed_run import validation_error
 from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
+from .stop_request import admit_stop
+from .stop_return import async_send_stop, schedule_dock_after_stop
 from .stores import Store
 from .vacuum_catalog import FloorSegmentCatalog
 
@@ -167,37 +169,28 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         """Stop now or finish the active room according to the plan policy."""
         self._config_entry.runtime_data.photo_tours.stop()
         serial_number = self.session.info.serial_number
-        run_id: str | None = None
-        async with self._plans.control.external_command(serial_number):
-            run_id = self._plans.ledger.active_run_id(serial_number)
-            decision = self._plans.control.request_stop(serial_number)
-            expected_generation = self._plans.control.motion_generation(serial_number)
-            expected_stop_generation = self._plans.control.stop_request_generation(
-                serial_number
-            )
-            await self._plans.recovery.async_checkpoint_stop_intent(
-                serial_number, decision.behavior, run_id=run_id
-            )
-            if decision.behavior == "after_room" or (
-                self._plans.control.motion_generation(serial_number)
-                != expected_generation
-                or self._plans.control.stop_request_generation(serial_number)
-                != expected_stop_generation
-            ):
+        control = self._plans.control
+        async with admit_stop(self._plans, serial_number) as admitted:
+            if admitted is None or admitted.behavior == "after_room":
                 return
-            with self._plans.control.managed_stop_dispatch(serial_number):
-                generation = await self._plans.control.async_replace_managed_motion(
-                    serial_number
-                )
+            with control.managed_stop_dispatch(serial_number):
+                generation = await control.async_replace_managed_motion(serial_number)
             self._commands.require_motion_generation(serial_number, generation)
             self._commands.require_stop_request_generation(
-                serial_number, expected_stop_generation
+                serial_number, admitted.stop_generation
             )
             self.session.heartbeat.async_discard_current_room()
-            await self._commands.async_dispatch_admitted_command(
-                UserCommand.STOP, run_id=run_id
+            await async_send_stop(
+                self._config_entry, self._plans, serial_number, admitted.run_id
             )
-        self._commands.schedule_dock_after_stop(serial_number, run_id=run_id)
+        schedule_dock_after_stop(
+            self.hass,
+            self._config_entry,
+            self._plans,
+            serial_number,
+            self.entity_id,
+            run_id=admitted.run_id,
+        )
 
     async def async_return_to_base(self, **kwargs: object) -> None:
         """Send the robot to its dock and end any task driving it."""
@@ -253,18 +246,23 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 # as soon as that task actually settles instead of waiting out
                 # firmware's ten-minute countdown.
                 self.session.heartbeat.async_discard_current_room()
-                await self.session.client.async_send_user_command(UserCommand.STOP)
-                await self._plans.control.async_mark_stop_pending(
-                    serial_number, run_id=run_id
+                await async_send_stop(
+                    self._config_entry, self._plans, serial_number, run_id
                 )
-                await self.session.heartbeat.async_request_refresh()
                 stopped = True
             else:
                 await self.session.client.async_send_user_command(UserCommand.DOCK)
                 await self.session.heartbeat.async_request_refresh()
                 stopped = False
         if stopped:
-            self._commands.schedule_dock_after_stop(serial_number, run_id=run_id)
+            schedule_dock_after_stop(
+                self.hass,
+                self._config_entry,
+                self._plans,
+                serial_number,
+                self.entity_id,
+                run_id=run_id,
+            )
 
     async def async_redo_last_clean(self) -> None:
         """Clean the most recent finished clean again, as the Matic app does."""
