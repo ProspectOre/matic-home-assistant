@@ -176,7 +176,6 @@ async def async_dispatch_leg_command(
     """Start one owned leg mission and keep what its completion is judged by.
 
     A custom area leg is its own mission, started with the same ownership.
-    Setting ``cancel_event`` ends the history read before the start at once.
     """
     area = rooms if isinstance(rooms, AreaLeg) else None
     leg = () if isinstance(rooms, AreaLeg) else tuple(rooms)
@@ -184,13 +183,8 @@ async def async_dispatch_leg_command(
         raise managed_run.validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    history_baseline = await managed_run.async_unless_cancelled(
-        _async_dispatch_history_baseline(
-            robot,
-            tracked=on_claim is not None,
-            expected_hashes=expected_dispatch_history,
-        ),
-        cancel_event,
+    history_baseline = await _async_dispatch_history_baseline(
+        robot, on_claim is not None, expected_dispatch_history, cancel_event
     )
     identity_baseline: bytes | None = None
     for attempt in range(observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
@@ -316,7 +310,10 @@ async def async_dispatch_leg_command(
 
 
 async def _async_dispatch_history_baseline(
-    robot: RobotPort, *, tracked: bool, expected_hashes: frozenset[str] | None
+    robot: RobotPort,
+    tracked: bool,
+    expected_hashes: frozenset[str] | None,
+    cancel_event: asyncio.Event | None,
 ) -> frozenset[bytes] | None:
     """Read the history keys a dispatch is judged by; None when it needs none.
 
@@ -324,14 +321,18 @@ async def _async_dispatch_history_baseline(
     that exact identity back, so it verifies its result without old history,
     which can then be empty, slow or unreadable. An untracked dispatch and a
     handoff still read it, and a handoff's keys must match ``expected_hashes``.
+    Setting ``cancel_event`` ends the read at once.
     """
     if tracked and expected_hashes is None:
         return None
     try:
-        baseline = await robot.history_keys(
-            handoff=expected_hashes is not None,
-            expected_hashes=expected_hashes,
-            raise_incomplete=True,
+        baseline = await managed_run.async_unless_cancelled(
+            robot.history_keys(
+                handoff=expected_hashes is not None,
+                expected_hashes=expected_hashes,
+                raise_incomplete=True,
+            ),
+            cancel_event,
         )
     except NativeHistoryIncompleteError as err:
         raise NativeHistoryIncompleteBaselineError from err
