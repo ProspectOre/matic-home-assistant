@@ -1,6 +1,7 @@
 """One managed leg: dispatch, start, suspension, errors and cancellation."""
 
 import asyncio
+import hashlib
 from contextlib import nullcontext
 from datetime import timedelta
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
     PreparedRoomDispatch,
     RoomRunOutcome,
+    RoomTakenOverError,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.robot_commands import CleanRooms
@@ -61,6 +63,86 @@ async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
     assert command.motion_token == 7
     assert command.floor_token == "a" * 64
     assert isinstance(command.session_id, UUID)
+
+
+KEPT = (SimpleNamespace(key=b"kept"),)
+KEPT_HASHES = frozenset({hashlib.sha256(b"kept").hexdigest()})
+
+
+async def _dispatch_handoff(
+    robot: FakeRobot,
+    steps: list[str],
+    identity: bytes | None = None,
+    **overrides: object,
+) -> PreparedRoomDispatch:
+    """Dispatch a handoff leg, recording the dispatching save and the claim."""
+
+    async def dispatching() -> None:
+        steps.append("dispatching")
+
+    async def claim(_session_id: str) -> None:
+        steps.append("claim")
+
+    arguments: dict[str, object] = {
+        "floor_token": "floor",
+        "on_claim": claim,
+        "on_dispatching": dispatching,
+        "expected_dispatch_identity": b"",
+        "expected_dispatch_history": KEPT_HASHES,
+        **overrides,
+    }
+    return await async_dispatch_leg_command(
+        robot.port(
+            session_identity=(
+                robot.owned if identity is None else AsyncMock(return_value=identity)
+            ),
+            session_history=AsyncMock(return_value=KEPT),
+        ),
+        [plan_room("Kitchen", "room-kitchen")],
+        7,
+        **arguments,
+    )
+
+
+async def test_dispatch_saves_dispatching_after_its_checks_then_claims_and_starts(
+    hass,
+) -> None:
+    robot = FakeRobot()
+    steps: list[str] = []
+
+    async def started(_command: object) -> None:
+        steps.append("start")
+
+    robot.on_start = started
+
+    dispatch = await _dispatch_handoff(robot, steps)
+
+    assert steps == ["dispatching", "claim", "start"]
+    assert dispatch.history_baseline == frozenset({b"kept"})
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        {"expected_dispatch_history": frozenset({hashlib.sha256(b"x").hexdigest()})},
+        # Another mission started after the previous one ended.
+        {"identity": b"another-mission"},
+        # The map changes while the dispatch reads the robot's session.
+        {"floor_is_current": MagicMock(side_effect=[True, False])},
+    ],
+    ids=["history-changed", "identity-changed", "floor-changed"],
+)
+async def test_dispatch_saves_nothing_when_its_handoff_boundary_fails(
+    hass, boundary
+) -> None:
+    robot = FakeRobot()
+    steps: list[str] = []
+
+    with pytest.raises((RoomTakenOverError, ServiceValidationError)):
+        await _dispatch_handoff(robot, steps, **boundary)
+
+    assert steps == []
+    assert robot.started == []
 
 
 async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
