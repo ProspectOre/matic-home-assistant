@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 from homeassistant.const import ATTR_ENTITY_ID
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
@@ -44,7 +44,7 @@ async def test_action_returns_once_the_robot_starts_and_the_run_goes_on(
 ) -> None:
     finished: list[dict[str, Any]] = []
     hass.bus.async_listen(
-        EVENT_PLAN_FINISHED, lambda event: finished.append(dict(event.data))
+        EVENT_PLAN_FINISHED, callback(lambda event: finished.append(dict(event.data)))
     )
     run_id = await _start(hass, plan)
     # The action returned with the one start command sent and the run going.
@@ -111,7 +111,7 @@ async def test_a_run_the_robot_has_outlives_its_cancelled_caller(
 ) -> None:
     finished: list[dict[str, Any]] = []
     hass.bus.async_listen(
-        EVENT_PLAN_FINISHED, lambda event: finished.append(dict(event.data))
+        EVENT_PLAN_FINISHED, callback(lambda event: finished.append(dict(event.data)))
     )
     call = _call_and_wait(hass)
     async with asyncio.timeout(10):

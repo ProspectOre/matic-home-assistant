@@ -167,10 +167,12 @@ class PlanRun:
 
         self.hass.bus.async_listen(f"{DOMAIN}_room_started", room_started)
         self.hass.bus.async_listen(
-            EVENT_PLAN_FINISHED, lambda event: self.finished.append(dict(event.data))
+            EVENT_PLAN_FINISHED,
+            callback(lambda event: self.finished.append(dict(event.data))),
         )
         self.hass.bus.async_listen(
-            EVENT_PLAN_DOCKED, lambda event: self.docked.append(dict(event.data))
+            EVENT_PLAN_DOCKED,
+            callback(lambda event: self.docked.append(dict(event.data))),
         )
         # A release older than the background start, in the upgrade drill,
         # has no response and always waits.

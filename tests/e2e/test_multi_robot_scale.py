@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from PIL import Image
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -80,7 +80,7 @@ async def test_three_robot_camera_tours_stay_isolated_across_reload(
     mapped_floors: list[tuple[SimFloor, SimFloor]] = []
     events: list[dict[str, object]] = []
     hass.bus.async_listen(
-        f"{DOMAIN}_photo_taken", lambda event: events.append(dict(event.data))
+        f"{DOMAIN}_photo_taken", callback(lambda event: events.append(dict(event.data)))
     )
 
     try:

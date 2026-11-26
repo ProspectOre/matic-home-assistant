@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.components.vacuum.const import SERVICE_SEND_COMMAND
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 from PIL import Image
@@ -109,7 +109,9 @@ async def test_tour_photo_crosses_the_real_client_and_private_http_view(
     await poll(hass, loaded_entry, robot)
 
     events: list[dict[str, object]] = []
-    hass.bus.async_listen(PHOTO_EVENT, lambda event: events.append(dict(event.data)))
+    hass.bus.async_listen(
+        PHOTO_EVENT, callback(lambda event: events.append(dict(event.data)))
+    )
 
     result = await _tour(hass, "Study")
     await hass.async_block_till_done()
