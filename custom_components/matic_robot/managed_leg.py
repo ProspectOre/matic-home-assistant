@@ -16,9 +16,8 @@ from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from functools import partial
-from typing import Any, Literal, NoReturn
+from typing import Any, NoReturn
 
-from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
@@ -28,10 +27,9 @@ from . import managed_observation as observation
 from . import managed_reconciliation as history_reconciliation
 from . import managed_run
 from .client import CoverageGuardError, MaticError, RobotActivity, UserCommand
-from .const import DOMAIN
-from .coverage_accounting import async_confirm_completed_coverage
 from .grouped_native_reconciliation import build_grouped_native_reconciliation
 from .leg_finish import async_end_after_current_room
+from .leg_settlement import LegSettlement, RoomResult, fire_room_event
 from .managed_run import (
     NativeTaskEndedError,
     PlanCancelledError,
@@ -47,49 +45,9 @@ from .plan_model import CleaningRoom
 from .plans import CleaningPlanManager
 from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError, evidence_is_current
-from .run_machine import CheckpointWrite, LegVerifying, RoomSettled, RunEvent
-
-type RoomResult = Literal[
-    "started",
-    "completed",
-    "skipped",
-    "ended_unverified",
-    "cancelled",
-    "interrupted",
-    "failed",
-]
+from .run_machine import CheckpointWrite, LegVerifying, RunEvent
 
 _SUSPENDED = frozenset({"paused", "low_charge"})
-_OWNERSHIP_CHANGED = "Run ownership changed before the room result could be recorded"
-
-
-def fire_room_event(
-    hass: HomeAssistant,
-    call: ServiceCall,
-    entity_id: str,
-    room: CleaningRoom,
-    result: RoomResult,
-    *,
-    run_id: str | None,
-    provenance: str,
-    **fields: str,
-) -> None:
-    """Announce one room's outcome as the ``matic_robot_room_<result>`` event."""
-    hass.bus.async_fire(
-        f"{DOMAIN}_room_{result}",
-        {
-            ATTR_ENTITY_ID: entity_id,
-            "plan_id": call.data["plan_id"],
-            "room_id": room.room_id,
-            "room": room.name,
-            "cleaning_mode": room.cleaning_mode,
-            "coverage_setting": room.coverage_setting,
-            "run_id": run_id,
-            "provenance": provenance,
-            **fields,
-        },
-        context=call.context,
-    )
 
 
 def withheld_room_ids(
@@ -795,124 +753,62 @@ class _LegRun:
             self.floor_is_current,
         )
 
-    async def async_settle_uncredited(
-        self,
-        room: CleaningRoom,
-        result: Literal["skipped"] | RobotEnded,
-        **fields: str,
-    ) -> None:
-        """Settle a room without credit, as a credit would, while the run owns it."""
-        if not await self.manager.ledger.async_mark_settled(
-            self.serial_number,
-            self.plan_id,
-            room,
-            result,
-            run_id=self.run_id,
-            completion_is_current=self.evidence_is_current,
-        ):
-            raise PlanCancelledError(_OWNERSHIP_CHANGED)
-        await self.advance(RoomSettled(room.room_id))
-        self.announce(room, "skipped", **fields)
-
     async def async_settle(self) -> bool:
-        """Credit, skip, cancel or leave due each room; return if all settled."""
-        credited = self.credited
-        session_hash = (
-            self.completion_sessions[-1] if self.completion_sessions else None
-        )
-        verified_coverage = (
-            await async_confirm_completed_coverage(
-                self.manager.recovery.coverage_receipt(self.serial_number, self.run_id),
-                session_hash,
-                self.robot.coverage_verifier,
-            )
-            if credited
-            else None
-        )
-        # A one-room leg reads the owner's skips only when history left it due.
-        skipped = (
-            self.skipped_room_ids()
-            if len(credited) < len(self.leg) and not (self.single and self.robot_ended)
-            else ()
-        )
-        marker = None if self.single else self.late_marker(tuple(credited))
+        """Settle the leg's rooms; a multi-room leg watches late history."""
+        marker = None
         marker_saved = False
+
+        def build_marker() -> None:
+            nonlocal marker
+            if not self.single:
+                marker = self.late_marker(tuple(self.credited))
+
         ledger = self.manager.ledger
-        for room in self.leg:
-            if room.room_id in credited:
-                completed_at, duration_seconds = credited[room.room_id]
-                if not await ledger.async_mark_completed(
+
+        async def record_unverified(room: CleaningRoom) -> bool:
+            nonlocal marker, marker_saved
+            if self.single:
+                return await ledger.async_mark_ended_unverified(
+                    self.serial_number, self.plan_id, room
+                )
+            async with dispatch_control.managed_reconciliation_guard(
+                self.manager, self.serial_number, self.motion_token
+            ) as owned:
+                if not owned or (
+                    self.floor_is_current is not None and not self.floor_is_current()
+                ):
+                    marker = None
+                await ledger.async_mark_ended_unverified(
                     self.serial_number,
                     self.plan_id,
                     room,
-                    run_id=self.run_id,
-                    completed_at=completed_at,
-                    duration_seconds=duration_seconds,
-                    verified_coverage_receipt=verified_coverage,
-                    completion_session_hash=session_hash,
-                    completion_is_current=self.evidence_is_current,
-                ):
-                    raise PlanCancelledError(_OWNERSHIP_CHANGED)
-                self.robot.confirm_room_completed(room.name)
-                if self.record_room_completed is not None:
-                    self.record_room_completed(room)
-                self.announce(room, "completed", reason_code="verified_completion")
-            elif self.run_id is not None and room.room_id in skipped:
-                # Skipped without credit, but settled, so the run goes on.
-                await self.async_settle_uncredited(
-                    room, "skipped", reason_code="owner_skipped"
+                    **self.stored_marker(None if marker_saved else marker),
                 )
-            elif self.ending_early() and room.room_id not in self.observed_ids:
-                await ledger.async_mark_cancelled(
-                    self.serial_number, self.plan_id, room
-                )
-                self.announce(
-                    room,
-                    "cancelled",
-                    reason_code="managed_cancelled",
-                    cause="finish_current_room_or_stop",
-                )
-            elif ended := self.robot_ended.get(room.room_id):
-                # The robot finished its mission without reaching or finishing
-                # the room. Settle it without credit so it stays due; the run
-                # goes on.
-                await self.async_settle_uncredited(
-                    room, ended, reason_code=f"room_{ended.result}", cause="robot"
-                )
-            else:
-                if self.single:
-                    await ledger.async_mark_ended_unverified(
-                        self.serial_number, self.plan_id, room
-                    )
-                else:
-                    async with dispatch_control.managed_reconciliation_guard(
-                        self.manager, self.serial_number, self.motion_token
-                    ) as owned:
-                        if not owned or (
-                            self.floor_is_current is not None
-                            and not self.floor_is_current()
-                        ):
-                            marker = None
-                        await ledger.async_mark_ended_unverified(
-                            self.serial_number,
-                            self.plan_id,
-                            room,
-                            **self.stored_marker(None if marker_saved else marker),
-                        )
-                    marker_saved = True
-                self.announce(
-                    room,
-                    "ended_unverified",
-                    reason_code="unverified_completion",
-                    cause="unknown",
-                )
+            marker_saved = True
+            return True
+
+        settled = await LegSettlement(
+            hass=self.hass,
+            call=self.call,
+            manager=self.manager,
+            entity_id=self.entity_id,
+            serial_number=self.serial_number,
+            run_id=self.run_id,
+            provenance=self.provenance,
+            leg=self.leg,
+            robot=self.robot,
+            advance=self.advance,
+            record_room_completed=self.record_room_completed,
+            evidence_is_current=self.evidence_is_current,
+            credited=self.credited,
+            robot_ended=self.robot_ended,
+            completion_sessions=self.completion_sessions,
+            ending_early=self.ending_early,
+            entered_room_ids=self.observed_ids,
+            record_unverified=record_unverified,
+        ).async_settle(build_marker)
         self.watch_late_history(marker)
-        return all(
-            room.room_id in credited
-            or room.room_id in skipped
-            or room.room_id in self.robot_ended
-            for room in self.leg
-        )
+        return settled
 
 
 async def async_run_room_leg(

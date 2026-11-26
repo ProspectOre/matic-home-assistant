@@ -23,6 +23,7 @@ from . import managed_leg as leg_execution
 from . import managed_observation as observation
 from .client import MaticError, RobotActivity, UserCommand
 from .const import DOMAIN, EVENT_PLAN_FINISHED, EVENT_PLAN_STARTED
+from .leg_settlement import fire_room_event
 from .managed_run import (
     PlanCancelledError,
     PreparedRoomDispatch,
@@ -51,8 +52,7 @@ from .run_machine import (
     LegVerified,
     RoomVerified,
     Run,
-    RunEvent,
-    transition,
+    RunProgress,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -102,8 +102,7 @@ class _PlanRun:
     finish_current_room_threshold: int = field(init=False)
     started_at: str = field(init=False)
     provenance: str = field(init=False)
-    checkpoint: RecoveryCheckpoint = field(init=False)
-    run: Run = field(init=False)
+    progress: RunProgress = field(init=False)
     # Whether plan_started was fired, so plan_finished must follow.
     run_started: bool = field(init=False)
     outer_command: Callable[[int, UserCommand], Awaitable[None]] | None = field(
@@ -122,18 +121,24 @@ class _PlanRun:
             manager.cadence.prepared_run_stop_policy(self.serial_number, self.run_id)
         )
         self.run_started = recovery is not None
+        save = partial(
+            manager.recovery.async_set_recovery_checkpoint,
+            self.serial_number,
+            self.run_id,
+        )
         if recovery is None:
             self.started_at = dt_util.utcnow().isoformat()
             self.provenance = dispatch_control.run_provenance(self.call)
-            self.checkpoint = RecoveryCheckpoint.parse({})
-            self.run = Run()
+            self.progress = RunProgress(Run(), RecoveryCheckpoint.parse({}), save)
         else:
             assert recovery.checkpoint is not None
             assert recovery.started_at is not None
             self.started_at = recovery.started_at
             self.provenance = recovery.provenance
-            self.checkpoint = recovery.checkpoint
-            self.run = Run.from_checkpoint(self.checkpoint)
+            checkpoint = recovery.checkpoint
+            self.progress = RunProgress(
+                Run.from_checkpoint(checkpoint), checkpoint, save
+            )
         self.outer_command = dispatch_control.guard_native_commands(
             self.managed_user_command,
             manager,
@@ -160,18 +165,8 @@ class _PlanRun:
             ),
         }
 
-    async def advance(self, event: RunEvent) -> CheckpointWrite:
-        """Move the run and apply its write to the durable checkpoint."""
-        self.run, write = transition(self.run, event)
-        self.checkpoint = write.applied(self.checkpoint)
-        if write.save:
-            await self.manager.recovery.async_set_recovery_checkpoint(
-                self.serial_number, self.run_id, self.checkpoint.stored()
-            )
-        return write
-
     async def save_dispatch(self, dispatch: PreparedRoomDispatch) -> None:
-        await self.advance(
+        await self.progress.advance(
             DispatchRecorded(
                 dispatch.dispatched_at,
                 dispatch.completion_deadline,
@@ -190,7 +185,7 @@ class _PlanRun:
         counted = self.manager.recovery.counted_room_ids(
             self.serial_number, self.run_id
         )
-        self.run = transition(self.run, RoomVerified(counted))[0]
+        self.progress.apply(RoomVerified(counted))
 
     def raise_if_cancelled(self) -> None:
         if self.cancel_event.is_set() or not (
@@ -218,7 +213,7 @@ class _PlanRun:
             self.robot.fresh_state,
         )
         self.validate_new_run()
-        checkpoint = self.checkpoint
+        checkpoint = self.progress.checkpoint
         if checkpoint.stop_intent == "after_room":
             self.finish_room_event.set()
         recovered = self.recovery is not None
@@ -301,7 +296,7 @@ class _PlanRun:
             "floor_token": self.floor_token,
             "rooms": [asdict(room) for room in self.rooms],
             "data": dict(self.call.data),
-            **self.run.position(),
+            **self.progress.run.position(),
             "finish_current_room": self.finish_current_room,
             "finish_current_room_threshold": self.finish_current_room_threshold,
         }
@@ -311,15 +306,13 @@ class _PlanRun:
             checkpoint["cadence_by_room"] = deepcopy(
                 {key: dict(value) for key, value in self.cadence_by_room.items()}
             )
-        self.checkpoint = RecoveryCheckpoint.parse(checkpoint)
-        await self.manager.recovery.async_set_recovery_checkpoint(
-            self.serial_number, self.run_id, checkpoint
-        )
+        self.progress.checkpoint = RecoveryCheckpoint.parse(checkpoint)
+        await self.progress.save(checkpoint)
 
     async def async_run_legs(self) -> None:
         """Run each remaining leg until one is left unsettled or a stop ends it."""
         for index, leg in enumerate(self.legs):
-            if index < self.run.leg_index:
+            if index < self.progress.run.leg_index:
                 continue
             self.raise_if_cancelled()
             handoff = _Handoff(self.recovered_dispatch)
@@ -345,7 +338,9 @@ class _PlanRun:
                 revision, handoff_keys = await managed_run.async_unless_cancelled(
                     self.async_read_handoff(), self.cancel_event
                 )
-                await self.advance(LegVerified(index + 1, handoff_keys, revision))
+                await self.progress.advance(
+                    LegVerified(index + 1, handoff_keys, revision)
+                )
 
     async def async_read_handoff(
         self,
@@ -353,7 +348,7 @@ class _PlanRun:
         """Read the idle marker and history keys the next leg is fenced by."""
         revision = await self.robot.handoff_revision()
         keys = await self.robot.history_keys(
-            handoff=True, session_hash=self.checkpoint.session_hash
+            handoff=True, session_hash=self.progress.checkpoint.session_hash
         )
         return revision, keys
 
@@ -363,14 +358,14 @@ class _PlanRun:
         A room leg starts while the robot returns when it can; otherwise
         the robot must settle before the next dispatch.
         """
-        handoff_history = self.checkpoint.handoff_history
+        handoff_history = self.progress.checkpoint.handoff_history
         if handoff_history is None:
             # No durable evidence boundary means we cannot prove that an
             # intervening native mission did not complete.
             return None
         history = frozenset(handoff_history)
-        revision = self.checkpoint.handoff_revision
-        await self.advance(HandoffEntered(index))
+        revision = self.progress.checkpoint.handoff_revision
+        await self.progress.advance(HandoffEntered(index))
         if self.finish_room_event.is_set():
             return None
         refused_on_return = False
@@ -396,13 +391,15 @@ class _PlanRun:
                     expected_dispatch_history=history,
                     expected_dispatch_revision=revision,
                     cancel_event=self.cancel_event,
-                    on_dispatching=partial(self.advance, LegDispatching(index)),
+                    on_dispatching=partial(
+                        self.progress.advance, LegDispatching(index)
+                    ),
                 )
 
             async def back_to_handoff() -> None:
                 nonlocal refused_on_return
                 refused_on_return = True
-                await self.advance(HandoffEntered(index))
+                await self.progress.advance(HandoffEntered(index))
 
             try:
                 prepared = await leg_handoff.async_dispatch_on_return(
@@ -451,9 +448,9 @@ class _PlanRun:
         self.native_identity = b""
         if revision is None:
             revision = await self.robot.handoff_revision()
-            self.checkpoint = CheckpointWrite(
+            self.progress.checkpoint = CheckpointWrite(
                 {"handoff_revision": revision}, save=False
-            ).applied(self.checkpoint)
+            ).applied(self.progress.checkpoint)
         if self.finish_room_event.is_set():
             # Honor a graceful finish request before dispatching a new
             # settings-boundary leg.
@@ -481,7 +478,7 @@ class _PlanRun:
                 expected_dispatch_identity=self.expected_identity,
                 expected_dispatch_history=handoff.history,
                 expected_dispatch_revision=handoff.revision,
-                on_dispatching=partial(self.advance, LegDispatching(index)),
+                on_dispatching=partial(self.progress.advance, LegDispatching(index)),
                 on_native_identity=self.bind_native_identity,
                 run_id=self.run_id,
                 checkpoint_dispatch=self.save_dispatch,
@@ -489,13 +486,13 @@ class _PlanRun:
                 # Later legs need the area's own record in history.
                 settle_history=index + 1 < len(self.legs),
             )
-            await self.advance(
+            await self.progress.advance(
                 AreaFinished(index, last_leg=index + 1 == len(self.legs))
             )
             return settled
         resumed = (
             self.manager.ledger.active_target(self.serial_number)
-            if self.recovery is not None and index == self.run.leg_index
+            if self.recovery is not None and index == self.progress.run.leg_index
             else None
         )
         return await leg_execution.async_run_room_leg(
@@ -516,12 +513,12 @@ class _PlanRun:
             expected_dispatch_identity=self.expected_identity,
             expected_dispatch_history=handoff.history,
             expected_dispatch_revision=handoff.revision,
-            on_dispatching=partial(self.advance, LegDispatching(index)),
+            on_dispatching=partial(self.progress.advance, LegDispatching(index)),
             on_native_identity=self.bind_native_identity,
             run_id=self.run_id,
             record_room_completed=self.record_room_completed,
             checkpoint_dispatch=self.save_dispatch,
-            advance=self.advance,
+            advance=self.progress.advance,
             provenance=self.provenance,
             recovered_suspend_reason=resumed.suspend_reason
             if resumed is not None
@@ -532,7 +529,7 @@ class _PlanRun:
     async def async_end(self) -> None:
         """Name how the legs ended and send the robot home when it should go."""
         # Every room has a result and every custom area's own mission ended.
-        all_settled = self.run.all_settled(
+        all_settled = self.progress.run.all_settled(
             {room.room_id for room in self.rooms},
             {index for index, leg in enumerate(self.legs) if isinstance(leg, AreaLeg)},
         )
@@ -541,7 +538,11 @@ class _PlanRun:
             self.ending = ("cancelled", "managed_stop", "managed_cancellation")
             self.manager.control.mark_managed_stop(self.serial_number)
         elif all_settled:
-            self.ending = ("completed", self.run.end_reason, "verified_completion")
+            self.ending = (
+                "completed",
+                self.progress.run.end_reason,
+                "verified_completion",
+            )
         else:
             self.ending = ("unverified", "partial_native_result", "native_result")
         self.raise_if_cancelled()
@@ -666,7 +667,7 @@ class _PlanRun:
         await manager.ledger.async_mark_interrupted(
             serial_number, self.call.data["plan_id"], room, reason
         )
-        leg_execution.fire_room_event(
+        fire_room_event(
             self.hass,
             self.call,
             self.entity_id,
@@ -729,7 +730,7 @@ class _PlanRun:
                     self.entity_id,
                     self.started(),
                     *self.ending,
-                    len(self.run.completed_room_ids),
+                    len(self.progress.run.completed_room_ids),
                     context=self.call.context,
                 )
         finally:
