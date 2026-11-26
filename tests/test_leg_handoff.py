@@ -54,6 +54,7 @@ class _Robot:
         start_late: bool = False,
         fail_after_taking: bool = False,
         silent_after_sending: bool = False,
+        silent_after_refusing: bool = False,
     ) -> None:
         self.hass = hass
         self.fake = FakeRobot()
@@ -66,6 +67,7 @@ class _Robot:
         self.start_late = start_late
         self.fail_after_taking = fail_after_taking
         self.silent_after_sending = silent_after_sending
+        self.silent_after_refusing = silent_after_refusing
 
     async def read_identity(self) -> bytes | None:
         return self.identity
@@ -81,7 +83,10 @@ class _Robot:
         state = self.state
         self.dispatch_states.append(state)
         if state == "returning" and self.refuse_while_returning:
-            if self.start_late:
+            if self.silent_after_refusing:
+                # The robot refuses, keeps heading home and stops answering.
+                self.identity = None
+            elif self.start_late:
                 # The robot answers late, then starts the mission after all.
                 self.hass.loop.call_later(
                     0.05, setattr, self, "identity", b"late-mission"
@@ -332,6 +337,52 @@ async def test_a_room_sent_on_the_way_home_to_a_silent_robot_names_the_room(
     assert error.value.translation_placeholders == {"room": STUDY.name}
     # The run sends nothing to a robot it can't read.
     assert UserCommand.STOP not in [call.args[1] for call in sender.await_args_list]
+
+
+async def test_a_refused_room_then_a_silent_robot_may_have_been_sent(
+    hass, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_run.RECONNECT_SECONDS", 0.05
+    )
+    robot = _Robot(hass, refuse_while_returning=True, silent_after_refusing=True)
+    with pytest.raises(ServiceValidationError) as error:
+        await _run(hass, robot)
+
+    assert robot.dispatch_states == ["docked", "returning"]
+    # The start went out before the refusal, so the robot may have taken it.
+    assert error.value.translation_key == "room_connection_lost"
+    assert error.value.translation_placeholders == {"room": STUDY.name}
+
+
+async def test_a_room_not_sent_on_the_way_home_to_a_silent_robot_says_so(
+    hass, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_run.RECONNECT_SECONDS", 0.05
+    )
+    robot = _Robot(hass, refuse_while_returning=False)
+    baseline = managed_dispatch._async_dispatch_history_baseline
+    calls = 0
+
+    async def fail_on_the_way_home(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return await baseline(*args, **kwargs)
+        # The robot goes silent before the start, so nothing is sent.
+        robot.identity = None
+        raise MaticError("history unavailable")
+
+    monkeypatch.setattr(
+        managed_dispatch, "_async_dispatch_history_baseline", fail_on_the_way_home
+    )
+    with pytest.raises(ServiceValidationError) as error:
+        await _run(hass, robot)
+
+    assert robot.dispatch_states == ["docked"]
+    assert error.value.translation_key == "room_not_sent_connection_lost"
+    assert error.value.translation_placeholders == {"room": STUDY.name}
 
 
 async def test_a_refused_room_that_starts_late_is_never_sent_twice(hass) -> None:

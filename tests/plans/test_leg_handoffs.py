@@ -17,6 +17,7 @@ from custom_components.matic_robot.managed_observation import (
 )
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
+    RobotConnectionLostError,
     RoomTakenOverError,
 )
 from tests.plans.fakes import (
@@ -212,6 +213,150 @@ async def test_settled_handoff_wakes_on_graceful_stop(
     await observed.wait()
     finish.set()
     assert await asyncio.wait_for(waiting, 1) is False
+
+
+@pytest.fixture
+def short_reconnect(monkeypatch):
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS",
+        0.001,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_run.RECONNECT_SECONDS", 0.2
+    )
+
+
+@pytest.mark.parametrize("leg_sent", [False, True])
+async def test_settled_leg_handoff_ends_a_silent_robot_as_lost_contact(
+    hass, short_reconnect, leg_sent: bool
+) -> None:
+    """A robot that stops answering between legs is not waited out for minutes."""
+    robot = FakeRobot()
+    robot.show("returning")
+    with pytest.raises(RobotConnectionLostError) as error:
+        await async_wait_for_settled_leg_handoff(
+            robot.port(
+                active_session=AsyncMock(side_effect=MaticError("offline")),
+                session_identity=AsyncMock(return_value=None),
+            ),
+            None,
+            expected_identity=b"previous",
+            reject_new_identity=leg_sent,
+            leg_sent=leg_sent,
+            timeout_seconds=5,
+        )
+    # The next leg hasn't gone out, unless a refused dispatch on the way home
+    # may have reached the robot.
+    assert error.value.sent is leg_sent
+
+
+async def test_settled_leg_handoff_answer_restarts_the_reconnect_window(
+    hass, short_reconnect
+) -> None:
+    """Silent spells each shorter than the window never end the wait."""
+    robot = FakeRobot()
+    robot.show("returning")
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+    reads = 0
+
+    async def identity() -> bytes | None:
+        nonlocal reads
+        reads += 1
+        if loop.time() - began >= 0.6:
+            robot.show("idle")
+            return b""
+        # Two silent reads in every three: silence outlasts the window in
+        # total, never in one stretch.
+        return b"previous" if reads % 3 == 0 else None
+
+    assert await async_wait_for_settled_leg_handoff(
+        robot.port(
+            active_session=AsyncMock(return_value=True), session_identity=identity
+        ),
+        None,
+        expected_identity=b"previous",
+        timeout_seconds=5,
+    )
+
+
+_RUG = {
+    "kind": "area",
+    "area_id": "rug",
+    "name": "Rug",
+    "cleaning_mode": "vacuum",
+    "coverage_setting": "quick",
+    "binding_fingerprint": "f" * 64,
+}
+
+
+@pytest.mark.parametrize("next_leg", ["room", "area"])
+async def test_a_robot_silent_between_legs_ends_the_run_as_connection_lost(
+    hass, short_reconnect, next_leg
+) -> None:
+    """The next leg is reported unsent, nothing is stopped, the first room counts."""
+    robot = FakeRobot()
+    robot.show("returning")
+    manager = memory_manager(hass)
+    kitchen = plan_room("Kitchen", "room-kitchen")
+    if next_leg == "room":
+        rooms, entries, unsent = (
+            [kitchen, heavy_room("Study", "room-study")],
+            None,
+            "Study",
+        )
+    else:
+        rooms, unsent = [kitchen], "Rug"
+        entries = [{"kind": "room", "room_id": kitchen.room_id}, _RUG]
+    sender = AsyncMock()
+
+    async def complete_first_leg(*args, **kwargs) -> bool:
+        credit_rooms(args, kwargs, args[5][:1])
+        return True
+
+    with (
+        patch(
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
+            AsyncMock(side_effect=complete_first_leg),
+        ) as run,
+        patch(
+            "custom_components.matic_robot.plan_model.leg_groups",
+            side_effect=lambda rooms, **_: [[room] for room in rooms],
+        ),
+        pytest.raises(ServiceValidationError) as error,
+    ):
+        await asyncio.wait_for(
+            async_execute_rooms(
+                hass,
+                run_plan_call(hass),
+                manager,
+                "vacuum.matic",
+                "serial",
+                rooms,
+                robot=robot.port(
+                    session_identity=AsyncMock(return_value=None),
+                    active_session=AsyncMock(side_effect=MaticError("offline")),
+                    session_history=AsyncMock(return_value=()),
+                ),
+                managed_user_command=sender,
+                floor_is_current=lambda: True,
+                floor_token="a" * 64,
+                entries=entries,
+            ),
+            5,
+        )
+
+    assert error.value.translation_key == "room_not_sent_connection_lost"
+    assert error.value.translation_placeholders == {"room": unsent}
+    assert isinstance(error.value.__cause__, RobotConnectionLostError)
+    assert run.await_count == 1
+    sender.assert_not_awaited()
+    last_run = manager.history.snapshot("serial")["last_run"]
+    assert (last_run["outcome"], last_run["reason_code"]) == (
+        "unverified",
+        "connection_lost",
+    )
+    assert last_run["completed_room_count"] == 1
 
 
 @pytest.mark.parametrize("settled", [False, True, "pre_stop", "during_wait"])
