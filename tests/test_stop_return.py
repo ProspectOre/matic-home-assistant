@@ -18,7 +18,7 @@ from custom_components.matic_robot.stop_return import (
     async_clear_ownerless_stop_if_settled,
     async_confirm_docked,
     async_dock_when_stop_settles,
-    schedule_dock_after_stop,
+    async_mark_run_docked,
     schedule_dock_confirmation,
 )
 from tests.plans.fakes import memory_manager
@@ -1156,26 +1156,6 @@ async def test_a_rejected_dock_command_is_reported_without_raising(hass) -> None
     assert await _run(hass, client, _manager()) is False
 
 
-async def test_schedule_registers_a_lifecycle_bound_task(hass) -> None:
-    manager = _manager()
-    hass.states.async_set(ENTITY, "docked", {})
-
-    schedule_dock_after_stop(
-        hass,
-        client=_client(),
-        refresh=AsyncMock(),
-        manager=manager,
-        serial_number="serial",
-        entity_id=ENTITY,
-    )
-    await hass.async_block_till_done()
-
-    manager.control.register_reconciliation_task.assert_called_once()
-    assert isinstance(
-        manager.control.register_reconciliation_task.call_args.args[1], asyncio.Task
-    )
-
-
 async def test_schedule_confirmation_registers_and_closes_docked_run(hass) -> None:
     manager = _manager()
     hass.states.async_set(ENTITY, "charging", {})
@@ -1374,8 +1354,6 @@ async def test_failed_run_dock_settlement_preserves_failure_and_credit(
     hass, matching_fence: bool
 ) -> None:
     """Only its captured fence can settle a failed run without changing credit."""
-    from custom_components.matic_robot.managed_dispatch import _async_mark_run_docked
-
     manager = memory_manager(hass)
     before = {
         "run_id": "run-1",
@@ -1392,7 +1370,7 @@ async def test_failed_run_dock_settlement_preserves_failure_and_credit(
     if not matching_fence:
         await manager.control.async_mark_stop_pending("serial", run_id="run-new")
     assert (
-        await _async_mark_run_docked(manager, "serial", "run-1", ENTITY, None, token)
+        await async_mark_run_docked(manager, "serial", "run-1", ENTITY, None, token)
         is matching_fence
     )
     assert manager.history.snapshot("serial")["last_run"] == before
@@ -1404,8 +1382,6 @@ async def test_post_dispatch_dock_confirmation_preserves_replacement_or_unload(
     hass, replacement: str
 ) -> None:
     """Releasing the lease cannot settle an old fence after ownership changes."""
-    from custom_components.matic_robot.managed_dispatch import _async_mark_run_docked
-
     manager = memory_manager(hass)
     record = {
         "run_id": "run-1",
@@ -1438,7 +1414,7 @@ async def test_post_dispatch_dock_confirmation_preserves_replacement_or_unload(
                 }
 
     async def on_docked() -> bool:
-        return await _async_mark_run_docked(
+        return await async_mark_run_docked(
             manager, "serial", "run-1", ENTITY, None, token
         )
 

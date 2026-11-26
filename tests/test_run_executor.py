@@ -287,7 +287,7 @@ async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
     command = AsyncMock()
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
+            "custom_components.matic_robot.stop_return.ensure_stop_settled",
             side_effect=delayed_check,
         ),
         patch("custom_components.matic_robot.managed_leg.async_run_room_leg") as run,
