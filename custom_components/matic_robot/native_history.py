@@ -43,7 +43,7 @@ from .plan_timing import (
     duration_profiles,
     latest_timestamp,
 )
-from .room_statistics import native_statistics_have_ambiguous_floor
+from .room_identity import native_statistics_have_ambiguous_floor
 from .room_statistics_store import import_native_room_statistics
 from .run_history import repair_run_history
 from .run_machine import count_room
