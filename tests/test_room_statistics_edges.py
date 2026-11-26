@@ -461,6 +461,31 @@ def test_managed_history_matcher_skips_malformed_history_containers():
             {"bad-start": {"rooms": {"living": {"last_started": invalid_start}}}},
             *window,
         )
+        assert not managed_run_overlaps_native_session(
+            {"bad-start": {"rooms": {"living": {"last_started": invalid_start}}}},
+            None,
+            ended_at,
+            "living",
+        )
+    assert not managed_run_overlaps_native_session(
+        {"broken": {"rooms": {"living": None}}}, None, ended_at, "living"
+    )
+    # A well-formed record beside the broken ones still matches, in both forms;
+    # without the session's start, only that room's own span can hold its end.
+    rotations = {
+        "broken": {"rooms": "not-a-mapping"},
+        "run": {
+            "rooms": {
+                "living": {
+                    "last_started": "2026-11-01T09:30:00+00:00",
+                    "last_completed": "2026-11-01T09:59:00+00:00",
+                }
+            }
+        },
+    }
+    assert managed_run_overlaps_native_session(rotations, *window)
+    assert managed_run_overlaps_native_session(rotations, None, ended_at, "living")
+    assert not managed_run_overlaps_native_session(rotations, None, ended_at, "kitchen")
 
 
 def test_other_room_managed_session_suppresses_incidental_native_room_completion():
