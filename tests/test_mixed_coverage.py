@@ -6,7 +6,7 @@ from base64 import b64decode
 from collections import Counter
 from dataclasses import replace
 from itertools import product
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 from uuid import UUID
 
 import pytest
@@ -1828,8 +1828,8 @@ async def test_entity_mixed_dispatch_guards(hass, failure, monkeypatch):
 
     client = entry.runtime_data.session.client
     client.async_start_mixed_coverage = AsyncMock(side_effect=send)
-    schedule_dock = Mock()
-    monkeypatch.setattr(robot_commands, "schedule_dock_after_stop", schedule_dock)
+    dock = Mock()
+    monkeypatch.setattr(robot_commands, "schedule_dock_after_stop", dock)
 
     def clean():
         return managed_clean_rooms(
@@ -1890,9 +1890,7 @@ async def test_entity_mixed_dispatch_guards(hass, failure, monkeypatch):
             "synthetic-serial", run_id=None
         )
     if failure == "transmitted_stop":
-        schedule_dock.assert_called_once()
-        assert schedule_dock.call_args.args[3] == "synthetic-serial"
-        assert schedule_dock.call_args.kwargs == {"run_id": None}
+        dock.assert_called_once_with(*[ANY] * 3, "synthetic-serial", ANY, run_id=None)
 
 
 async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):

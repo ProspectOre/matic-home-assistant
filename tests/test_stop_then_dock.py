@@ -1,12 +1,13 @@
 """The one stop-then-dock owner every Stop and run cleanup goes through."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from homeassistant.core import Context
 
-from custom_components.matic_robot import stop_return
+from custom_components.matic_robot import managed_dispatch, stop_return
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.stop_return import (
     async_send_stop,
@@ -29,6 +30,7 @@ def _manager(token: int | None = 23) -> SimpleNamespace:
     return SimpleNamespace(
         control=SimpleNamespace(
             stop_fence_token=MagicMock(return_value=token),
+            stop_pending=MagicMock(return_value=False),
             register_reconciliation_task=MagicMock(),
             async_mark_stop_pending=AsyncMock(),
         ),
@@ -109,3 +111,27 @@ async def test_a_stop_no_run_owns_clears_its_own_fence(hass) -> None:
 
     assert watch.call_args.kwargs["on_docked"] is None
     assert watch.call_args.kwargs["run_id"] is None
+
+
+async def test_a_runs_dock_goes_out_under_its_lease_without_a_stop_fence(hass) -> None:
+    entry, manager = _entry(), _manager()
+    entry.runtime_data.client = entry.runtime_data.session.client
+    leases: list[tuple[str, int]] = []
+
+    @asynccontextmanager
+    async def managed_command(serial_number: str, token: int):
+        leases.append((serial_number, token))
+        yield
+
+    manager.control.managed_command = managed_command
+    with patch.object(managed_dispatch, "schedule_dock_after_stop") as watch:
+        await managed_dispatch.async_managed_user_command(
+            hass, entry, manager, "serial", ENTITY, None, 7, UserCommand.DOCK
+        )
+
+    assert leases == [("serial", 7)]
+    client = entry.runtime_data.client
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+    entry.runtime_data.session.heartbeat.async_request_refresh.assert_awaited_once()
+    manager.control.async_mark_stop_pending.assert_not_awaited()
+    watch.assert_not_called()
