@@ -495,16 +495,25 @@ export async function installPanelFixture(page, {
           return new Promise((resolve) => heldSnapshots.push(() => resolve(connection.sendMessagePromise(message))));
         }
         if (message.type === "matic_robot/workspace_snapshot") {
-          const entry = projectedEntry(message.entry_id);
-          const verified = !entry || (entry.map_floor_coherent && entry.map_session_verified);
+          // As workspace_socket.snapshot: Home Assistant refuses an entry it has not
+          // loaded, and while the robot is away sends a stale, unverified snapshot.
+          if (!catalogEntries.some((row) => row.entry_id === message.entry_id)) {
+            throw { code: "home_assistant_error", message: "Matic entry is unavailable" };
+          }
+          const available = Object.values(robotStates)
+            .find((state) => state.attributes?.matic_entry_id === message.entry_id)?.state !== "unavailable";
+          const entry = available ? projectedEntry(message.entry_id) : null;
+          const verified = Boolean(entry?.map_floor_coherent && entry.map_session_verified);
+          const { scene: _scene, ...withoutScene } = revisions;
           return {
             ...backend.snapshot,
             sequence: workspaceSequence,
-            revisions: { ...revisions },
+            revisions: entry ? { ...revisions } : withoutScene,
             entry_id: message.entry_id,
             identity: { ...backend.snapshot.identity, entry_id: message.entry_id,
               floor_mission_id: verified ? backend.snapshot.identity.floor_mission_id : null, floor_verified: verified },
-            payload: { ...backend.snapshot.payload, entry },
+            status: available ? backend.snapshot.status : { state: "stale", reason: "snapshot_required", retryable: true },
+            payload: { available, entry },
           };
         }
         throw new Error(`unexpected synthetic message: ${message.type}`);
