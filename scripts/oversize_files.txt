@@ -8,7 +8,7 @@ frontend/map-studio-v4/effects.ts 1190
 frontend/map-studio-v4/shell.ts 1728
 frontend/map-studio-v4/state.ts 1293
 tests/browser/map_studio_v4.spec.mjs 10975
-tests/browser/map_studio_v4_deferred_assets.spec.mjs 1098
+tests/browser/map_studio_v4_deferred_assets.spec.mjs 1038
 tests/browser/map_studio_v4_gpu_upload.spec.mjs 1701
 tests/browser/map_studio_v4_home_rooms.spec.mjs 2000
 tests/browser/map_studio_v4_manual_preview.spec.mjs 1274

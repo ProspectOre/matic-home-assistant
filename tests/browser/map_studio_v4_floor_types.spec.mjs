@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
 import { paintOverlayOnCanvas } from "./map_studio_v4_overlay_canvas.mjs";
-import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
+import { catalogEntry, installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
 // Carpet and vents are off by default. Map options turns the layer on, which
 // reads the current floor's outlines; the row explains an empty floor.
@@ -39,8 +39,8 @@ const clickInShadow = (panel, selector) => panel.evaluate((element, target) => {
   scan(element.shadowRoot).click();
 }, selector);
 
-const mountPanel = async (page, floorTypes) => {
-  const { panelTag } = await installPanelFixture(page, { floorTypes });
+const mountPanel = async (page, floorTypes, options = {}) => {
+  const { panelTag } = await installPanelFixture(page, { floorTypes, ...options });
   await page.evaluate(async (tag) => {
     const panel = window.__panelFixture.createPanel();
     panel.dataset.testPanel = "true";
@@ -102,8 +102,10 @@ test("a new map session drops the old frame's outlines", async ({ page }) => {
   await expect.poll(() => snapshot(panel)).toEqual({ status: "ready", carpet: [], vent: [] });
 });
 
+// The integration always sends the endpoint; this row is one without it.
 test("the row stays hidden without the endpoint", async ({ page }) => {
-  const panel = await mountPanel(page, null);
+  const { floor_layers_url: _endpoint, ...entry } = catalogEntry();
+  const panel = await mountPanel(page, null, { initialCatalogEntries: [entry] });
   await clickInShadow(panel, "[aria-controls=map-options]");
   await expect.poll(() => panel.evaluate((element) => Boolean(element.shadowRoot))).toBe(true);
   expect(await findInShadow(panel, "[data-floor-types]")).toBeNull();
