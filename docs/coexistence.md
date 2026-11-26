@@ -43,7 +43,10 @@ depends on where the plan is:
   the task it started. If the robot answers without showing that task, the
   plan ends as taken over.
 - Until the robot reports that it started, the plan's start timeout applies.
-- Once the task is running, including while the robot returns, pauses or
+  Once it has, a robot that stops answering gets the reconnect window below
+  even if the start timeout runs out meanwhile; a robot that answers without
+  confirming its task still ends at the start timeout.
+- Once the task has started, including while the robot returns, pauses or
   charges, it waits as long as [restart recovery](restart-recovery.md) waits
   to reconnect, two minutes, within the room's completion timeout. It goes on
   if the robot comes back with the same task.

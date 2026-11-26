@@ -869,7 +869,7 @@ async def async_wait_for_owned_start(
         eager_start=True,
     )
     try:
-        async with asyncio.timeout(timeout_seconds):
+        async with asyncio.timeout(timeout_seconds) as start_deadline:
             return await _async_confirm_started_identity(
                 started,
                 robot.session_identity,
@@ -877,6 +877,7 @@ async def async_wait_for_owned_start(
                 identity_baseline,
                 expected,
                 cancel_event,
+                start_deadline,
             )
     finally:
         started.cancel()
@@ -890,9 +891,16 @@ async def _async_confirm_started_identity(
     identity_baseline: bytes | None,
     expected: bytes | None,
     cancel_event: asyncio.Event | None,
+    start_deadline: asyncio.Timeout,
 ) -> RobotActivity:
-    """Wait for a new identity, never the task that preceded dispatch."""
+    """Wait for a new identity, never the task that preceded dispatch.
+
+    The start deadline is for the robot to start. Once it has, a robot that
+    stops answering is lost contact, so the reconnect window bounds that wait;
+    the deadline applies again when the robot answers.
+    """
     contact = ReconnectWindow()
+    deadline = start_deadline.when()
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
@@ -916,6 +924,7 @@ async def _async_confirm_started_identity(
             if transition_observed and identity and identity == expected:
                 return state
             contact.read(identity)
+            start_deadline.reschedule(None if contact.waiting else deadline)
             await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
         else:
             await asyncio.wait({started}, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)

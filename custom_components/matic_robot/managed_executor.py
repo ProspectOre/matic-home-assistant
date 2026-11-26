@@ -405,24 +405,28 @@ class _PlanRun:
                 refused_on_return = True
                 await self.advance(HandoffEntered(index))
 
-            prepared = await leg_handoff.async_dispatch_on_return(
-                self.robot,
-                dispatch,
-                self.bind_native_identity,
-                back_to_handoff,
-                partial(
-                    dispatch_control.async_cleanup_managed_motion,
-                    self.outer_command,
-                    self.motion_token,
-                    dispatch_attempted=True,
-                ),
-                partial(
-                    dispatch_control.shutdown_suspends_run,
-                    self.hass,
-                    self.manager,
-                    self.serial_number,
-                ),
-            )
+            try:
+                prepared = await leg_handoff.async_dispatch_on_return(
+                    self.robot,
+                    dispatch,
+                    self.bind_native_identity,
+                    back_to_handoff,
+                    partial(
+                        dispatch_control.async_cleanup_managed_motion,
+                        self.outer_command,
+                        self.motion_token,
+                        dispatch_attempted=True,
+                    ),
+                    partial(
+                        dispatch_control.shutdown_suspends_run,
+                        self.hass,
+                        self.manager,
+                        self.serial_number,
+                    ),
+                )
+            except RoomOwnershipLostError as err:
+                # The leg went out on the way home; name its first room.
+                raise err.service_error(leg[0].name) from err
             if prepared is not None:
                 return _Handoff(prepared, history, revision)
         if not await observation.async_wait_for_settled_leg_handoff(

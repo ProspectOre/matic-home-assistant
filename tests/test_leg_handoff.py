@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.core import ServiceCall
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
@@ -52,19 +52,21 @@ class _Robot:
         refuse_while_returning: bool,
         start_late: bool = False,
         fail_after_taking: bool = False,
+        silent_after_sending: bool = False,
     ) -> None:
         self.hass = hass
         self.fake = FakeRobot()
         self.fake.on_start = self.send_command
         self.state = "docked"
-        self.identity = b""
+        self.identity: bytes | None = b""
         self.records: list[CleaningSessionRecord] = []
         self.dispatch_states: list[str] = []
         self.refuse_while_returning = refuse_while_returning
         self.start_late = start_late
         self.fail_after_taking = fail_after_taking
+        self.silent_after_sending = silent_after_sending
 
-    async def read_identity(self) -> bytes:
+    async def read_identity(self) -> bytes | None:
         return self.identity
 
     async def history(self, **_: object) -> tuple[CleaningSessionRecord, ...]:
@@ -87,6 +89,10 @@ class _Robot:
                 # The refusal lands as the robot reaches its dock.
                 self.show("docked")
             raise MaticError("refused")
+        if state == "returning" and self.silent_after_sending:
+            # The start goes out, then the robot stops answering.
+            self.identity = None
+            return
         self.identity = _session_identity(command.session_id)
         self.session_key = history_key(command.session_id)
         if state == "returning" and self.fail_after_taking:
@@ -286,6 +292,24 @@ async def test_lost_contact_after_sending_is_not_a_refusal(sent) -> None:
         assert await attempt is None
         on_refused.assert_awaited_once()
     stop_taken.assert_not_awaited()
+
+
+async def test_a_room_sent_on_the_way_home_to_a_silent_robot_names_the_room(
+    hass, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_run.RECONNECT_SECONDS", 0.05
+    )
+    robot = _Robot(hass, refuse_while_returning=False, silent_after_sending=True)
+    sender = AsyncMock()
+    with pytest.raises(ServiceValidationError) as error:
+        await _run(hass, robot, sender)
+
+    assert robot.dispatch_states == ["docked", "returning"]
+    assert error.value.translation_key == "room_connection_lost"
+    assert error.value.translation_placeholders == {"room": STUDY.name}
+    # The run sends nothing to a robot it can't read.
+    assert UserCommand.STOP not in [call.args[1] for call in sender.await_args_list]
 
 
 async def test_a_refused_room_that_starts_late_is_never_sent_twice(hass) -> None:
