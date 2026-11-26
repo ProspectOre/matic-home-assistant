@@ -369,8 +369,14 @@ class _PlanRun:
         await self.progress.advance(HandoffEntered(index))
         if self.finish_room_event.is_set():
             return None
-        refused_on_return = False
+        refused_on_return = leg_sent = False
         if isinstance(leg, list):
+
+            async def dispatching() -> None:
+                # From here the start may reach the robot.
+                nonlocal leg_sent
+                leg_sent = True
+                await self.progress.advance(LegDispatching(index))
 
             async def dispatch(
                 on_identity: Callable[[bytes | None], None],
@@ -392,9 +398,7 @@ class _PlanRun:
                     expected_dispatch_history=history,
                     expected_dispatch_revision=revision,
                     cancel_event=self.cancel_event,
-                    on_dispatching=partial(
-                        self.progress.advance, LegDispatching(index)
-                    ),
+                    on_dispatching=dispatching,
                 )
 
             async def back_to_handoff() -> None:
@@ -434,6 +438,7 @@ class _PlanRun:
                 # A refused command whose session shows up late is the robot
                 # taking it after all: never send it twice.
                 reject_new_identity=refused_on_return,
+                leg_sent=leg_sent,
                 finish_room_event=self.finish_room_event,
             )
         except RobotConnectionLostError as err:

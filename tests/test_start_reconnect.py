@@ -101,6 +101,35 @@ async def test_a_start_reported_during_a_read_holds_that_read(hass):
         )
 
 
+async def test_a_start_reported_during_a_slow_owned_read_is_confirmed(hass):
+    robot = FakeRobot()
+    robot.show("docked")
+    reads = 0
+
+    async def read() -> bytes | None:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            # The robot reports starting mid-read, and the read answers with
+            # the run's task only after the start deadline.
+            await asyncio.sleep(START_TIMEOUT / 2)
+            robot.show("cleaning", current_area=ROOM.name)
+            await asyncio.sleep(START_TIMEOUT)
+        return OURS
+
+    activity = await async_wait_for_owned_start(
+        robot.port(session_identity=read),
+        START_TIMEOUT,
+        None,
+        ROOM,
+        lambda _identity: None,
+        b"",
+        OURS,
+    )
+    assert activity is RobotActivity.CLEANING
+    assert reads == 2
+
+
 async def test_a_start_that_fails_during_a_read_keeps_the_start_deadline(hass):
     robot = FakeRobot()
     robot.show("docked")

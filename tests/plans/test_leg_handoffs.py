@@ -226,9 +226,9 @@ def short_reconnect(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("refused_on_return", [False, True])
+@pytest.mark.parametrize("leg_sent", [False, True])
 async def test_settled_leg_handoff_ends_a_silent_robot_as_lost_contact(
-    hass, short_reconnect, refused_on_return: bool
+    hass, short_reconnect, leg_sent: bool
 ) -> None:
     """A robot that stops answering between legs is not waited out for minutes."""
     robot = FakeRobot()
@@ -241,12 +241,13 @@ async def test_settled_leg_handoff_ends_a_silent_robot_as_lost_contact(
             ),
             None,
             expected_identity=b"previous",
-            reject_new_identity=refused_on_return,
+            reject_new_identity=leg_sent,
+            leg_sent=leg_sent,
             timeout_seconds=5,
         )
     # The next leg hasn't gone out, unless a refused dispatch on the way home
     # may have reached the robot.
-    assert error.value.sent is refused_on_return
+    assert error.value.sent is leg_sent
 
 
 async def test_settled_leg_handoff_answer_restarts_the_reconnect_window(

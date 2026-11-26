@@ -224,10 +224,9 @@ class LegOutcomeObserver:
         self._terminal_pending = False
         self._suppress_pause = suppress_pause or initial_suspended
         self._pause_open = self._suppress_pause
-        # One runner suspension write owns an entire native pause episode.
-        # In particular, a low-charge RETURNING update may follow PAUSED
-        # before the target room reports CLEANING; it must not enqueue a
-        # second outcome carrying the same resume event.
+        # One suspension write owns a native pause episode: a low-charge
+        # RETURNING after PAUSED, before the room reports CLEANING, must not
+        # enqueue a second outcome carrying the same resume event.
         self._pause_episode_handled = self._suppress_pause
         self.resume_event = asyncio.Event()
         self._active_pause_resume_event = (
@@ -640,22 +639,23 @@ async def async_wait_for_settled_leg_handoff(
     *,
     expected_identity: bytes | None = None,
     reject_new_identity: bool = False,
+    leg_sent: bool = False,
     timeout_seconds: float = LEG_HANDOFF_TIMEOUT_SECONDS,
     finish_room_event: asyncio.Event | None = None,
 ) -> bool:
     """Wait until a completed leg can safely hand off to new settings.
 
-    Firmware rejects a leg sent while the ended mission's identity is still
-    visible, and the failure cleanup's STOP would start the OEM stop countdown.
-    A stable idle state is enough; a still-active identity is held until it
-    clears, and an unreadable one counts toward the reconnect window.
+    Firmware rejects a leg sent while the ended mission's identity shows, and
+    cleanup's STOP would restart the OEM countdown. A stable idle state is
+    enough; a still-active identity is held, an unreadable one counts toward
+    the reconnect window (``leg_sent``: the next leg may have gone out).
 
     ``False`` is a bounded timeout or graceful stop, not a command failure: the
     caller leaves the remaining legs unattempted without a second STOP.
     """
     deadline = monotonic() + max(0.0, timeout_seconds)
     settled = HOME | {RobotActivity.READY}
-    contact = ReconnectWindow(sent=reject_new_identity)
+    contact = ReconnectWindow(sent=leg_sent)
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
@@ -689,8 +689,7 @@ async def async_wait_for_settled_leg_handoff(
             raise RoomTakenOverError("The returning native task was replaced")
         if state is not None and state.activity in settled and identity == b"":
             return True
-        # A blocked doorway can keep the ended identity while the robot is
-        # homeward or idle; an explicit inactive session is stronger evidence.
+        # A blocked doorway can keep the ended identity; inactive is stronger.
         if (
             session_active is False
             and state is not None
@@ -843,8 +842,7 @@ async def async_wait_for_owned_start(
     a later OEM task. A started state also needs a current native read.
     """
     if already_accepted:
-        # Recovery already verified this mission twice; the outcome wait that
-        # follows still checks its identity.
+        # Recovery verified this mission twice; the outcome wait checks identity.
         current = robot.observed()
         return (
             RobotActivity.PAUSED
@@ -888,8 +886,8 @@ async def _async_confirm_started_identity(
 ) -> RobotActivity:
     """Wait for a new identity, never the task that preceded dispatch.
 
-    Once the robot reports starting, even mid-read, the start deadline is held
-    until the robot answers; the reconnect window bounds a silent robot.
+    Once the robot reports starting, even mid-read, the deadline is held until
+    a later read answers; the reconnect window bounds a silent robot.
     """
     contact = ReconnectWindow()
     deadline = start_deadline.when()
@@ -926,6 +924,8 @@ async def _async_confirm_started_identity(
             if transition_observed and identity and identity == expected:
                 return state
             contact.read(identity)
+            if not transition_observed:
+                continue  # Confirm with a read taken after the start report.
             start_deadline.reschedule(None if contact.waiting else deadline)
             await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
         else:
