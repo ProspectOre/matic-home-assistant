@@ -51,6 +51,9 @@ on where the plan is:
   charges, it waits as long as [restart recovery](restart-recovery.md) waits
   to reconnect, two minutes, within the room's completion timeout. It goes on
   if the robot comes back with the same task.
+- Between rooms, while the plan waits for the robot to settle before the next
+  one, a silent robot is not yet connection lost: the plan keeps reading for
+  the 12-minute handoff wait, then ends with the rooms it verified.
 
 ## No conflicting commands
 
