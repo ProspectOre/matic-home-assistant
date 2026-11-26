@@ -801,6 +801,8 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
         "synthetic-serial"
     )
     assert plans.control.reopen_metadata_admission.called is not unload_ok
+    # A failed unload leaves the entry loaded, so it takes tours again.
+    assert entry.runtime_data.photo_tours._closed is unload_ok
     if disabled:
         plans.recovery.async_retire_recovery.assert_awaited_once_with(
             "synthetic-serial", "config_entry_unload"
