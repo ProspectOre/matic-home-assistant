@@ -46,16 +46,14 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
     timeout_rescheduled = asyncio.Event()
     identity_read_cancelled = asyncio.Event()
 
-    original_wait_for_room_outcome = (
-        managed_observation_module.async_wait_for_room_outcome
-    )
+    original_next = managed_observation_module.LegOutcomeObserver.next
 
     async def observe_room_waiter(*args, **kwargs):
         room_waiter_started.set()
-        return await original_wait_for_room_outcome(*args, **kwargs)
+        return await original_next(*args, **kwargs)
 
     monkeypatch.setattr(
-        managed_observation_module, "async_wait_for_room_outcome", observe_room_waiter
+        managed_observation_module.LegOutcomeObserver, "next", observe_room_waiter
     )
     # The room waiter refreshes status on this period; the test waits for one.
     monkeypatch.setattr(managed_observation_module, "ROOM_STATUS_REFRESH_SECONDS", 0.01)

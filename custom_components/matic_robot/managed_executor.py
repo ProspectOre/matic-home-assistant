@@ -27,6 +27,7 @@ from .leg_settlement import fire_room_event
 from .managed_run import (
     PlanCancelledError,
     PreparedRoomDispatch,
+    RobotConnectionLostError,
     RoomInterruptedError,
     RoomOwnershipLostError,
     RoomStoppedInPlaceError,
@@ -368,8 +369,14 @@ class _PlanRun:
         await self.progress.advance(HandoffEntered(index))
         if self.finish_room_event.is_set():
             return None
-        refused_on_return = False
+        refused_on_return = leg_sent = False
         if isinstance(leg, list):
+
+            def starting() -> None:
+                # The start goes out next, so the robot may take it.
+                nonlocal leg_sent
+                leg_sent = True
+                self.bind_native_identity(None)
 
             async def dispatch(
                 on_identity: Callable[[bytes | None], None],
@@ -380,7 +387,7 @@ class _PlanRun:
                     self.motion_token,
                     floor_token=self.floor_token,
                     floor_is_current=self.floor_is_current,
-                    on_dispatch=lambda: self.bind_native_identity(None),
+                    on_dispatch=starting,
                     on_claim=lambda session_id: (
                         self.manager.ledger.async_claim_native_session(
                             self.serial_number, session_id, run_id=self.run_id
@@ -425,15 +432,23 @@ class _PlanRun:
                 raise err.service_error(leg[0].name) from err
             if prepared is not None:
                 return _Handoff(prepared, history, revision)
-        if not await observation.async_wait_for_settled_leg_handoff(
-            self.robot,
-            self.cancel_event,
-            expected_identity=self.native_identity,
-            # A refused command whose session shows up late is the robot
-            # taking it after all: never send it twice.
-            reject_new_identity=refused_on_return,
-            finish_room_event=self.finish_room_event,
-        ):
+        try:
+            settled = await observation.async_wait_for_settled_leg_handoff(
+                self.robot,
+                self.cancel_event,
+                expected_identity=self.native_identity,
+                # A refused command whose session shows up late is the robot
+                # taking it after all: never send it twice.
+                reject_new_identity=refused_on_return,
+                leg_sent=leg_sent,
+                finish_room_event=self.finish_room_event,
+            )
+        except RobotConnectionLostError as err:
+            # Name the leg that wasn't sent.
+            raise err.service_error(
+                leg.name if isinstance(leg, AreaLeg) else leg[0].name
+            ) from err
+        if not settled:
             # The previous native leg is complete, but the robot never reached
             # a safe handoff state. Leave the remaining settings legs
             # unattempted; issuing STOP here would restart the OEM stop

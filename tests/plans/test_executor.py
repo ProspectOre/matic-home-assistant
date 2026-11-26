@@ -22,9 +22,11 @@ from custom_components.matic_robot.managed_run import (
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 from tests.plans.fakes import (
+    LEG_OUTCOME,
     OWNED_SESSION,
     heavy_room,
     kitchen_leg_ends,
+    leg_outcomes,
     leg_rooms,
     memory_manager,
     mission_ends,
@@ -139,7 +141,7 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
+            LEG_OUTCOME,
             mission_ends(robot),
         ),
     ):
@@ -225,8 +227,8 @@ async def test_unknown_session_identity_fails_closed_without_room_credit(
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+            LEG_OUTCOME,
+            leg_outcomes(AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE)),
         ) as outcome,
         patch(
             "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
@@ -286,8 +288,8 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
             wait,
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+            LEG_OUTCOME,
+            leg_outcomes(AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE)),
         ) as outcome,
     ):
         await async_run_room_leg(
@@ -372,12 +374,14 @@ async def test_room_pause_and_resume_outcome() -> None:
             wait,
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(
-                side_effect=[
-                    RoomRunOutcome.PAUSED,
-                    RoomRunOutcome.HANDOFF_CANDIDATE,
-                ]
+            LEG_OUTCOME,
+            leg_outcomes(
+                AsyncMock(
+                    side_effect=[
+                        RoomRunOutcome.PAUSED,
+                        RoomRunOutcome.HANDOFF_CANDIDATE,
+                    ]
+                )
             ),
         ) as outcome,
     ):
@@ -432,8 +436,8 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
         sender = AsyncMock()
         with (
             patch(
-                "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-                outcome,
+                LEG_OUTCOME,
+                leg_outcomes(outcome),
             ),
             patch(
                 "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
@@ -506,8 +510,8 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(side_effect=PlanCancelledError),
+            LEG_OUTCOME,
+            leg_outcomes(AsyncMock(side_effect=PlanCancelledError)),
         ),
         pytest.raises(PlanCancelledError),
     ):

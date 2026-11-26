@@ -425,8 +425,10 @@ def managed_stop_fence_owned_by_run(
     run_id: str | None,
 ) -> bool:
     """Return whether an already-transmitted STOP belongs to this managed run."""
-    pending_stop_run_id = manager.control.pending_stop_run_id
-    return run_id is not None and pending_stop_run_id(serial_number) == run_id
+    return (
+        run_id is not None
+        and manager.control.pending_stop_run_id(serial_number) == run_id
+    )
 
 
 @asynccontextmanager

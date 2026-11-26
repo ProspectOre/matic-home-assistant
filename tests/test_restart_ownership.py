@@ -1,5 +1,6 @@
 """Restart recovery follows the dispatch's own session and the idle revision."""
 
+import asyncio
 import hashlib
 from dataclasses import asdict
 from unittest.mock import AsyncMock, patch
@@ -9,7 +10,11 @@ import pytest
 
 from custom_components.matic_robot.client import native_session_hash
 from custom_components.matic_robot.client.exceptions import (
+    CannotConnectError,
     NativeHistoryIncompleteError,
+)
+from custom_components.matic_robot.managed_observation import (
+    async_wait_for_settled_leg_handoff,
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
@@ -135,3 +140,60 @@ async def test_a_run_without_its_call_floor_vacuum_or_start_cannot_resume(
     last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["reason_code"] == "restart_recovery_unavailable"
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_a_robot_silent_during_the_recovered_handoff_sends_nothing(
+    hass, recovery_state, monkeypatch
+):
+    """Lost contact while settling ends recovery as unavailable, sending nothing."""
+    manager, entry, checkpoint, room = recovery_state
+    next_room = CleaningRoom("office", "Office", "mop", "standard")
+    checkpoint.update(
+        {
+            "phase": "handoff",
+            "handoff_history": [],
+            "leg_index": 1,
+            "single_room_missions": True,
+            "rooms": [asdict(room), asdict(next_room)],
+            "completed_room_ids": [room.room_id],
+        }
+    )
+    manager.repository.robot("serial")["last_run"]["room_count"] = 2
+    await save_run_checkpoint(manager, checkpoint)
+    client = entry.runtime_data.client
+    client.async_get_cleaning_session_identity.return_value = b""
+    entry.robot.show("idle")
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_observation.LEG_HANDOFF_POLL_SECONDS",
+        0.001,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_run.RECONNECT_SECONDS", 0.05
+    )
+
+    async def settle_silently(*args, **kwargs):
+        # The robot stops answering once recovery starts the settle wait.
+        client.async_get_cleaning_session_identity.side_effect = CannotConnectError(
+            "offline"
+        )
+        client.async_get_active_cleaning_session_state.side_effect = CannotConnectError(
+            "offline"
+        )
+        return await async_wait_for_settled_leg_handoff(*args, **kwargs)
+
+    with (
+        patch(
+            "custom_components.matic_robot.restart.async_wait_for_settled_leg_handoff",
+            side_effect=settle_silently,
+        ) as settled,
+        patch(
+            "custom_components.matic_robot.restart.async_execute_rooms", AsyncMock()
+        ) as runner,
+    ):
+        await asyncio.wait_for(async_recover_managed_run(hass, entry, "serial"), 5)
+
+    settled.assert_awaited_once()
+    runner.assert_not_awaited()
+    last_run = manager.history.snapshot("serial")["last_run"]
+    assert last_run["reason_code"] == "restart_recovery_unavailable"
+    client.async_send_user_command.assert_not_awaited()

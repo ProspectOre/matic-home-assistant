@@ -97,7 +97,8 @@ at the dock. A replacement command, expiry, or ownership mismatch retires it.
 - Between legs, the next leg starts only if the robot's history still matches
   the fingerprint saved at the handoff. A handoff without that fingerprint
   (history was unreadable, or the checkpoint predates it) cannot continue; nor
-  can a robot that does not settle within the bounded 12-minute handoff wait.
+  can a robot that does not settle within the bounded 12-minute handoff wait
+  or stops answering for two minutes during it.
 - If history verification had already begun, recovery resumes that observer
   with its original deadline; it cannot dispatch another leg. It settles the
   leg's rooms as a run that never restarted would: rooms the history proves

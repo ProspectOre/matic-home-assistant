@@ -28,7 +28,13 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.plans.fakes import memory_manager, plan_room, run_plan_call
+from tests.plans.fakes import (
+    LEG_OUTCOME,
+    leg_outcomes,
+    memory_manager,
+    plan_room,
+    run_plan_call,
+)
 from tests.session_fakes import FakeRobot, robot_port
 
 
@@ -444,8 +450,8 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            side_effect=native_outcome,
+            LEG_OUTCOME,
+            leg_outcomes(native_outcome),
         ),
     ):
         # The run is its own task, which unload waits for.
