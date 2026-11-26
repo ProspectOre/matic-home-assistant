@@ -84,13 +84,21 @@ async def test_the_robot_back_after_the_start_timeout_keeps_its_start(
     assert started is RobotActivity.CLEANING
 
 
-async def test_an_answer_without_the_new_task_is_still_a_start_timeout(hass):
-    # Silent first, then answering without a new task: the start question
-    # comes back, and its deadline has passed.
-    reads = iter([None] * 50)
+async def test_an_answer_without_the_new_task_is_still_a_start_timeout(
+    hass, monkeypatch
+):
+    # Silent past the start deadline but well inside the window, then
+    # answering without a new task: the start question comes back, and its
+    # deadline has passed.
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_run.RECONNECT_SECONDS",
+        START_TIMEOUT * 4,
+    )
+    loop = asyncio.get_running_loop()
+    back_at = loop.time() + START_TIMEOUT * 1.5
 
     async def read() -> bytes | None:
-        return next(reads, b"")
+        return b"" if loop.time() >= back_at else None
 
     with pytest.raises(TimeoutError):
         await async_wait_for_owned_start(
