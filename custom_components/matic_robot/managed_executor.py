@@ -343,11 +343,21 @@ class _PlanRun:
                 # be returning. Persist the next leg before the bounded handoff
                 # wait so restart recovery can resume the queue instead of
                 # treating the prior verifying leg as the only recoverable work.
-                revision = await self.robot.handoff_revision()
-                handoff_keys = await self.robot.history_keys(
-                    handoff=True, session_hash=self.checkpoint.session_hash
+                # A stop or unload ends the reads and leaves the leg verifying.
+                revision, handoff_keys = await managed_run.async_unless_cancelled(
+                    self.async_read_handoff(), self.cancel_event
                 )
                 await self.advance(LegVerified(index + 1, handoff_keys, revision))
+
+    async def async_read_handoff(
+        self,
+    ) -> tuple[str | None, frozenset[bytes] | None]:
+        """Read the idle marker and history keys the next leg is fenced by."""
+        revision = await self.robot.handoff_revision()
+        keys = await self.robot.history_keys(
+            handoff=True, session_hash=self.checkpoint.session_hash
+        )
+        return revision, keys
 
     async def async_hand_off(self, index: int, leg: PlanLeg) -> _Handoff | None:
         """Carry the run from the ended leg into this one, or None to stop.
