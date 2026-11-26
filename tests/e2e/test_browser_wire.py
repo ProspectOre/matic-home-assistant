@@ -207,7 +207,7 @@ async def _record(plan: PlanRun, http: Any, ws: Any, events: Any) -> dict[str, A
     assert response.status == 200
     invalidation = await event("invalidate", "areas")
     rooms = (await read(plans_api_url(entry_id)))["rooms"]
-    await command(
+    plan_reply = await command(
         {
             "type": "call_service",
             "domain": DOMAIN,
@@ -229,6 +229,7 @@ async def _record(plan: PlanRun, http: Any, ws: Any, events: Any) -> dict[str, A
                     },
                 ],
             },
+            "return_response": True,
         }
     )
     snapshot = await command(
@@ -240,6 +241,7 @@ async def _record(plan: PlanRun, http: Any, ws: Any, events: Any) -> dict[str, A
         "history": await read(history_api_url(entry_id)),
         "areas": await read(areas_api_url(entry_id)),
         "plans": await read(plans_api_url(entry_id)),
+        "saved_plan": plan_reply["result"]["response"]["plan"],
         "workspace_snapshot": snapshot["result"],
         "invalidation": invalidation["invalidation"],
         "pose": pose["pose"],

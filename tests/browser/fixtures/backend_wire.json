@@ -276,6 +276,41 @@
     ],
     "selected_plan": "daily"
   },
+  "saved_plan": {
+    "id": "daily",
+    "name": "Daily",
+    "enabled": true,
+    "run_behavior": "intelligent",
+    "rooms": [
+      {
+        "room_id": "room_c1d79365ea288b25",
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard"
+      }
+    ],
+    "entries": [
+      {
+        "kind": "room",
+        "room_id": "room_c1d79365ea288b25"
+      },
+      {
+        "kind": "area",
+        "area_id": "rug",
+        "cleaning_mode": "mop",
+        "coverage_setting": "standard"
+      }
+    ],
+    "room_order": [
+      "room_c1d79365ea288b25"
+    ],
+    "return_to_base": true,
+    "finish_current_room": false,
+    "finish_current_room_threshold": 50,
+    "occupancy_aware": false,
+    "occupancy_sensors": {},
+    "start_timeout": 120,
+    "completion_timeout": 21600
+  },
   "workspace_snapshot": {
     "schema": 1,
     "capabilities": {

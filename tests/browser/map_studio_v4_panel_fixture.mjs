@@ -81,6 +81,7 @@ const backend = {
   areas: recorded(wire.areas, { rooms: [], areas: [], selected_area: null }),
   area: wire.areas.areas[0],
   plan: wire.plans.plans[0],
+  savedPlan: wire.saved_plan,
   snapshot: wire.workspace_snapshot,
   invalidation: wire.invalidation,
   pose: wire.pose,
@@ -228,14 +229,13 @@ export async function installPanelFixture(page, {
     let sceneUpdates = 0;
     let latestUnchanged = 0;
     const planCatalog = structuredClone(plans);
-    // A saved plan as save_plan returns it; the list adds its next-run preview,
-    // which this fixture does not compute.
-    const { next_run_preview: _preview, next_run_estimate_seconds: _estimate, ...savedPlan } = backend.plan;
+    // A new plan as the list shows it, without the next-run preview this fixture does not compute.
+    const { next_run_preview: _preview, next_run_estimate_seconds: _estimate, ...listedPlan } = backend.plan;
     const applySavedPlan = (data) => {
       let plan = data.plan_id && planCatalog.plans.find((candidate) => candidate.id === data.plan_id);
       if (data.plan_id && !plan) throw new Error(`unknown synthetic plan: ${data.plan_id}`);
       if (!plan) {
-        plan = { ...structuredClone(savedPlan), id: `synthetic-plan-${planCatalog.plans.length + 1}` };
+        plan = { ...structuredClone(listedPlan), id: `synthetic-plan-${planCatalog.plans.length + 1}` };
         planCatalog.plans.push(plan);
       }
       plan.name = data.name;
@@ -270,8 +270,12 @@ export async function installPanelFixture(page, {
         },
       }));
       if (data.select || !planCatalog.selected_plan) planCatalog.selected_plan = plan.id;
-      const { next_run_preview: _shown, next_run_estimate_seconds: _seconds, ...saved } = plan;
-      return { response: { plan: structuredClone(saved) } };
+      // save_plan returns the stored plan: its fields as the list shows them, area
+      // steps without the name the list adds, and the stored timeouts.
+      const saved = Object.fromEntries(Object.entries(backend.savedPlan)
+        .map(([key, value]) => [key, structuredClone(key in plan ? plan[key] : value)]));
+      saved.entries = saved.entries.map(({ name: _name, ...step }) => step);
+      return { response: { plan: saved } };
     };
     const fetchWithAuth = async (path, options = {}) => {
       const entryB = path.endsWith("-b");
