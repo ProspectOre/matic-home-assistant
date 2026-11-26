@@ -98,9 +98,9 @@ there lists any other exception with its reason.
   browser shard) and Validate run on GitHub-hosted runners for every pull
   request and every push to `main` or a release branch. A test rejects any
   other runner.
-- Nightly runs the tests and the live lane on the oldest supported, newest
-  stable and beta Home Assistant. GitHub starts it from the default branch
-  only.
+- Nightly runs `check.py --all` and the live lane on the oldest supported,
+  newest stable and beta Home Assistant. GitHub starts it from the default
+  branch only.
 - Test's `build` job builds Matic Map once; the tests, the live lane and the
   browser shards download it, and `check.py --built` tests it without
   rebuilding. Test keeps `matic_robot.zip`, the file HACS installs, for every
