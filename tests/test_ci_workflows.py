@@ -143,6 +143,13 @@ def test_nightly_installs_a_version_for_every_lane_and_runs_every_suite() -> Non
         "if": "matrix.suite == 'pytest'",
         "run": "python scripts/check.py --all --built",
     } in job["steps"]
+    # ruff and mypy return to the lockfile after every lane's install, so a
+    # tool release cannot turn the lanes red.
+    runs = [step.get("run", "") for step in job["steps"]]
+    pin = next(i for i, run in enumerate(runs) if 'tomllib.load(open("uv.lock"' in run)
+    assert '("ruff", "mypy")' in runs[pin]
+    check = runs.index("python scripts/check.py --all --built")
+    assert runs.index(install) < pin < check
 
 
 def _commands(job: dict[str, Any]) -> list[str]:
