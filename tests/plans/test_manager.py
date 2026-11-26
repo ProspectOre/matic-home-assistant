@@ -297,6 +297,117 @@ async def test_reconciliation_tasks_are_lifecycle_bound(hass) -> None:
     assert not manager.control.actor("serial").reconciliation_tasks
 
 
+async def test_a_cancelled_unload_waiter_still_ends_the_run_and_cleans_up(
+    hass,
+) -> None:
+    """Cancelling the caller neither cancels the run nor skips its cleanup."""
+    manager = CleaningPlanManager(hass)
+    control = manager.control
+    cancel = control.prepare_run("serial")
+    ending = asyncio.Event()
+    release = asyncio.Event()
+
+    async def run() -> str:
+        control.register_run_task("serial")
+        await cancel.wait()
+        # The run records how it ended, which takes a moment.
+        ending.set()
+        await release.wait()
+        return "ended on its cancel event"
+
+    run_task = asyncio.create_task(run())
+    watcher = asyncio.create_task(asyncio.Event().wait())
+    control.register_reconciliation_task("serial", watcher)
+    await asyncio.sleep(0)
+    metadata_settled = asyncio.Event()
+
+    async def settle_metadata(_serial_number: str) -> None:
+        metadata_settled.set()
+
+    with patch.object(
+        manager.repository, "async_wait_metadata_persistence", settle_metadata
+    ):
+        waiter = asyncio.create_task(control.async_cancel_and_wait("serial"))
+        await ending.wait()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert not run_task.done()
+        assert not watcher.done()
+
+        release.set()
+        assert await run_task == "ended on its cancel event"
+        async with asyncio.timeout(1):
+            await metadata_settled.wait()
+    await asyncio.sleep(0)
+    assert watcher.cancelled()
+    assert not control.actor("serial").reconciliation_tasks
+    assert control.cancellation_reason("serial") == "config_entry_unload"
+    assert not control.actor("serial").teardowns
+
+
+async def test_a_late_unload_cleanup_leaves_a_new_entrys_watchers(hass) -> None:
+    """Cleanup outliving its caller does not touch an entry set up since."""
+    manager = CleaningPlanManager(hass)
+    control = manager.control
+    cancel = control.prepare_run("serial")
+    release = asyncio.Event()
+
+    async def run() -> None:
+        control.register_run_task("serial")
+        await cancel.wait()
+        await release.wait()
+
+    run_task = asyncio.create_task(run())
+    await asyncio.sleep(0)
+    waiter = asyncio.create_task(control.async_cancel_and_wait("serial"))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    # The entry is set up again before the old run has ended.
+    control.activate_robot("serial")
+    watcher = asyncio.create_task(asyncio.Event().wait())
+    control.register_reconciliation_task("serial", watcher, dock=True, run_id="new")
+    (teardown,) = control.actor("serial").teardowns
+    release.set()
+    await run_task
+    async with asyncio.timeout(1):
+        await teardown
+    assert not watcher.done()
+    assert control.dock_reconciliation_active("serial")
+    watcher.cancel()
+    await asyncio.gather(watcher, return_exceptions=True)
+
+
+async def test_metadata_wait_returns_before_a_finished_worker_is_forgotten(
+    hass,
+) -> None:
+    """A worker that finished, but whose done callback is still queued, is settled."""
+    manager = CleaningPlanManager(hass)
+    repository = manager.repository
+    worker = asyncio.create_task(asyncio.sleep(0))
+    await worker
+    # Registering a finished task queues its done callback for a later step.
+    repository.register_metadata_task("serial", worker)
+    assert repository.metadata_persistence_tasks["serial"] == {worker}
+    gather = asyncio.gather
+    calls = 0
+
+    def bounded_gather(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 3:
+            raise AssertionError("the wait kept awaiting the finished worker")
+        return gather(*args, **kwargs)
+
+    with patch("asyncio.gather", bounded_gather):
+        await repository.async_wait_metadata_persistence("serial")
+    await asyncio.sleep(0)
+    assert "serial" not in repository.metadata_persistence_tasks
+
+
 async def test_dock_scope_cleanup_claims_unset_run_id(hass) -> None:
     """A live dock watcher claims an otherwise-unset activity scope."""
     manager = CleaningPlanManager(hass)

@@ -171,19 +171,20 @@ async def async_dispatch_leg_command(
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
     expected_dispatch_revision: str | None = None,
+    cancel_event: asyncio.Event | None = None,
+    on_dispatching: Callable[[], Awaitable[object]] | None = None,
 ) -> PreparedRoomDispatch:
     """Start one owned leg mission and keep what its completion is judged by.
 
     A custom area leg is its own mission, started with the same ownership.
+    ``on_dispatching`` runs once the handoff boundary holds, before the claim
+    and the start: a stop or unload before then sent nothing.
     """
     area = rooms if isinstance(rooms, AreaLeg) else None
     leg = () if isinstance(rooms, AreaLeg) else tuple(rooms)
-    if floor_is_current is not None and not floor_is_current():
-        raise managed_run.validation_error(
-            "The robot's room map is unavailable", "room_plan_unavailable"
-        )
+    _require_current_floor(floor_is_current)
     history_baseline = await _async_dispatch_history_baseline(
-        robot, tracked=on_claim is not None, expected_hashes=expected_dispatch_history
+        robot, on_claim is not None, expected_dispatch_history, cancel_event
     )
     identity_baseline: bytes | None = None
     for attempt in range(observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
@@ -203,10 +204,7 @@ async def async_dispatch_leg_command(
         or (expected_dispatch_identity != b"" and identity_baseline == b"")
     ):
         raise RoomTakenOverError("The native task changed during the handoff boundary")
-    if floor_is_current is not None and not floor_is_current():
-        raise managed_run.validation_error(
-            "The robot's room map is unavailable", "room_plan_unavailable"
-        )
+    _require_current_floor(floor_is_current)
     managed_session_id = uuid4()
     dispatched_at = dt_util.utcnow()
     command: PlanStart
@@ -237,14 +235,13 @@ async def async_dispatch_leg_command(
             floor_token=floor_token,
             idle_revision=expected_dispatch_revision,
         )
+    if on_dispatching is not None:
+        await on_dispatching()
     if on_claim is not None:
         # The claim is durable before the start is sent. Native history may
         # arrive immediately after the robot accepts it.
         await on_claim(str(managed_session_id))
-        if floor_is_current is not None and not floor_is_current():
-            raise managed_run.validation_error(
-                "The robot's room map is unavailable", "room_plan_unavailable"
-            )
+        _require_current_floor(floor_is_current)
     if on_dispatch is not None:
         on_dispatch()
     try:
@@ -308,8 +305,19 @@ async def async_dispatch_leg_command(
     )
 
 
+def _require_current_floor(floor_is_current: Callable[[], bool] | None) -> None:
+    """Refuse the dispatch when the robot left the floor the run was planned on."""
+    if floor_is_current is not None and not floor_is_current():
+        raise managed_run.validation_error(
+            "The robot's room map is unavailable", "room_plan_unavailable"
+        )
+
+
 async def _async_dispatch_history_baseline(
-    robot: RobotPort, *, tracked: bool, expected_hashes: frozenset[str] | None
+    robot: RobotPort,
+    tracked: bool,
+    expected_hashes: frozenset[str] | None,
+    cancel_event: asyncio.Event | None,
 ) -> frozenset[bytes] | None:
     """Read the history keys a dispatch is judged by; None when it needs none.
 
@@ -317,14 +325,18 @@ async def _async_dispatch_history_baseline(
     that exact identity back, so it verifies its result without old history,
     which can then be empty, slow or unreadable. An untracked dispatch and a
     handoff still read it, and a handoff's keys must match ``expected_hashes``.
+    Setting ``cancel_event`` ends the read at once.
     """
     if tracked and expected_hashes is None:
         return None
     try:
-        baseline = await robot.history_keys(
-            handoff=expected_hashes is not None,
-            expected_hashes=expected_hashes,
-            raise_incomplete=True,
+        baseline = await managed_run.async_unless_cancelled(
+            robot.history_keys(
+                handoff=expected_hashes is not None,
+                expected_hashes=expected_hashes,
+                raise_incomplete=True,
+            ),
+            cancel_event,
         )
     except NativeHistoryIncompleteError as err:
         raise NativeHistoryIncompleteBaselineError from err
