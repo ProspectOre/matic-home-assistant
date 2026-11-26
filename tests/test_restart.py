@@ -234,7 +234,7 @@ async def test_interrupted_mixed_dispatch_rechecks_after_stop_fence_persist(
 
     manager.recovery.async_prepare_mixed_dispatch_stop = replace_during_persist
     with patch(
-        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_dock_after_stop"
     ) as schedule:
         await async_recover_managed_run(hass, entry, "serial")
 
@@ -261,7 +261,7 @@ async def test_interrupted_mixed_dispatch_rechecks_identity_after_fence_persist(
         replacement_on_final_read
     )
     with patch(
-        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_dock_after_stop"
     ) as schedule:
         await async_recover_managed_run(hass, entry, "serial")
 
@@ -312,7 +312,7 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
     with (
         patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
         patch(
-            "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
+            "custom_components.matic_robot.restart.schedule_dock_after_stop"
         ) as schedule,
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -345,7 +345,7 @@ async def test_interrupted_mixed_dispatch_rolls_back_failed_stop_prepare(
     with (
         pytest.raises(OSError, match="save failed"),
         patch(
-            "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
+            "custom_components.matic_robot.restart.schedule_dock_after_stop"
         ) as schedule,
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -407,7 +407,7 @@ async def test_restart_does_not_replay_ambiguous_mixed_recovery_stop(
         transmitted_then_lost_ack
     )
     with patch(
-        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_dock_after_stop"
     ) as schedule:
         await async_recover_managed_run(hass, entry, "serial")
 
@@ -424,7 +424,7 @@ async def test_restart_does_not_replay_ambiguous_mixed_recovery_stop(
     await restored.async_load()
     entry.runtime_data.cleaning_plans = restored
     with patch(
-        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_dock_after_stop"
     ) as schedule_settlement:
         await async_recover_managed_run(hass, entry, "serial")
     entry.runtime_data.client.async_send_user_command.assert_awaited_once()
@@ -446,7 +446,7 @@ async def test_restart_cancellation_respects_mixed_stop_transmission(
     entry.runtime_data.client.async_send_user_command.side_effect = cancel_stop
     with (
         patch(
-            "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
+            "custom_components.matic_robot.restart.schedule_dock_after_stop"
         ) as schedule,
         pytest.raises(asyncio.CancelledError),
     ):
@@ -474,7 +474,7 @@ async def test_restart_unexpected_stop_error_respects_transmission(
 
     entry.runtime_data.client.async_send_user_command.side_effect = fail_stop
     with patch(
-        "custom_components.matic_robot.restart.schedule_managed_dock_after_stop"
+        "custom_components.matic_robot.restart.schedule_dock_after_stop"
     ) as schedule:
         if transmitted:
             await async_recover_managed_run(hass, entry, "serial")
