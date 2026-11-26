@@ -54,7 +54,8 @@ on where the plan is:
   if the robot comes back with the same task.
 - Between rooms, while the plan waits up to 12 minutes for the robot to
   settle before the next one, a silent robot gets the same two minutes. The
-  next room isn't sent, and the plan keeps the rooms it verified.
+  next room isn't sent, unless the robot refused it on the way home and may
+  have taken it after all. The plan keeps the rooms it verified.
 
 ## No conflicting commands
 
