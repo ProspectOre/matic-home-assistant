@@ -18,8 +18,7 @@ from .const import DOMAIN
 from .entity import MaticEntity
 from .managed_run import validation_error
 from .robot_controls import QUEUE_COMMANDS, RobotControls, queue_options
-from .stop_request import admit_stop
-from .stop_return import async_send_stop, schedule_dock_after_stop
+from .stop_return import admit_stop, async_send_stop, schedule_dock_after_stop
 from .stores import Store
 from .vacuum_catalog import FloorSegmentCatalog
 

@@ -62,7 +62,7 @@ from .service_schemas import (
     RUN_SELECTED_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
 )
-from .stop_request import admit_stop
+from .stop_return import admit_stop
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry

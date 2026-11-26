@@ -1,4 +1,4 @@
-"""Send a stopped robot home as soon as its native task settles.
+"""Admit a Stop, then send the stopped robot home once its native task settles.
 
 Matic's firmware owns a graceful countdown after an accepted STOP and docks
 only once it expires.  A DOCK sent while that task is still running is
@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
 from time import monotonic
@@ -549,3 +551,53 @@ def schedule_dock_confirmation(
     manager.control.register_reconciliation_task(
         serial_number, task, dock=True, run_id=run_id
     )
+
+
+@dataclass(frozen=True, slots=True)
+class StopAdmission:
+    """An admitted Stop: the run it stops, its policy and its fence."""
+
+    run_id: str | None
+    behavior: str
+    generation: int
+    stop_generation: int
+
+
+@asynccontextmanager
+async def admit_stop(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    *,
+    stop_now: bool = False,
+    require: Callable[[str | None], None] | None = None,
+) -> AsyncIterator[StopAdmission | None]:
+    """Apply the run's stop policy and save it, under the command lock.
+
+    ``require`` checks the request against the active run first. The lock is
+    held while the caller dispatches. It yields None when a newer command or
+    Stop arrived while the intent was being saved, so this one sends nothing.
+    """
+    control = manager.control
+    async with control.external_command(serial_number):
+        run_id = manager.ledger.active_run_id(serial_number)
+        if require is not None:
+            require(run_id)
+        decision = (
+            control.request_stop(serial_number, stop_now=True)
+            if stop_now
+            else control.request_stop(serial_number)
+        )
+        generation = control.motion_generation(serial_number)
+        stop_generation = control.stop_request_generation(serial_number)
+        await manager.recovery.async_checkpoint_stop_intent(
+            serial_number, decision.behavior, run_id=run_id
+        )
+        current = (
+            control.motion_generation(serial_number) == generation
+            and control.stop_request_generation(serial_number) == stop_generation
+        )
+        yield (
+            StopAdmission(run_id, decision.behavior, generation, stop_generation)
+            if current
+            else None
+        )
