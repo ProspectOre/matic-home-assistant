@@ -14,23 +14,18 @@ from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 
-from custom_components.matic_robot import managed_run, session
-from custom_components.matic_robot.client import hermes_collections, hermes_connection
+from custom_components.matic_robot import managed_run
 
 from .hermes_sim import RunningSimulator, SimulatedRobot
 from .plan_run import VACUUM, PlanRun, expect_finished, state_becomes
 
 
-@pytest.fixture(autouse=True)
-def fast_outage(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail reads and mark the robot unreachable in 0.2 s, not 10 s."""
-    monkeypatch.setattr(hermes_collections, "RPC_TIMEOUT", 0.2)
-    monkeypatch.setattr(hermes_connection, "RPC_TIMEOUT", 0.2)
-    monkeypatch.setattr(session, "UNREACHABLE_AFTER_SECONDS", 0.2)
-
-
 async def _outage(hass: HomeAssistant, simulator: RunningSimulator) -> None:
-    """Take the robot off the network until its vacuum shows unavailable."""
+    """Take the robot off the network until its vacuum shows unavailable.
+
+    A cut resets the connection and refuses each redial, so reads fail and the
+    failed dial marks the robot unreachable at once, with production timeouts.
+    """
     simulator.link.cut()
     await state_becomes(hass, VACUUM, STATE_UNAVAILABLE)
 
