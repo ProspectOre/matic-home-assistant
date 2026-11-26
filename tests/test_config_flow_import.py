@@ -987,7 +987,7 @@ async def test_the_pasted_credential_never_reaches_logs_or_forms(
     )
 
     assert shown[-1]["errors"] == {"base": "cannot_connect"}
-    assert "Matic credential import could not verify the robot" in caplog.text
+    assert "Matic could not verify the robot: unexpected" in caplog.text
     for marker in (secret, "replacement-token"):
         assert marker not in caplog.text
         for result in shown:
