@@ -137,6 +137,12 @@ def test_nightly_installs_a_version_for_every_lane_and_runs_every_suite() -> Non
         assert f"\n  {lane}) uv pip install " in install
     for suite in matrix["suite"]:
         assert f"matrix.suite == '{suite}'" in conditions
+    # A shallow scheduled checkout changes no file, so without --all check.py
+    # would select no test and pass.
+    assert {
+        "if": "matrix.suite == 'pytest'",
+        "run": "python scripts/check.py --all --built",
+    } in job["steps"]
 
 
 def _commands(job: dict[str, Any]) -> list[str]:
