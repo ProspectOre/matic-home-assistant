@@ -683,5 +683,10 @@ def test_schedule_cleaning_mode_edge_cases() -> None:
     assert mode_of(_schedule_with_goals()) is None
     weekly = _bfield(1, _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 630)))
     assert mode_of(weekly + _bfield(7, b"\x0a\xff")) is None
-    assert mode_of(weekly + _bfield(7, _fixed64(1, 1) + _fixed64(2, 2))) is None
+    stray_uuid = weekly + _bfield(7, _fixed64(1, 1) + _fixed64(2, 2))
+    assert mode_of(stray_uuid) is None
+    # Rooms come only from the per-room blocks; a UUID elsewhere is not one.
+    stray = decode_schedule(stray_uuid)
+    assert stray is not None
+    assert stray.room_ids == ()
     assert mode_of(weekly + _vfield(7, 1)) is None
