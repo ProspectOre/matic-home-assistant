@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
+import { catalogEntry, installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
 async function openWorkflow(page, workflow) {
   await page.evaluate((selected) => {
@@ -156,4 +156,21 @@ test("a saved map shown for a failed live map keeps Try again until the live map
   await expect(panel.getByRole("group", { name: "Change Kitchen" }).getByRole("button")).toHaveText([
     "Skip", "Clean next", "Clean again",
   ]);
+});
+
+test("the workspace snapshot leaves a failed live map's Try again while a saved map stands in", async ({ page }) => {
+  const panel = await mountPanelWithFailedFirstMap(page, "cleaning", true);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingHistoryScenes.length)).toBe(1);
+  // The socket opens once the saved map shows. Only its snapshot carries this row's
+  // new history count, so the panel holding it shows the snapshot was applied.
+  const catalogReads = await page.evaluate((row) => {
+    window.__panelFixture.setCatalogEntries([row]);
+    window.__panelFixture.pendingHistoryScenes.shift()();
+    return window.__panelFixture.catalogReads;
+  }, { ...catalogEntry(), history_count: 2 });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.entry?.historyCount)).toBe(2);
+  expect(await page.evaluate(() => window.__panelFixture.catalogReads)).toBe(catalogReads);
+  // Checked at once: a later live map read would bring the alert back.
+  expect(await panel.getByRole("alert").filter({ hasText: "Home Assistant couldn't load the map." }).isVisible()).toBe(true);
+  expect(await page.evaluate(() => window.__firstMap.reads)).toBe(1);
 });

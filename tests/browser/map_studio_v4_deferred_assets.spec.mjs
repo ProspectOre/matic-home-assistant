@@ -314,31 +314,19 @@ test("push invalidation and periodic polling refresh the active clean room list 
   const emptyShortcuts = { "matic_robot_home_shortcuts.synthetic-entry": { version: 2, pins: [], excluded: [] } };
   const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: emptyShortcuts });
-  await page.evaluate(() => {
-    const panel = window.__panelFixture.createPanel();
-    const connection = panel.hass.connection;
-    const subscribe = connection.subscribeMessage.bind(connection);
-    connection.subscribeMessage = (callback, message) => {
-      if (message?.type === "matic_robot/workspace_subscribe") window.__workspaceQueueCallback = callback;
-      return subscribe(callback, message);
-    };
-    document.body.append(panel);
-  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().map.available)).toBe(true);
   await expect(panel.getByRole("group", { name: "Change Kitchen" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__panelFixture.planReads)).toBeGreaterThan(0);
-  await expect.poll(() => page.evaluate(() => typeof window.__workspaceQueueCallback)).toBe("function");
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.openSubscriptions)).toBe(1);
 
   const beforePush = await page.evaluate(() => window.__panelFixture.planReads);
   await page.evaluate((catalog) => {
     window.__panelFixture.setPlanCatalog({ ...catalog, rooms: [
       { room_id: "room-a", name: "Kitchen after push", cleaning_mode: "vacuum", coverage_setting: "standard" },
     ] });
-    window.__workspaceQueueCallback({ type: "invalidate", invalidation: {
-      epoch: "synthetic-workspace-epoch", sequence: 1, coherence_generation: 1,
-      revisions: { plans: 1 }, resources: ["plans"],
-    } });
+    window.__panelFixture.announce("plans");
   }, QUEUE_CATALOG);
   await expect.poll(() => page.evaluate(() => window.__panelFixture.planReads)).toBeGreaterThan(beforePush);
   await expect(panel.getByRole("group", { name: "Change Kitchen after push" })).toBeVisible();
@@ -355,19 +343,10 @@ test("a sent queue change stays pending across a catalog refresh and cannot be d
   await page.goto("/");
   const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA });
-  await page.evaluate(() => {
-    const panel = window.__panelFixture.createPanel();
-    const connection = panel.hass.connection;
-    const subscribe = connection.subscribeMessage.bind(connection);
-    connection.subscribeMessage = (callback, message) => {
-      if (message?.type === "matic_robot/workspace_subscribe") window.__workspaceQueueCallback = callback;
-      return subscribe(callback, message);
-    };
-    document.body.append(panel);
-  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
   await expect(panel.getByRole("group", { name: "Change Kitchen" })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => typeof window.__workspaceQueueCallback)).toBe("function");
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.openSubscriptions)).toBe(1);
   await page.evaluate(() => window.__panelFixture.deferNextService());
   await panel.getByRole("group", { name: "Change Kitchen" }).getByRole("button", { name: "Skip" }).click();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().queuePending)).toBe(true);
@@ -377,10 +356,7 @@ test("a sent queue change stays pending across a catalog refresh and cannot be d
     window.__panelFixture.setPlanCatalog({ ...catalog, rooms: [
       { room_id: "room-a", name: "Kitchen refreshed", cleaning_mode: "vacuum", coverage_setting: "standard" },
     ] });
-    window.__workspaceQueueCallback({ type: "invalidate", invalidation: {
-      epoch: "synthetic-workspace-epoch", sequence: 1, coherence_generation: 1,
-      revisions: { plans: 1 }, resources: ["plans"],
-    } });
+    window.__panelFixture.announce("plans");
   }, QUEUE_CATALOG);
   await expect.poll(() => page.evaluate(() => window.__panelFixture.planReads)).toBeGreaterThan(previousReads);
   await expect(panel.getByRole("group", { name: "Change Kitchen refreshed" })).toBeVisible();
@@ -398,28 +374,16 @@ test("a confirmed queue change remains visible during a live catalog refresh", a
   await page.goto("/");
   const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA });
-  await page.evaluate(() => {
-    const panel = window.__panelFixture.createPanel();
-    const connection = panel.hass.connection;
-    const subscribe = connection.subscribeMessage.bind(connection);
-    connection.subscribeMessage = (callback, message) => {
-      if (message?.type === "matic_robot/workspace_subscribe") window.__workspaceQueueCallback = callback;
-      return subscribe(callback, message);
-    };
-    document.body.append(panel);
-  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
   await expect(panel.getByRole("group", { name: "Change Kitchen" })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => typeof window.__workspaceQueueCallback)).toBe("function");
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.openSubscriptions)).toBe(1);
   await page.evaluate(() => window.__panelFixture.deferNextService());
   await panel.getByRole("group", { name: "Change Kitchen" }).getByRole("button", { name: "Skip" }).click();
   await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingServiceCount())).toBe(1);
   await page.evaluate(() => {
     window.__panelFixture.deferNextPlansRead();
-    window.__workspaceQueueCallback({ type: "invalidate", invalidation: {
-      epoch: "synthetic-workspace-epoch", sequence: 1, coherence_generation: 1,
-      revisions: { plans: 1 }, resources: ["plans"],
-    } });
+    window.__panelFixture.announce("plans");
   });
   await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingPlanReadCount())).toBe(1);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.plans.status)).toBe("loading");
@@ -434,29 +398,17 @@ test("an equivalent refreshed room catalog still permits the sent queue result n
   await page.goto("/");
   const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA });
-  await page.evaluate(() => {
-    const panel = window.__panelFixture.createPanel();
-    const connection = panel.hass.connection;
-    const subscribe = connection.subscribeMessage.bind(connection);
-    connection.subscribeMessage = (callback, message) => {
-      if (message?.type === "matic_robot/workspace_subscribe") window.__workspaceQueueCallback = callback;
-      return subscribe(callback, message);
-    };
-    document.body.append(panel);
-  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
   await expect(panel.getByRole("group", { name: "Change Kitchen" })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => typeof window.__workspaceQueueCallback)).toBe("function");
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.openSubscriptions)).toBe(1);
   await page.evaluate(() => window.__panelFixture.deferNextService());
   await panel.getByRole("group", { name: "Change Kitchen" }).getByRole("button", { name: "Skip" }).click();
   await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingServiceCount())).toBe(1);
   const previousReads = await page.evaluate(() => window.__panelFixture.planReads);
   await page.evaluate((catalog) => {
     window.__panelFixture.setPlanCatalog(structuredClone(catalog));
-    window.__workspaceQueueCallback({ type: "invalidate", invalidation: {
-      epoch: "synthetic-workspace-epoch", sequence: 1, coherence_generation: 1,
-      revisions: { plans: 1 }, resources: ["plans"],
-    } });
+    window.__panelFixture.announce("plans");
   }, QUEUE_CATALOG);
   await expect.poll(() => page.evaluate(() => window.__panelFixture.planReads)).toBeGreaterThan(previousReads);
   expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().queuePending)).toBe(true);
@@ -583,26 +535,14 @@ test("a failed room catalog keeps its retry visible when the map is unavailable"
   await page.goto("/");
   const fixture = await installPanelFixture(page, { moduleSource: "typescript",
     initialPlanCatalog: QUEUE_CATALOG, initialRobotStates: CLEANING_ROBOT, userData: QUEUE_USER_DATA });
-  await page.evaluate(() => {
-    const panel = window.__panelFixture.createPanel();
-    const connection = panel.hass.connection;
-    const subscribe = connection.subscribeMessage.bind(connection);
-    connection.subscribeMessage = (callback, message) => {
-      if (message?.type === "matic_robot/workspace_subscribe") window.__workspaceQueueCallback = callback;
-      return subscribe(callback, message);
-    };
-    document.body.append(panel);
-  });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
   await expect(panel.getByRole("group", { name: "Change Kitchen" })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => typeof window.__workspaceQueueCallback)).toBe("function");
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.openSubscriptions)).toBe(1);
   const previousReads = await page.evaluate(() => window.__panelFixture.planReads);
   await page.evaluate(() => {
     window.__panelFixture.failNextPlansRead();
-    window.__workspaceQueueCallback({ type: "invalidate", invalidation: {
-      epoch: "synthetic-workspace-epoch", sequence: 1, coherence_generation: 1,
-      revisions: { plans: 1 }, resources: ["plans"],
-    } });
+    window.__panelFixture.announce("plans");
   });
   await expect.poll(() => page.evaluate(() => window.__panelFixture.planReads)).toBeGreaterThan(previousReads);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.plans.status)).toBe("error");

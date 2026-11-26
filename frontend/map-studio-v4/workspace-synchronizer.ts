@@ -9,6 +9,7 @@ import type {
   WorkspaceConnection,
   WorkspaceInvalidation,
 } from "./workspace-transport";
+import { liveMapFailed } from "./home-retry";
 import { scheduleAfterMapAdmission } from "./map-admission-gate";
 
 interface WorkspaceSynchronizationCallbacks {
@@ -394,12 +395,14 @@ export class WorkspaceSynchronizer {
     const coherent = admittedEntry.mapFloorCoherent && admittedEntry.mapSessionVerified;
     const degraded = admittedEntry.health === "problem" || admittedEntry.health === "limited";
     const spatialRecoveryBlocked = this.#callbacks.spatialRecoveryBlocks(admittedEntry);
+    // The row proves the floor, not the live scene: a live map whose read
+    // failed stays failed, with its Try again, until a read admits it.
     this.#store.dispatch({
       type: "result",
       managedLock: entryManagedLock(admittedEntry),
       coherence: spatialRecoveryBlocked
         ? "verifying"
-        : coherent ? (degraded ? "degraded" : "current") : "verifying",
+        : coherent ? (degraded || liveMapFailed(state) ? "degraded" : "current") : "verifying",
       map: {
         available: state.resources.scene.value !== null,
         complete: admittedEntry.mapComplete && !admittedEntry.mapTruncated,
