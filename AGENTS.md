@@ -32,7 +32,8 @@ and review.
   with Home Assistant blocked.
 - The plan core holds plan values and accounting rules; `PLAN_CORE` in
   `scripts/check.py` lists its modules. It imports the client and itself,
-  never Home Assistant.
+  never Home Assistant. Its tests in `tests/plan_core` also run with Home
+  Assistant blocked.
 - Entity platforms, the modules with `async_setup_entry` such as `sensor.py`
   and `vacuum.py`, do not import each other. Shared code goes in a module both
   import.

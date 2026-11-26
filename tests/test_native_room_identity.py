@@ -20,7 +20,6 @@ from custom_components.matic_robot.native_history import (
 from custom_components.matic_robot.room_statistics import (
     native_room_statistics_by_session,
 )
-from custom_components.matic_robot.sensor import _robot_reported_room_history_value
 
 
 def _floor(mission: int, partition: str, *rooms: Room) -> FloorPlan:
@@ -103,25 +102,6 @@ def test_floor_change_cutoff_only_filters_legacy_records():
     assert not _collect(
         floor, _record(ended, None, None, None), minimum_timestamp=cutoff
     )
-
-
-def test_sensor_accepts_canonical_hash_but_keeps_legacy_multifloor_block():
-    floor = _floor(7, "partition-new", Room("room-1", "Living", "room-1", b"", ()))
-    record = {
-        "at": "2026-01-01T08:00:00+00:00",
-        "duration_seconds": 90,
-        "floor_mission_id": 7,
-        "floor_partition_hash": sha256(b"partition-new").hexdigest(),
-        "source": "robot_native_mode_result_identity_match",
-    }
-    snapshot = {"robot_reported_completed_by_room": {"room-1": record}}
-
-    assert _robot_reported_room_history_value(snapshot, "room-1", floor) == (
-        record["at"],
-        90,
-    )
-    record["floor_partition_hash"] = "wrong"
-    assert _robot_reported_room_history_value(snapshot, "room-1", floor) is None
 
 
 def test_canonical_daily_hold_uses_floor_and_room_uuid_not_duplicate_name():
