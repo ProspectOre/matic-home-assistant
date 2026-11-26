@@ -173,33 +173,8 @@ async def async_verify_leg_completion(
     return evidence
 
 
-async def async_wait_for_room_outcome(
-    robot: RobotPort,
-    room: CleaningRoom,
-    cancel_event: asyncio.Event | None = None,
-    *,
-    initial_observed: bool = False,
-) -> RoomRunOutcome:
-    """Classify the next terminal transition using positive room evidence.
-
-    A bare ``returning``, ``docked``, or ``idle`` state is deliberately not a
-    completion.  Completion requires the issued single-room command to be seen
-    cleaning that room before a normal return.  A low-charge return is a
-    suspension so firmware may recharge and resume it.  Every other terminal
-    transition is interrupted/unknown and receives no room-history credit.
-    """
-    outcome, _changed = await _async_wait_for_leg_outcome(
-        robot,
-        [room],
-        room,
-        cancel_event,
-        initial_observed=initial_observed,
-    )
-    return outcome
-
-
 class LegOutcomeObserver:
-    """Own ordered, bounded observations for one multi-room native leg."""
+    """Own ordered, bounded observations for one native leg of one or more rooms."""
 
     def __init__(
         self,
@@ -418,27 +393,6 @@ class LegOutcomeObserver:
             return
         self._closed = True
         self._remove_listener()
-
-
-async def _async_wait_for_leg_outcome(
-    robot: RobotPort,
-    rooms: Sequence[CleaningRoom],
-    active_room: CleaningRoom,
-    cancel_event: asyncio.Event | None = None,
-    *,
-    initial_observed: bool = False,
-) -> tuple[RoomRunOutcome, CleaningRoom | None]:
-    """One-shot lifecycle adapter over the shared leg outcome observer."""
-    observer = LegOutcomeObserver(
-        robot,
-        rooms,
-        active_room,
-        initial_observed=initial_observed,
-    )
-    try:
-        return await observer.next(cancel_event)
-    finally:
-        observer.close()
 
 
 async def async_active_session_state(

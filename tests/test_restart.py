@@ -1040,11 +1040,7 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
         ),
         patch(
             "custom_components.matic_robot.managed_observation.async_wait_with_native_identity",
-            AsyncMock(
-                return_value=(RoomRunOutcome.HANDOFF_CANDIDATE, None)
-                if multi
-                else RoomRunOutcome.HANDOFF_CANDIDATE
-            ),
+            AsyncMock(return_value=(RoomRunOutcome.HANDOFF_CANDIDATE, None)),
         ),
         patch(
             "custom_components.matic_robot.managed_observation.async_wait_for_active_session_resolution",

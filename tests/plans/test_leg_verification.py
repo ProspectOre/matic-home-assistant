@@ -26,8 +26,10 @@ from custom_components.matic_robot.managed_observation import (
 from custom_components.matic_robot.managed_run import PlanCancelledError, RoomRunOutcome
 from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.plans.fakes import (
+    LEG_OUTCOME,
     kitchen_leg_ends,
     leg_manager,
+    leg_outcomes,
     leg_record,
     leg_rooms,
     run_plan_call,
@@ -613,8 +615,8 @@ async def test_terminal_history_has_its_own_budget(
         )
     else:
         monkeypatch.setattr(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            terminal_room,
+            LEG_OUTCOME,
+            leg_outcomes(terminal_room),
         )
     reads = 0
 

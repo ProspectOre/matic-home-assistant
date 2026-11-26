@@ -1,12 +1,13 @@
 """Run one plan leg: a native mission over one or more rooms.
 
 A leg is one native mission, so the robot moves room to room without docking.
-Credit comes only from the robot's own history record for that mission: each
-verified room is credited with the robot's own per-room duration, a room the
-record shows the robot could not reach settles without credit, and every
-other room stays due. A one-room leg is judged by the single-room history
-rules and keeps a late-history marker for that room when it ends without
-proof. A Smart Stop ends a multi-room leg's mission after its current room.
+A one-room leg is a leg of one room: the same observer, Smart Stop, cleanup
+STOP and settlement run every leg. Credit comes only from the robot's own
+history record for that mission: each verified room is credited with the
+robot's own per-room duration, a room the record shows the robot could not
+reach settles without credit, and every other room stays due. Only reading
+that record differs, because the record names one room or a group; the leg's
+``record`` holds which.
 """
 
 from __future__ import annotations
@@ -67,6 +68,140 @@ def withheld_room_ids(
     return withheld
 
 
+class _OneRoomRecord:
+    """How a one-room mission's history record is read: it names that room alone.
+
+    The single-room rules apply: a cancelled record ends the wait, and a
+    legacy record's session result stands for its one room. An aborted leg
+    keeps a marker for that room, whose watcher drops a task that ended in
+    place, since the robot records a stopped room as completed.
+    """
+
+    marks_aborted = True
+    marks_settled = False
+
+    async def async_verify(self, run: _LegRun, *, mission_ended: bool) -> bool:
+        dispatch = run.dispatch
+        assert dispatch is not None
+        room = run.leg[0]
+        evidence: list[tuple[str, int]] = []
+        verdict = await observation.async_adjudicate_room_end(
+            run.robot.session_history,
+            dispatch.history_baseline,
+            room,
+            dispatch.dispatched_at,
+            session_hash=dispatch.session_hash,
+            robot=run.robot,
+            cancel_event=run.cancel_event,
+            allow_active_cleaning=mission_ended,
+            on_verified_session=run.completion_sessions.append,
+            on_verified_completion=lambda ended_at, duration: evidence.append(
+                (ended_at, duration)
+            ),
+        )
+        if verdict is observation.NativeRoomVerdict.COMPLETED:
+            run.credited[room.room_id] = evidence[-1] if evidence else (None, None)
+        if isinstance(verdict, RobotEnded):
+            run.robot_ended[room.room_id] = verdict
+        return verdict is not observation.NativeRoomVerdict.UNVERIFIED
+
+    def late_marker(self, run: _LegRun, _credited_ids: Collection[str]) -> Any:
+        return history_reconciliation.build_native_reconciliation(
+            run.plan_id,
+            run.leg[0],
+            run.dispatch,
+            run.room_started,
+            run.run_id,
+            run.floor_token,
+        )
+
+    def stored(self, marker: Any) -> Any:
+        return history_reconciliation.native_reconciliation_data(marker)
+
+    def watch(self, run: _LegRun, marker: Any) -> None:
+        history_reconciliation.schedule_native_reconciliation(
+            run.hass,
+            run.manager,
+            run.serial_number,
+            run.entity_id,
+            run.leg[0],
+            marker,
+            None if run.dispatch is None else run.dispatch.history_baseline,
+            run.robot,
+            run.call.context,
+        )
+
+
+class _GroupedRecord:
+    """How a multi-room mission's grouped history record is read.
+
+    Each room is matched in the one record bound to the mission. A leg that
+    settles without proof keeps a marker for its observed, uncredited rooms.
+    """
+
+    marks_aborted = False
+    marks_settled = True
+
+    async def async_verify(self, run: _LegRun, *, mission_ended: bool) -> bool:
+        dispatch = run.dispatch
+        assert dispatch is not None
+        run.credited.update(
+            await observation.async_verify_leg_completion(
+                run.robot.session_history,
+                dispatch.history_baseline,
+                run.leg,
+                dispatch.dispatched_at,
+                session_hash=dispatch.session_hash,
+                robot=run.robot,
+                cancel_event=run.cancel_event,
+                allow_active_cleaning=mission_ended,
+                on_verified_session=run.completion_sessions.append,
+                skipped_room_ids=run.withheld_room_ids(),
+                on_robot_ended=run.robot_ended.update,
+            )
+            or {}
+        )
+        return bool(run.credited or run.robot_ended)
+
+    def late_marker(self, run: _LegRun, credited_ids: Collection[str]) -> Any:
+        skipped = run.skipped_room_ids()
+        return build_grouped_native_reconciliation(
+            run.plan_id,
+            [
+                {
+                    "room_id": room.room_id,
+                    "room": room.name,
+                    "cleaning_mode": room.cleaning_mode,
+                    "coverage_setting": room.coverage_setting,
+                }
+                for room in run.leg
+                if room.room_id in run.observed_ids
+                and room.room_id not in credited_ids
+                and room.room_id not in skipped
+            ],
+            run.dispatch.dispatched_at
+            if run.room_observer is not None and run.dispatch is not None
+            else None,
+            run.native_identity,
+            run.floor_token,
+            run.run_id,
+        )
+
+    def stored(self, marker: Any) -> Any:
+        return marker
+
+    def watch(self, run: _LegRun, marker: Any) -> None:
+        if marker is not None:
+            history_reconciliation.schedule_grouped_native_reconciliation(
+                run.hass,
+                run.manager,
+                run.serial_number,
+                run.entity_id,
+                marker,
+                run.robot,
+            )
+
+
 @dataclass(slots=True, kw_only=True)
 class _LegRun:
     """One leg's owned native mission, from dispatch to credit or failure."""
@@ -99,6 +234,8 @@ class _LegRun:
     active_room: CleaningRoom
     # The mission sent, or the prepared one this leg adopts.
     dispatch: PreparedRoomDispatch | None
+    # How the robot's history record for this mission is read.
+    record: _OneRoomRecord | _GroupedRecord
     native_identity: bytes | None = None
     # Whether a start may have reached the robot, so a failure must STOP it.
     dispatch_attempted: bool = False
@@ -128,10 +265,6 @@ class _LegRun:
     @property
     def plan_id(self) -> str:
         return str(self.call.data["plan_id"])
-
-    @property
-    def single(self) -> bool:
-        return len(self.leg) == 1
 
     def announce(self, room: CleaningRoom, result: RoomResult, **fields: str) -> None:
         fire_room_event(
@@ -256,31 +389,30 @@ class _LegRun:
                 raise
             return False
         recovered_suspended = self.recovered_suspend_reason in _SUSPENDED
-        if not self.single:
-            self.room_observer = observation.LegOutcomeObserver(
-                self.robot,
-                self.leg,
-                self.active_room,
-                initial_observed=True,
-                classify_current=True,
-                suppress_pause=start_state is RobotActivity.PAUSED
-                or recovered_suspended,
-                initial_suspended=recovered_suspended,
-            )
-            if self.finish_room_event is not None:
-                self.finish_task = asyncio.create_task(
-                    async_end_after_current_room(
-                        self.finish_room_event,
-                        partial(
-                            self.robot.end_after_current_room,
-                            self.motion_token,
-                            self.floor_token,
-                        ),
-                        lambda: self.native_identity,
-                        lambda: self.active_room,
-                        self.end_after,
-                    )
+        self.room_observer = observation.LegOutcomeObserver(
+            self.robot,
+            self.leg,
+            self.active_room,
+            initial_observed=True,
+            classify_current=True,
+            suppress_pause=start_state is RobotActivity.PAUSED or recovered_suspended,
+            initial_suspended=recovered_suspended,
+        )
+        # A one-room mission holds no waiting room for a Smart Stop to drop.
+        if self.finish_room_event is not None and len(self.leg) > 1:
+            self.finish_task = asyncio.create_task(
+                async_end_after_current_room(
+                    self.finish_room_event,
+                    partial(
+                        self.robot.end_after_current_room,
+                        self.motion_token,
+                        self.floor_token,
+                    ),
+                    lambda: self.native_identity,
+                    lambda: self.active_room,
+                    self.end_after,
                 )
+            )
         self.dispatch = replace(dispatch, native_identity=self.native_identity)
         await self.checkpoint_dispatch(self.dispatch)
         if start_state is RobotActivity.PAUSED or recovered_suspended:
@@ -349,24 +481,13 @@ class _LegRun:
 
     async def async_next_outcome(self) -> tuple[RoomRunOutcome, CleaningRoom | None]:
         """Wait for the leg's next outcome while the run still owns its task."""
-        if self.room_observer is not None:
-            return await observation.async_wait_with_native_identity(
-                partial(self.room_observer.next, self.cancel_event),
-                self.robot.session_identity,
-                self.native_identity,
-                cancel_event=self.cancel_event,
-            )
-        outcome = await observation.async_wait_with_native_identity(
-            # Owned start already observed this room. Preserve that evidence
-            # across transient cleaning during dock travel.
-            lambda: observation.async_wait_for_room_outcome(
-                self.robot, self.leg[0], self.cancel_event, initial_observed=True
-            ),
+        assert self.room_observer is not None
+        return await observation.async_wait_with_native_identity(
+            partial(self.room_observer.next, self.cancel_event),
             self.robot.session_identity,
             self.native_identity,
             cancel_event=self.cancel_event,
         )
-        return outcome, None
 
     async def async_hold(self, reason: str, seconds: float) -> None:
         """Record a paused or low-charge leg and wait for its owned resume."""
@@ -429,8 +550,6 @@ class _LegRun:
 
     async def async_verify_end(self, *, mission_ended: bool = False) -> bool:
         """Read the ended mission's history; return whether it gave a verdict."""
-        dispatch = self.dispatch
-        assert dispatch is not None
         write = await self.advance(
             LegVerifying(
                 dt_util.utcnow()
@@ -440,108 +559,16 @@ class _LegRun:
         await self.manager.ledger.async_mark_verifying(
             self.serial_number, self.plan_id, self.active_room, checkpoint=write
         )
-        if not self.single:
-            self.credited.update(
-                await observation.async_verify_leg_completion(
-                    self.robot.session_history,
-                    dispatch.history_baseline,
-                    self.leg,
-                    dispatch.dispatched_at,
-                    session_hash=dispatch.session_hash,
-                    robot=self.robot,
-                    cancel_event=self.cancel_event,
-                    allow_active_cleaning=mission_ended,
-                    on_verified_session=self.completion_sessions.append,
-                    skipped_room_ids=self.withheld_room_ids(),
-                    on_robot_ended=self.robot_ended.update,
-                )
-                or {}
-            )
-            return bool(self.credited or self.robot_ended)
-        room = self.leg[0]
-        evidence: list[tuple[str, int]] = []
-        verdict = await observation.async_adjudicate_room_end(
-            self.robot.session_history,
-            dispatch.history_baseline,
-            room,
-            dispatch.dispatched_at,
-            session_hash=dispatch.session_hash,
-            robot=self.robot,
-            cancel_event=self.cancel_event,
-            allow_active_cleaning=mission_ended,
-            on_verified_session=self.completion_sessions.append,
-            on_verified_completion=lambda ended_at, duration: evidence.append(
-                (ended_at, duration)
-            ),
-        )
-        if verdict is observation.NativeRoomVerdict.COMPLETED:
-            self.credited[room.room_id] = evidence[-1] if evidence else (None, None)
-        if isinstance(verdict, RobotEnded):
-            self.robot_ended[room.room_id] = verdict
-        return verdict is not observation.NativeRoomVerdict.UNVERIFIED
+        return await self.record.async_verify(self, mission_ended=mission_ended)
 
     def late_marker(self, credited_ids: Collection[str] = ()) -> Any:
         """Return what a late history record settles this leg's rooms by."""
-        if self.single:
-            return history_reconciliation.build_native_reconciliation(
-                self.plan_id,
-                self.leg[0],
-                self.dispatch,
-                self.room_started,
-                self.run_id,
-                self.floor_token,
-            )
-        skipped = self.skipped_room_ids()
-        return build_grouped_native_reconciliation(
-            self.plan_id,
-            [
-                {
-                    "room_id": room.room_id,
-                    "room": room.name,
-                    "cleaning_mode": room.cleaning_mode,
-                    "coverage_setting": room.coverage_setting,
-                }
-                for room in self.leg
-                if room.room_id in self.observed_ids
-                and room.room_id not in credited_ids
-                and room.room_id not in skipped
-            ],
-            self.dispatch.dispatched_at
-            if self.room_observer is not None and self.dispatch is not None
-            else None,
-            self.native_identity,
-            self.floor_token,
-            self.run_id,
-        )
+        return self.record.late_marker(self, credited_ids)
 
     def stored_marker(self, marker: Any) -> dict[str, Any]:
         """Return the ledger's keyword for ``marker``, none when there is none."""
-        if self.single:
-            marker = history_reconciliation.native_reconciliation_data(marker)
+        marker = self.record.stored(marker)
         return {} if marker is None else {"native_reconciliation": marker}
-
-    def watch_late_history(self, marker: Any) -> None:
-        if self.single:
-            history_reconciliation.schedule_native_reconciliation(
-                self.hass,
-                self.manager,
-                self.serial_number,
-                self.entity_id,
-                self.leg[0],
-                marker,
-                None if self.dispatch is None else self.dispatch.history_baseline,
-                self.robot,
-                self.call.context,
-            )
-        elif marker is not None:
-            history_reconciliation.schedule_grouped_native_reconciliation(
-                self.hass,
-                self.manager,
-                self.serial_number,
-                self.entity_id,
-                marker,
-                self.robot,
-            )
 
     async def async_record_ended(
         self, mark: Callable[..., Awaitable[None]], reason: str, marker: Any
@@ -563,16 +590,15 @@ class _LegRun:
                 self.manager, self.serial_number, self.motion_token
             ):
                 marker = None
-            self.watch_late_history(marker)
+            self.record.watch(self, marker)
 
     async def async_record_aborted(
         self, mark: Callable[..., Awaitable[None]], reason: str
     ) -> None:
-        """Record the active room's end; a one-room leg watches late history."""
-        if self.single:
-            await self.async_record_ended(mark, reason, self.late_marker())
-        else:
-            await mark(self.serial_number, self.plan_id, self.active_room, reason)
+        """Record the active room's end, with a marker if the record keeps one."""
+        await self.async_record_ended(
+            mark, reason, self.late_marker() if self.record.marks_aborted else None
+        )
 
     async def async_end_failed(self, err: Exception) -> NoReturn:
         """Record and announce how the leg ended early, then raise for the run.
@@ -684,9 +710,8 @@ class _LegRun:
         # the still-running record and mask the durable failure.
         if self.finish_room_event is not None:
             self.finish_room_event.clear()
-        # A multi-room leg sends no cleanup STOP while this run's own STOP
-        # settles; a one-room leg sends it either way.
-        if self.single or not dispatch_control.managed_stop_fence_owned_by_run(
+        # No cleanup STOP while this run's own STOP settles.
+        if not dispatch_control.managed_stop_fence_owned_by_run(
             self.manager, self.serial_number, self.run_id
         ):
             await dispatch_control.async_cleanup_managed_motion(
@@ -754,23 +779,19 @@ class _LegRun:
         )
 
     async def async_settle(self) -> bool:
-        """Settle the leg's rooms; a multi-room leg watches late history."""
+        """Settle the leg's rooms and watch late history if the record keeps it."""
         marker = None
         marker_saved = False
 
         def build_marker() -> None:
             nonlocal marker
-            if not self.single:
+            if self.record.marks_settled:
                 marker = self.late_marker(tuple(self.credited))
 
         ledger = self.manager.ledger
 
         async def record_unverified(room: CleaningRoom) -> bool:
             nonlocal marker, marker_saved
-            if self.single:
-                return await ledger.async_mark_ended_unverified(
-                    self.serial_number, self.plan_id, room
-                )
             async with dispatch_control.managed_reconciliation_guard(
                 self.manager, self.serial_number, self.motion_token
             ) as owned:
@@ -778,14 +799,14 @@ class _LegRun:
                     self.floor_is_current is not None and not self.floor_is_current()
                 ):
                     marker = None
-                await ledger.async_mark_ended_unverified(
+                recorded = await ledger.async_mark_ended_unverified(
                     self.serial_number,
                     self.plan_id,
                     room,
                     **self.stored_marker(None if marker_saved else marker),
                 )
             marker_saved = True
-            return True
+            return recorded
 
         settled = await LegSettlement(
             hass=self.hass,
@@ -807,7 +828,7 @@ class _LegRun:
             entered_room_ids=self.observed_ids,
             record_unverified=record_unverified,
         ).async_settle(build_marker)
-        self.watch_late_history(marker)
+        self.record.watch(self, marker)
         return settled
 
 
@@ -877,4 +898,5 @@ async def async_run_room_leg(
             (room for room in leg if room.room_id == recovered_room_id), leg[0]
         ),
         dispatch=prepared_dispatch,
+        record=_OneRoomRecord() if len(leg) == 1 else _GroupedRecord(),
     ).async_run()
