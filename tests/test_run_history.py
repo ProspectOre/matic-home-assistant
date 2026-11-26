@@ -195,6 +195,7 @@ def test_run_areas_list_checkpoint_legs_in_plan_order() -> None:
         ({"reason_code": "low_charge"}, "low_battery"),
         ({"reason_code": "robot_error"}, "robot_problem"),
         ({"reason_code": "native_task_taken_over"}, "taken_over"),
+        ({"reason_code": "connection_lost"}, "connection_lost"),
         ({"reason_code": "config_entry_unload"}, "home_assistant"),
         ({"reason_code": "interrupted"}, "interrupted"),
         ({"reason_code": "stopped_in_place"}, "interrupted"),
@@ -272,6 +273,7 @@ def test_managed_entry_projects_stored_and_live_runs() -> None:
     [
         ({"outcome": "completed"}, [], "finished"),
         ({"reason_code": "managed_replaced"}, [], "not_finished"),
+        ({"reason_code": "connection_lost"}, [], "not_finished"),
         ({}, [{"name": "A", "result": "completed"}], "unknown"),
         ({}, [{"name": "A", "result": "partial"}], "not_finished"),
     ],
@@ -435,6 +437,18 @@ def test_history_merges_newest_first_without_duplicate_missions() -> None:
         native_entry(takeover[0])["id"],
         "run-1",
     ]
+
+    # A run that lost contact still owns its mission, even one that outlasts it.
+    robot["run_history"][0]["reason_code"] = "connection_lost"
+    outlasting = CleaningSessionRecord(
+        b"h",
+        _session(
+            started_at="2026-10-29T16:05:00+00:00",
+            ended_at="2026-10-29T17:30:00+00:00",
+        ),
+    )
+    entries = history_entries(robot, [outlasting], manual=lambda plan_id: False)
+    assert [entry["id"] for entry in entries] == ["run-2", "run-1"]
 
     # Storage clears a last run without an ID.
     robot["last_run"] = None

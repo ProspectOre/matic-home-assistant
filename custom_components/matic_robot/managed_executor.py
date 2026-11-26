@@ -27,8 +27,8 @@ from .managed_run import (
     PlanCancelledError,
     PreparedRoomDispatch,
     RoomInterruptedError,
+    RoomOwnershipLostError,
     RoomStoppedInPlaceError,
-    RoomTakenOverError,
 )
 from .native_completion import native_room_key
 from .plan_model import (
@@ -404,24 +404,28 @@ class _PlanRun:
                 refused_on_return = True
                 await self.advance(HandoffEntered(index))
 
-            prepared = await leg_handoff.async_dispatch_on_return(
-                self.robot,
-                dispatch,
-                self.bind_native_identity,
-                back_to_handoff,
-                partial(
-                    dispatch_control.async_cleanup_managed_motion,
-                    self.outer_command,
-                    self.motion_token,
-                    dispatch_attempted=True,
-                ),
-                partial(
-                    dispatch_control.shutdown_suspends_run,
-                    self.hass,
-                    self.manager,
-                    self.serial_number,
-                ),
-            )
+            try:
+                prepared = await leg_handoff.async_dispatch_on_return(
+                    self.robot,
+                    dispatch,
+                    self.bind_native_identity,
+                    back_to_handoff,
+                    partial(
+                        dispatch_control.async_cleanup_managed_motion,
+                        self.outer_command,
+                        self.motion_token,
+                        dispatch_attempted=True,
+                    ),
+                    partial(
+                        dispatch_control.shutdown_suspends_run,
+                        self.hass,
+                        self.manager,
+                        self.serial_number,
+                    ),
+                )
+            except RoomOwnershipLostError as err:
+                # The leg went out on the way home; name its first room.
+                raise err.service_error(leg[0].name) from err
             if prepared is not None:
                 return _Handoff(prepared, history, revision)
         if not await observation.async_wait_for_settled_leg_handoff(
@@ -619,8 +623,8 @@ class _PlanRun:
         )
         if getattr(leaf_error, "suspend_reason", None) == "low_charge":
             self.ending = ("recharge_suspended", "low_charge", "robot")
-        elif isinstance(leaf_error, RoomTakenOverError):
-            self.ending = ("unverified", "native_task_taken_over", "unknown")
+        elif isinstance(leaf_error, RoomOwnershipLostError):
+            self.ending = ("unverified", leaf_error.reason_code, "unknown")
         elif isinstance(leaf_error, RoomInterruptedError):
             reason_code = managed_run.interruption_reason_code(leaf_error)
             self.ending = ("unverified", reason_code, "unknown")

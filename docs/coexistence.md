@@ -31,6 +31,30 @@ over, including when a native schedule replaces the task. It never sends
 another command to win the robot back. The source of the take-over is added
 once the history fields above are mapped.
 
+A robot that stops answering, or whose current task can't be read, ends the
+plan as connection lost, not taken over. A different active task is still a
+take-over, and so is an answer without the started task during the readback
+right after a room is sent. The plan never sends a command to a robot it
+can't read, and credits no room it couldn't verify. How long it waits depends
+on where the plan is:
+
+- Before a room is sent, it reads the robot's task three times, a second
+  apart. If none of those reads is answered, the room isn't sent.
+- Right after a room is sent, it waits up to 10 seconds for the robot to show
+  the task it started. If the robot answers without showing that task, the
+  plan ends as taken over.
+- Until the robot reports that it started, the plan's start timeout applies.
+  Once it has, a robot that stops answering gets the reconnect window below
+  even if the start timeout runs out meanwhile; a robot that answers without
+  confirming its task still ends at the start timeout.
+- Once the task has started, including while the robot returns, pauses or
+  charges, it waits as long as [restart recovery](restart-recovery.md) waits
+  to reconnect, two minutes, within the room's completion timeout. It goes on
+  if the robot comes back with the same task.
+- Between rooms, while the plan waits for the robot to settle before the next
+  one, a silent robot is not yet connection lost: the plan keeps reading for
+  the 12-minute handoff wait, then ends with the rooms it verified.
+
 ## No conflicting commands
 
 Motion commands go out only when the robot is free or Home Assistant holds the

@@ -756,6 +756,7 @@
     "v4_run_low_battery": "Stopped because the battery was low",
     "v4_run_robot_problem": "The robot reported a problem",
     "v4_run_taken_over": "The robot started a different task",
+    "v4_run_connection_lost": "Home Assistant lost contact with the robot",
     "v4_run_home_assistant": "Home Assistant restarted during the clean",
     "v4_run_interrupted": "Interrupted before it finished",
     "v4_run_not_finished": "Didn't finish; the reason wasn't reported",
@@ -1925,6 +1926,12 @@
     },
     "room_taken_over": {
       "message": "Home Assistant could no longer confirm that the cleaning in {room} was the one it started, so the plan stopped. Check the robot, then start the plan again."
+    },
+    "room_not_sent_connection_lost": {
+      "message": "Home Assistant couldn't reach the robot before sending {room}, so nothing was sent for it and the plan stopped. Check that the robot is online, then start the plan again."
+    },
+    "room_connection_lost": {
+      "message": "Home Assistant lost contact with the robot while cleaning {room}, so the plan stopped. The robot may still be cleaning. Check that it's online, then start the plan again."
     },
     "room_plan_unavailable": {
       "message": "Home Assistant doesn't have the robot's room map right now. Check that the robot is online and has a current map, then try again."

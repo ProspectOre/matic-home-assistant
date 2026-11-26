@@ -24,6 +24,7 @@ from .client import (
 from .managed_run import (
     NativeTaskEndedError,
     PlanCancelledError,
+    ReconnectWindow,
     RoomInterruptedError,
     RoomRunOutcome,
     RoomTakenOverError,
@@ -594,11 +595,12 @@ async def async_wait_for_active_session_resolution(
     """Wait for a returning task to finish or visibly resume.
 
     ``False`` means the firmware session ended and operational handoff is safe;
-    it does not prove completion. ``True`` means cleaning resumed. Repeated
-    unreadable identities raise. The enclosing room timeout bounds the wait
-    while known-active firmware sessions return to their dock.
+    it does not prove completion. ``True`` means cleaning resumed. A robot
+    that stops answering raises once the reconnect window passes. The
+    enclosing room timeout bounds the wait while known-active firmware
+    sessions return to their dock.
     """
-    unknown_reads = 0
+    contact = ReconnectWindow()
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
@@ -620,14 +622,7 @@ async def async_wait_for_active_session_resolution(
                 and state is observed_state
             ):
                 return True
-        if identity is None:
-            unknown_reads += 1
-            if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                raise RoomTakenOverError(
-                    "The returning native task ownership could not be verified"
-                )
-        else:
-            unknown_reads = 0
+        contact.read(identity)
         if cancel_event is None:
             await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
             continue
@@ -793,33 +788,35 @@ async def async_wait_with_native_identity[T](
     outcome: Callable[[], Awaitable[T]],
     reader: Callable[[], Awaitable[bytes | None]],
     expected: bytes | None,
+    *,
+    cancel_event: asyncio.Event | None,
 ) -> T:
-    """Notice replacement even when the OEM task keeps cleaning the same room."""
+    """Notice replacement even when the OEM task keeps cleaning the same room.
+
+    ``cancel_event`` also ends the wait for a known identity after the outcome
+    has settled, which can last the reconnect window.
+    """
 
     async def wait_for_outcome() -> T:
         return await outcome()
 
     changed = asyncio.create_task(wait_for_outcome(), eager_start=True)
-    unknown_reads = 0
+    contact = ReconnectWindow()
     try:
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise PlanCancelledError
             transition_observed = changed.done()
             if transition_observed:
                 changed.result()
             identity = await async_read_session_identity(reader)
+            contact.read(identity)
             signal = _classify_native_identity(identity, expected)
-            if signal is NativeTaskSignal.UNKNOWN:
-                unknown_reads += 1
-                if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                    raise RoomTakenOverError(
-                        "The native task ownership could not be verified"
-                    )
-            elif signal is NativeTaskSignal.REPLACED:
+            if signal is NativeTaskSignal.REPLACED:
                 raise RoomTakenOverError("The native cleaning task was replaced")
-            else:
+            if signal is not NativeTaskSignal.UNKNOWN:
                 # An ended session can precede HA's normal return update;
                 # its history still needs independent completion verification.
-                unknown_reads = 0
                 if transition_observed:
                     return changed.result()
             if changed.done():
@@ -874,7 +871,7 @@ async def async_wait_for_owned_start(
         eager_start=True,
     )
     try:
-        async with asyncio.timeout(timeout_seconds):
+        async with asyncio.timeout(timeout_seconds) as start_deadline:
             return await _async_confirm_started_identity(
                 started,
                 robot.session_identity,
@@ -882,6 +879,7 @@ async def async_wait_for_owned_start(
                 identity_baseline,
                 expected,
                 cancel_event,
+                start_deadline,
             )
     finally:
         started.cancel()
@@ -895,13 +893,21 @@ async def _async_confirm_started_identity(
     identity_baseline: bytes | None,
     expected: bytes | None,
     cancel_event: asyncio.Event | None,
+    start_deadline: asyncio.Timeout,
 ) -> RobotActivity:
-    """Wait for a new identity, never the task that preceded dispatch."""
-    unknown_reads = 0
+    """Wait for a new identity, never the task that preceded dispatch.
+
+    Once the robot reports starting, the start deadline is held during each
+    identity read and the reconnect window bounds a silent robot; the deadline
+    applies again when the robot answers.
+    """
+    contact = ReconnectWindow()
+    deadline = start_deadline.when()
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
-        transition_observed = started.done()
+        if transition_observed := started.done():
+            start_deadline.reschedule(None)
         identity = await async_read_session_identity(reader)
         if identity and identity != identity_baseline and expected is None:
             expected = identity
@@ -911,8 +917,7 @@ async def _async_confirm_started_identity(
             if signal is NativeTaskSignal.REPLACED:
                 raise RoomTakenOverError("The dispatched native task was replaced")
             if signal is NativeTaskSignal.ENDED:
-                # The robot ended the mission this run owns before the room
-                # was observed, for example when the room was unreachable.
+                # The owned mission ended before the room started (unreachable).
                 raise NativeTaskEndedError(
                     "The dispatched native task ended before the room started"
                 )
@@ -920,11 +925,8 @@ async def _async_confirm_started_identity(
             state = started.result()
             if transition_observed and identity and identity == expected:
                 return state
-            unknown_reads = unknown_reads + 1 if identity is None else 0
-            if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                raise RoomTakenOverError(
-                    "The started native task could not be identified"
-                )
+            contact.read(identity)
+            start_deadline.reschedule(None if contact.waiting else deadline)
             await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
         else:
             await asyncio.wait({started}, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
@@ -956,7 +958,7 @@ async def async_wait_for_owned_resume(
     observed_resume = (
         asyncio.create_task(resume_event.wait()) if resume_event is not None else None
     )
-    unknown_reads = 0
+    contact = ReconnectWindow()
     try:
         async with asyncio.timeout(timeout_seconds):
             while True:
@@ -966,27 +968,20 @@ async def async_wait_for_owned_resume(
                     observed_resume is not None and observed_resume.done()
                 )
                 identity = await async_read_session_identity(robot.session_identity)
+                contact.read(identity)
                 signal = _classify_native_identity(identity, expected)
-                if signal is NativeTaskSignal.UNKNOWN:
-                    unknown_reads += 1
-                    if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                        raise RoomTakenOverError(
-                            "The suspended native task ownership could not be verified"
-                        )
-                elif signal is NativeTaskSignal.REPLACED:
+                if signal is NativeTaskSignal.REPLACED:
                     raise RoomTakenOverError("The suspended native task was replaced")
-                elif signal is NativeTaskSignal.ENDED:
+                if signal is NativeTaskSignal.ENDED:
                     raise NativeTaskEndedError(
                         "The suspended native task ended before it resumed"
                     )
-                else:
-                    unknown_reads = 0
-                    if transition_observed:
-                        # The identity read began after the observed resume.
-                        # Propagate errors/cancellation before recording it.
-                        if resumed.done():
-                            resumed.result()
-                        return
+                if signal is NativeTaskSignal.OWNED and transition_observed:
+                    # The identity read began after the observed resume.
+                    # Propagate errors/cancellation before recording it.
+                    if resumed.done():
+                        resumed.result()
+                    return
                 # Check again after the state transition, and keep checking
                 # session continuity during a potentially long charge interval.
                 if resumed.done():

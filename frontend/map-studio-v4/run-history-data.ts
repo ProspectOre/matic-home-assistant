@@ -12,7 +12,8 @@ import { TRAIL_STEP_METERS, startsSegment, thinSegments, wentUnseen } from "./tr
 
 type RunEnding =
   | "running" | "finished" | "stopped" | "smart_stop" | "replaced" | "low_battery"
-  | "robot_problem" | "taken_over" | "home_assistant" | "interrupted" | "unknown";
+  | "robot_problem" | "taken_over" | "connection_lost" | "home_assistant" | "interrupted"
+  | "unknown";
 export type RunItemResult =
   | "completed" | "partial" | "stopped" | "interrupted" | "problem"
   | "unconfirmed" | "skipped" | "unreachable" | "running" | "not_started" | "unknown";
@@ -62,7 +63,7 @@ export interface RunTrail {
 const OUTCOMES: readonly wire.RunOutcome[] = ["running", "finished", "not_finished", "unknown"];
 const ENDINGS: readonly RunEnding[] = [
   "running", "finished", "stopped", "smart_stop", "replaced", "low_battery",
-  "robot_problem", "taken_over", "home_assistant", "interrupted", "unknown",
+  "robot_problem", "taken_over", "connection_lost", "home_assistant", "interrupted", "unknown",
 ];
 const RESULTS: readonly RunItemResult[] = [
   "completed", "partial", "stopped", "interrupted", "problem",
