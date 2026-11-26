@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from hashlib import sha256
-from inspect import signature
 from pathlib import Path
-from typing import Any
 
 from homeassistant.components import frontend
 from homeassistant.components.http import (  # type: ignore[attr-defined,unused-ignore]
@@ -171,10 +169,6 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     from homeassistant.components.panel_custom import async_register_panel
 
     if MATIC_MAP_URL_PATH not in hass.data.get(frontend.DATA_PANELS, {}):
-        # Home Assistant added this optional panel argument in 2026.9.
-        panel_options: dict[str, Any] = {}
-        if "handle_safe_area" in signature(async_register_panel).parameters:
-            panel_options["handle_safe_area"] = True
         await async_register_panel(
             hass,
             frontend_url_path=MATIC_MAP_URL_PATH,
@@ -183,5 +177,5 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
             sidebar_icon="matic:robot",
             module_url=MATIC_MAP_STUDIO_V4_PATH,
             require_admin=True,
-            **panel_options,
+            handle_safe_area=True,
         )
