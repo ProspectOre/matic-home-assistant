@@ -10,6 +10,7 @@ import pytest
 from homeassistant.core import CoreState
 from homeassistant.util import dt as dt_util
 
+from custom_components.matic_robot.client import native_session_hash
 from custom_components.matic_robot.client.models import (
     CleaningModeResult,
     CleaningSession,
@@ -467,3 +468,96 @@ async def test_unload_ends_a_held_recovery_history_read(hass, recovery_state, ac
             "config_entry_unload",
         )
     client.async_send_user_command.assert_not_awaited()
+
+
+async def test_recovered_credit_keeps_the_robot_session(hass, recovery_state):
+    """A credit after restart names the session it came from, as a leg's does."""
+    manager, entry, _, _ = recovery_state
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        completed_record(),
+    )
+    await async_recover_managed_run(hass, entry, "serial")
+    receipts = manager.repository.robot("serial")["daily_room_completions"]["kitchen"][
+        "receipts"
+    ]
+    assert [receipt.get("session_hash") for receipt in receipts] == [
+        native_session_hash(b"finished")
+    ]
+
+
+@pytest.mark.parametrize("stop", [None, "after_room"])
+async def test_recovery_closes_an_unproven_room_as_the_leg_runner_does(
+    hass, recovery_state, stop
+):
+    """A room the history leaves due ends unverified; on a Smart Stop the run
+    cancels each room the robot never entered."""
+    manager, entry, checkpoint, _ = recovery_state
+    checkpoint["rooms"].append(
+        asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
+    )
+    checkpoint["verification_deadline"] = (
+        dt_util.utcnow() + timedelta(seconds=0.05)
+    ).isoformat()
+    checkpoint["stop_intent"] = stop
+    manager.repository.robot("serial")["last_run"]["room_count"] = 2
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        completed_record(),
+    )
+    events = []
+    for result in ("ended_unverified", "cancelled"):
+        hass.bus.async_listen(f"matic_robot_room_{result}", events.append)
+    await async_recover_managed_run(hass, entry, "serial")
+    await hass.async_block_till_done()
+    assert [
+        (event.event_type, event.data["room_id"], event.data["reason_code"])
+        for event in events
+    ] == [
+        (
+            "matic_robot_room_cancelled",
+            "hall",
+            "managed_cancelled",
+        )
+        if stop
+        else ("matic_robot_room_ended_unverified", "hall", "unverified_completion")
+    ]
+    rooms = manager.repository.robot("serial")["rotations"]["plan"]["rooms"]
+    assert rooms["hall"]["last_result"] == ("cancelled" if stop else "ended_unverified")
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("during_write", [False, True])
+@pytest.mark.parametrize("stop", [None, "after_room"])
+async def test_recovery_leaves_an_unproven_room_after_losing_the_robot(
+    hass, recovery_state, stop, during_write
+):
+    """A takeover after a credit stops recovery cancelling or closing the rest."""
+    manager, entry, checkpoint, _ = recovery_state
+    checkpoint["rooms"].append(
+        asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
+    )
+    checkpoint["verification_deadline"] = (
+        dt_util.utcnow() + timedelta(seconds=0.05)
+    ).isoformat()
+    checkpoint["stop_intent"] = stop
+    manager.repository.robot("serial")["last_run"]["room_count"] = 2
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        completed_record(),
+    )
+    events = []
+    for result in ("ended_unverified", "cancelled"):
+        hass.bus.async_listen(f"matic_robot_room_{result}", events.append)
+    take_robot_after_room_completed(hass, manager, during_write=during_write)
+    await async_recover_managed_run(hass, entry, "serial")
+    await hass.async_block_till_done()
+    assert events == []
+    run = manager.history.snapshot("serial")["last_run"]
+    assert (run["outcome"], run["reason_code"]) == (
+        ("cancelled", "managed_stop")
+        if stop
+        else ("unverified", "restart_recovery_superseded")
+    )
+    assert run["completed_room_count"] == 1
+    rotation = manager.repository.robot("serial")["rotations"].get("plan", {})
+    assert "hall" not in rotation.get("rooms", {})

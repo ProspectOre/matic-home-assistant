@@ -1,10 +1,10 @@
-"""Pytest plugin that runs the client's tests with Home Assistant unimportable.
+"""Pytest plugin that runs tests with Home Assistant unimportable.
 
-`scripts/check.py` loads it with `-p` and turns off the Home Assistant pytest
-plugin. Any import of Home Assistant then fails, and so does any import of an
-integration module, because they all import Home Assistant. The integration
-package's own `__init__` imports Home Assistant too, so a bare package stands
-in for it and only the client package below it loads.
+`scripts/check.py` loads it with `-p` for the client's and the plan core's
+tests and turns off the Home Assistant pytest plugin. Any import of Home
+Assistant then fails, and so does any integration module that needs it. The
+integration package's own `__init__` imports Home Assistant too, so a bare
+package stands in for it and only the modules a test names load.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ _PACKAGE = "custom_components.matic_robot"
 class _BlockHomeAssistant(MetaPathFinder):
     def find_spec(self, name: str, *_args: object) -> ModuleSpec | None:
         if name.partition(".")[0] in _BLOCKED:
-            raise ModuleNotFoundError(f"{name} is blocked: the client runs without it")
+            raise ModuleNotFoundError(f"{name} is blocked: this suite runs without it")
         return None
 
 

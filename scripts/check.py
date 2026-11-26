@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run format, lint, types, contract types, structure rules, privacy scan, tests.
 
-The robot client's tests in tests/client also run with Home Assistant blocked,
-which fails if the client needs it.
+The tests in tests/client and tests/plan_core also run with Home Assistant
+blocked, which fails if the client or the plan core needs it.
 
 A test runs if its imports lead, through any number of modules, to a file
 changed since the nearest main or release branch. Imports do not show what
@@ -49,6 +49,7 @@ PLAN_CORE = frozenset(
         "plan_records",
         "plan_schema",
         "room_identity",
+        "room_results",
         "run_machine",
     )
 )
@@ -96,9 +97,9 @@ REPORT = Path("coverage.json")
 FULL_SUITE = [f"--cov={SOURCE}", f"--cov-report=json:{REPORT}"]
 # One worker per CPU; a worker that runs out of tests takes another's.
 PARALLEL = ["-n", "auto", "--dist", "worksteal"]
-CLIENT_SUITE = [
+WITHOUT_HOME_ASSISTANT = [
     *("-p", "tests.client.without_homeassistant", "-p", "no:homeassistant"),
-    *("--confcutdir=tests/client", "tests/client"),
+    *("--confcutdir=tests/client", "tests/client", "tests/plan_core"),
 ]
 # The lines a diff hunk adds: `@@ -old +first,count @@`, count 1 when left out.
 HUNK = re.compile(r"@@ \S+ \+(\d+)(?:,(\d+))? @@")
@@ -667,8 +668,8 @@ def main(arguments: list[str] | None = None) -> int:
         "lint": [[python, "-m", "ruff", "check", "."]],
         "types": [[python, "-m", "mypy", "custom_components/matic_robot"]],
         "contracts": [[python, "scripts/contract_types.py", "--check"]],
-        "client without Home Assistant": [
-            [python, "-m", "pytest", *PARALLEL, *CLIENT_SUITE]
+        "client and plan core without Home Assistant": [
+            [python, "-m", "pytest", *PARALLEL, *WITHOUT_HOME_ASSISTANT]
         ],
         "privacy": [[python, "scripts/check_public_tree.py"]],
     }

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.util import dt as dt_util
 
-from custom_components.matic_robot import sensor
+from custom_components.matic_robot import room_results, sensor
 from custom_components.matic_robot.client.models import (
     CleaningModeResult,
     CleaningSession,
@@ -149,9 +149,13 @@ async def test_floor_change_excludes_old_native_timestamp_and_sensors_reject_old
     new_floor = _floor(("living", "Living"), mission_id=8)
     assert await _import_history(manager, "robot", new_floor, [record])
     snapshot = manager.history.snapshot("robot")
-    value = sensor._robot_reported_room_history_value(snapshot, "living", new_floor)
+    value = room_results._robot_reported_room_history_value(
+        snapshot, "living", new_floor
+    )
     assert value is None
-    assert sensor._native_room_history_is_ineligible(snapshot, "living", new_floor)
+    assert room_results._native_room_history_is_ineligible(
+        snapshot, "living", new_floor
+    )
 
 
 @pytest.mark.asyncio
@@ -426,76 +430,6 @@ async def test_replayed_session_ignores_rejected_modes_stored_in_a_bad_shape(has
     assert room["robot_last_conflicted_modes"] == []
 
 
-def test_sensor_helpers_reject_timezone_less_records_and_classify_restored_values():
-    floor = _floor(("living", "Living"))
-    base = {
-        "robot_reported_completed_by_room": {
-            "living": {
-                "at": "2026-11-01T10:00:00",
-                "started_at": "2026-11-01T09:00:00+00:00",
-                "duration_seconds": 240,
-                "floor_mission_id": floor.mission_id,
-                "source": "robot_native_mode_result_room_name_match",
-            }
-        },
-        "plan_history": {
-            "daily": {"rooms": {"living": {"last_started": "2026-11-01T09:30:00"}}}
-        },
-    }
-    assert sensor._robot_reported_room_history_value(base, "living", floor) is None
-    assert not sensor._native_room_history_matches_managed_room(base, "living")
-
-    base["robot_reported_completed_by_room"]["living"]["at"] = (
-        "2026-11-01T10:00:00+00:00"
-    )
-    native = sensor._robot_reported_room_history_value(base, "living", floor)
-    assert native == ("2026-11-01T10:00:00+00:00", 240)
-    assert (
-        sensor._room_statistics_source(
-            ("2026-11-01T11:00:00+00:00", 300),
-            None,
-            native,
-            managed_session=False,
-            restored=True,
-        )
-        == "restored_sensor_state"
-    )
-    assert (
-        sensor._room_statistics_source(
-            None, None, None, managed_session=False, restored=False
-        )
-        is None
-    )
-
-
-def test_sensor_native_invalidation_sources_are_ineligible():
-    floor = _floor(("living", "Living"))
-    snapshot = {
-        "robot_reported_completed_by_room": {
-            "living": {
-                "at": "2026-11-01T10:00:00+00:00",
-                "duration_seconds": 240,
-                "floor_mission_id": floor.mission_id,
-                "source": "robot_native_mode_result_managed_session",
-            }
-        }
-    }
-    assert sensor._native_room_history_is_ineligible(snapshot, "living", floor)
-    assert sensor._robot_reported_room_history_value(snapshot, "living", floor) is None
-
-
-@pytest.mark.parametrize("source", [None, 42, "verified_managed_result", "other"])
-def test_unrelated_history_sources_are_not_native_ineligible(source):
-    floor = _floor(("living", "Living"))
-    snapshot = {
-        "robot_reported_completed_by_room": {
-            "living": {"source": source},
-        }
-    }
-
-    assert not sensor._native_room_history_is_ineligible(snapshot, "living", floor)
-
-
 def test_managed_history_matcher_skips_malformed_history_containers():
     ended_at = "2026-11-01T10:00:00+00:00"
     (statistic,) = native_room_statistics_by_session(
@@ -534,59 +468,6 @@ def test_managed_history_matcher_skips_malformed_history_containers():
             },
             statistic,
         )
-
-
-def test_sensor_native_overlap_handles_invalid_and_outside_windows():
-    native = ("2026-11-01T10:30:00+00:00", 240)
-    assert not sensor._native_room_result_overlaps_session(None, None, "bad")
-    assert not sensor._native_room_result_overlaps_session(native, None, "bad")
-    for started, ended, result in (
-        ("bad", "2026-11-01T11:00:00+00:00", native[0]),
-        ("2026-11-01T10:00:00", "2026-11-01T11:00:00+00:00", native[0]),
-        ("2026-11-01T10:00:00+00:00", "bad", native[0]),
-        ("2026-11-01T10:00:00+00:00", "2026-11-01T11:00:00", native[0]),
-        ("2026-11-01T10:00:00+00:00", "2026-11-01T11:00:00+00:00", "bad"),
-        (
-            "2026-11-01T10:00:00+00:00",
-            "2026-11-01T11:00:00+00:00",
-            "2026-11-01T10:30:00",
-        ),
-    ):
-        assert not sensor._native_room_result_overlaps_session(
-            (result, 240), started, ended
-        )
-    assert sensor._native_room_result_overlaps_session(
-        native, "2026-11-01T10:00:00+00:00", "2026-11-01T11:00:00+00:00"
-    )
-    assert not sensor._native_room_result_overlaps_session(
-        ("2026-11-01T12:00:00+00:00", 240),
-        "2026-11-01T10:00:00+00:00",
-        "2026-11-01T11:00:00+00:00",
-    )
-
-
-def test_managed_room_match_uses_fallback_when_native_start_is_missing():
-    snapshot = {
-        "robot_reported_completed_by_room": {
-            "living": {
-                "at": "2026-11-01T10:00:00+00:00",
-                "duration_seconds": 240,
-                "started_at": None,
-            }
-        },
-        "plan_history": {
-            "bad-start": {"rooms": {"living": {"last_started": "not-a-time"}}},
-            "bad-end": {
-                "rooms": {
-                    "living": {
-                        "last_started": "2026-11-01T10:01:00+00:00",
-                        "last_completed": "not-a-time",
-                    }
-                }
-            },
-        },
-    }
-    assert sensor._native_room_history_matches_managed_room(snapshot, "living")
 
 
 def test_other_room_managed_session_suppresses_incidental_native_room_completion():
@@ -657,3 +538,33 @@ def test_other_room_managed_session_suppresses_incidental_native_room_completion
 
     result = sensor.MaticRoomDurationSensor(entry, room_a)._room_session_result()
     assert result == (True, (older_a, 300))
+
+
+def test_room_statistics_attributes_name_app_started_and_restored_values():
+    entry = entity_entry()
+    session = entry.runtime_data.session
+    session.history.set(CleaningHistory(None, None))
+    room = session.floor.value.rooms[0]
+    snapshot = entry.runtime_data.cleaning_plans.history.snapshot.return_value
+    snapshot["last_completed_by_room"] = {}
+    snapshot["robot_reported_completed_by_room"] = {
+        room.id: {
+            "at": "2026-10-31T08:00:00+00:00",
+            "duration_seconds": 900,
+            "floor_mission_id": session.floor.value.mission_id,
+            "source": "robot_native_mode_result_room_name_match",
+        }
+    }
+    duration = sensor.MaticRoomDurationSensor(entry, room)
+    duration._async_apply_session()
+    assert duration.native_value == 900
+    assert duration.extra_state_attributes == {
+        "statistics_source": "robot_native_mode_result_room_name_match"
+    }
+
+    snapshot["robot_reported_completed_by_room"] = {}
+    duration._async_apply_session()
+    assert duration.native_value == 900
+    assert duration.extra_state_attributes == {
+        "statistics_source": "restored_sensor_state"
+    }

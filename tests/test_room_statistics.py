@@ -204,61 +204,6 @@ async def test_newer_native_statistics_are_monotonic(hass):
     }
 
 
-def test_room_sensor_reads_native_room_evidence_separately_from_managed_history():
-    floor = _floor(("living", "Living Room"))
-    snapshot = {
-        "last_completed_by_room": {
-            "living": {
-                "at": "2026-01-01T08:00:00+00:00",
-                "duration_seconds": 600,
-            }
-        },
-        "robot_reported_completed_by_room": {
-            "living": {
-                "at": "2026-01-02T08:00:00+00:00",
-                "duration_seconds": 1698,
-                "floor_mission_id": floor.mission_id,
-                "source": "robot_native_mode_result_room_name_match",
-            }
-        },
-    }
-
-    reported = sensor._robot_reported_room_history_value(snapshot, "living", floor)
-    managed = sensor._managed_room_history_value(snapshot, "living")
-
-    assert reported == ("2026-01-02T08:00:00+00:00", 1698)
-    assert sensor._latest_room_statistics_value(managed, reported) == reported
-    newer_managed = ("2026-01-03T08:00:00+00:00", 300)
-    assert sensor._latest_room_statistics_value(reported, newer_managed) == (
-        newer_managed
-    )
-    assert (
-        sensor._room_statistics_source(
-            newer_managed,
-            newer_managed,
-            reported,
-            managed_session=True,
-            restored=False,
-        )
-        == "verified_managed_result"
-    )
-    assert (
-        sensor._room_statistics_source(
-            reported,
-            newer_managed,
-            reported,
-            managed_session=True,
-            restored=False,
-        )
-        == "robot_native_mode_result_room_name_match"
-    )
-    snapshot["robot_reported_completed_by_room"]["living"]["duration_seconds"] = 0
-    assert sensor._robot_reported_room_history_value(snapshot, "living", floor) is None
-    snapshot["robot_reported_completed_by_room"]["living"]["duration_seconds"] = 1698
-    snapshot["robot_reported_completed_by_room"]["living"]["floor_mission_id"] = 8
-    assert sensor._robot_reported_room_history_value(snapshot, "living", floor) is None
-
-
 @pytest.mark.asyncio
 async def test_same_native_session_can_gain_a_mode_without_cross_session_sum(hass):
     manager = memory_manager(hass)
