@@ -88,7 +88,8 @@ async def test_app_clean_shows_only_on_the_floor_its_record_names(
     # Telemetry, which carries the history revision, is read again at once.
     await loaded_entry.runtime_data.session.heartbeat.async_request_full_refresh()
     async with asyncio.timeout(10):
-        while _last_cleaned(hass, loaded_entry, "Study").state == "unknown":
+        # The history import runs as a background task that signals nothing.
+        while _last_cleaned(hass, loaded_entry, "Study").state == "unknown":  # noqa: ASYNC110
             await asyncio.sleep(0.05)
 
     study = _last_cleaned(hass, loaded_entry, "Study")
