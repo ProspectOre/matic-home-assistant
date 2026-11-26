@@ -57,6 +57,11 @@ jobs:
             newest=$(echo homeassistant | uv pip compile -q --no-deps --no-header --no-annotate --prerelease allow -)
             [ "$tested" = "$newest" ] || echo "::warning::$newest is out, but $helper supports up to $tested."
           fi
+      # The lint and type tools stay at the lockfile's versions, so a red lane
+      # means a Home Assistant change, not a new ruff or mypy rule.
+      - run: |
+          tools=$(python -c 'import tomllib; print(" ".join(f"{p["name"]}=={p["version"]}" for p in tomllib.load(open("uv.lock", "rb"))["package"] if p["name"] in ("ruff", "mypy")))')
+          uv pip install $tools
       # The same checks Test runs, so a Home Assistant release that breaks
       # types, contracts or the client's isolation shows up here too.
       - if: matrix.suite == 'pytest'
