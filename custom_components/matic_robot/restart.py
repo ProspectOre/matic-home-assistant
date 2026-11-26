@@ -19,7 +19,6 @@ from homeassistant.util import dt as dt_util
 
 from .client import (
     CleaningSessionRecord,
-    CoverageReceipt,
     MaticError,
     NativeHistoryIncompleteError,
     UserCommand,
@@ -28,7 +27,7 @@ from .client import (
     uuid_string,
 )
 from .const import DOMAIN
-from .coverage_accounting import async_confirm_completed_coverage
+from .leg_settlement import LegSettlement
 from .managed_dispatch import (
     async_managed_user_command,
     schedule_managed_dock_after_stop,
@@ -36,7 +35,7 @@ from .managed_dispatch import (
     shutdown_suspends_run,
 )
 from .managed_executor import async_execute_rooms, async_finish_plan_run
-from .managed_leg import RoomResult, fire_room_event, withheld_room_ids
+from .managed_leg import withheld_room_ids
 from .managed_observation import (
     LEG_HANDOFF_TIMEOUT_SECONDS,
     async_verify_leg_completion,
@@ -44,6 +43,7 @@ from .managed_observation import (
 )
 from .managed_run import (
     RECONNECT_SECONDS,
+    PlanCancelledError,
     PreparedRoomDispatch,
     async_unless_cancelled,
 )
@@ -55,10 +55,10 @@ from .room_coherence import current_floor_plan, room_completion_names_are_curren
 from .run_machine import (
     RUN_SETTLED_REASONS,
     Restarted,
-    RoomSettled,
     RoomVerified,
     Run,
     RunPhase,
+    RunProgress,
     stored_instant,
     transition,
 )
@@ -722,15 +722,10 @@ async def _async_verify_ended_leg(
         on_robot_ended=robot_ended.update,
         session_hash=session_hash,
     )
-    verified_coverage = await async_confirm_completed_coverage(
-        manager.recovery.coverage_receipt(serial_number, recovery.run.run_id),
-        completion_sessions[-1] if completion_sessions else None,
-        runtime.client.async_confirm_coverage_receipt,
-    )
     if recovery.lost_ownership() or not recovery.completion_is_current():
         return "restart_recovery_superseded"
-    return await _async_credit_verified_rooms(
-        recovery, rejoined, leg, evidence or {}, robot_ended, verified_coverage
+    return await _async_settle_ended_leg(
+        recovery, rejoined, leg, evidence or {}, robot_ended, completion_sessions
     )
 
 
@@ -740,95 +735,85 @@ def _withheld_room_ids(recovery: _Recovery, leg: list[CleaningRoom]) -> set[str]
     The owner's skips, and on a Smart Stop each room the robot never started:
     the robot dropped those from its mission.
     """
-    checkpoint = recovery.checkpoint
     return withheld_room_ids(
         recovery.manager.ledger.skipped_room_ids(
             recovery.serial_number, recovery.run.run_id
         ),
         leg,
-        checkpoint.started_room_ids if checkpoint.stop_intent == "after_room" else None,
+        _entered_room_ids(recovery.checkpoint),
     )
 
 
-async def _async_credit_verified_rooms(
+def _entered_room_ids(checkpoint: RecoveryCheckpoint) -> tuple[str, ...] | None:
+    """Return the rooms the robot entered once a Smart Stop ended its mission."""
+    return (
+        checkpoint.started_room_ids if checkpoint.stop_intent == "after_room" else None
+    )
+
+
+async def _async_settle_ended_leg(
     recovery: _Recovery,
     rejoined: _Rejoined,
     leg: list[CleaningRoom],
     evidence: dict[str, tuple[str, int]],
     robot_ended: dict[str, RobotEnded],
-    verified_coverage: CoverageReceipt | None,
+    completion_sessions: list[str],
 ) -> str:
-    """Credit or settle each room the history decides and say if the run settled.
+    """Settle the leg's rooms as the leg runner does and say if the run settled.
 
-    A room the owner skipped or the robot could not reach or finish settles
-    without credit, as the leg runner settles it, so the run can still complete.
+    Rooms the run settled before the restart keep their results.
     """
-    run, restarted = recovery.run, recovery.restarted
-    checkpoint = recovery.checkpoint
+    run, restarted, checkpoint = recovery.run, recovery.restarted, recovery.checkpoint
     manager, serial_number = recovery.manager, recovery.serial_number
-    skipped = set(manager.ledger.skipped_room_ids(serial_number, run.run_id))
+    progress = RunProgress(
+        restarted,
+        checkpoint,
+        partial(
+            manager.recovery.async_set_recovery_checkpoint, serial_number, run.run_id
+        ),
+    )
+    entered = _entered_room_ids(checkpoint)
 
     def still_owned() -> bool:
         return not recovery.lost_ownership() and recovery.completion_is_current()
 
-    for room in leg:
-        if room.room_id in restarted.completed_room_ids | restarted.settled_room_ids:
-            continue
-        result: RoomResult
-        if room.room_id in evidence:
-            completed_at, duration = evidence[room.room_id]
-            if not await manager.ledger.async_mark_completed(
-                serial_number,
-                run.plan_id,
-                room,
-                run_id=run.run_id,
-                completed_at=completed_at,
-                duration_seconds=duration,
-                verified_coverage_receipt=verified_coverage,
-                completion_is_current=still_owned,
-            ):
-                return "restart_recovery_superseded"
-            counted = manager.recovery.counted_room_ids(serial_number, run.run_id)
-            restarted, _ = transition(restarted, RoomVerified(counted))
-            rejoined.robot.confirm_room_completed(room.name)
-            result, fields = "completed", {"reason_code": "verified_completion"}
-        elif room.room_id in skipped or room.room_id in robot_ended:
-            ended = None if room.room_id in skipped else robot_ended[room.room_id]
-            if not await manager.ledger.async_mark_settled(
-                serial_number,
-                run.plan_id,
-                room,
-                ended or "skipped",
-                run_id=run.run_id,
-                completion_is_current=still_owned,
-            ):
-                return "restart_recovery_superseded"
-            result = "skipped"
-            fields = (
-                {"reason_code": f"room_{ended.result}", "cause": "robot"}
-                if ended
-                else {"reason_code": "owner_skipped"}
-            )
-            restarted, write = transition(restarted, RoomSettled(room.room_id))
-            checkpoint = write.applied(checkpoint)
-            await manager.recovery.async_set_recovery_checkpoint(
-                serial_number, run.run_id, checkpoint.stored()
-            )
-        else:
-            continue
-        fire_room_event(
-            recovery.hass,
-            rejoined.call,
-            recovery.entity_id,
-            room,
-            result,
+    def record_room_completed(_room: CleaningRoom) -> None:
+        progress.apply(
+            RoomVerified(manager.recovery.counted_room_ids(serial_number, run.run_id))
+        )
+
+    try:
+        await LegSettlement(
+            hass=recovery.hass,
+            call=rejoined.call,
+            manager=manager,
+            entity_id=recovery.entity_id,
+            serial_number=serial_number,
             run_id=run.run_id,
             provenance=run.provenance,
-            **fields,
-        )
+            leg=leg,
+            robot=rejoined.robot,
+            advance=progress.advance,
+            record_room_completed=record_room_completed,
+            evidence_is_current=still_owned,
+            credited=evidence,
+            robot_ended=robot_ended,
+            completion_sessions=completion_sessions,
+            ending_early=lambda: entered is not None,
+            entered_room_ids=entered or (),
+            record_unverified=partial(
+                manager.ledger.async_mark_ended_unverified,
+                serial_number,
+                run.plan_id,
+                completion_is_current=still_owned,
+            ),
+            settled_room_ids=restarted.completed_room_ids | restarted.settled_room_ids,
+        ).async_settle()
+    except PlanCancelledError:
+        return "restart_recovery_superseded"
     return (
-        restarted.end_reason
-        if restarted.all_settled(
+        progress.run.end_reason
+        if progress.run.all_settled(
             {room.room_id for room in recovery.rooms},
             {
                 index
