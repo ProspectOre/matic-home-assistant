@@ -645,20 +645,17 @@ async def async_wait_for_settled_leg_handoff(
 ) -> bool:
     """Wait until a completed leg can safely hand off to new settings.
 
-    A native completion record only proves that the prior mission ended; the
-    vacuum may still be returning and its session identity may remain visible
-    for a short period. Dispatching the next settings leg in that window is
-    rejected by firmware and the generic failure cleanup sends STOP, which
-    starts the long OEM stop countdown. A stable idle state is sufficient for
-    continuation (the dock is not a required boundary), while an unknown or
-    still-active native identity is deliberately held until it clears.
+    Firmware rejects a leg sent while the ended mission's identity is still
+    visible, and the failure cleanup's STOP would start the OEM stop countdown.
+    A stable idle state is enough; a still-active identity is held until it
+    clears, and an unreadable one counts toward the reconnect window.
 
-    ``False`` is a bounded timeout or graceful stop, not a command failure. The caller
-    leaves the remaining legs unattempted and lets normal terminal accounting
-    describe the run without issuing a second STOP.
+    ``False`` is a bounded timeout or graceful stop, not a command failure: the
+    caller leaves the remaining legs unattempted without a second STOP.
     """
     deadline = monotonic() + max(0.0, timeout_seconds)
     settled = HOME | {RobotActivity.READY}
+    contact = ReconnectWindow()
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
@@ -692,18 +689,15 @@ async def async_wait_for_settled_leg_handoff(
             raise RoomTakenOverError("The returning native task was replaced")
         if state is not None and state.activity in settled and identity == b"":
             return True
-        # A blocked doorway can leave the firmware in its homeward/idle state
-        # while retaining the completed mission identity for a short period.
-        # An explicit inactive-session read is the stronger evidence boundary:
-        # no native mission remains to collide with the next settings leg, so
-        # do not abandon the remaining queue waiting for a stale identity to
-        # clear.
+        # A blocked doorway can keep the ended identity while the robot is
+        # homeward or idle; an explicit inactive session is stronger evidence.
         if (
             session_active is False
             and state is not None
             and state.activity in settled | {RobotActivity.RETURNING}
         ):
             return True
+        contact.read(identity)
         if monotonic() >= deadline:
             _LOGGER.warning(
                 "Matic leg handoff did not settle before the bounded timeout"
@@ -849,11 +843,8 @@ async def async_wait_for_owned_start(
     a later OEM task. A started state also needs a current native read.
     """
     if already_accepted:
-        # Recovery has already verified the accepted mission twice. Requiring
-        # another cleaning transition can misclassify a normal finish in the
-        # handoff window. Join ongoing identity/outcome monitoring instead:
-        # empty identity permits native-history verification, while replacement,
-        # unknown ownership, and an in-place stop still fail closed there.
+        # Recovery already verified this mission twice; the outcome wait that
+        # follows still checks its identity.
         current = robot.observed()
         return (
             RobotActivity.PAUSED
@@ -897,18 +888,27 @@ async def _async_confirm_started_identity(
 ) -> RobotActivity:
     """Wait for a new identity, never the task that preceded dispatch.
 
-    Once the robot reports starting, the start deadline is held during each
-    identity read and the reconnect window bounds a silent robot; the deadline
-    applies again when the robot answers.
+    Once the robot reports starting, even mid-read, the start deadline is held
+    until the robot answers; the reconnect window bounds a silent robot.
     """
     contact = ReconnectWindow()
     deadline = start_deadline.when()
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
-        if transition_observed := started.done():
-            start_deadline.reschedule(None)
-        identity = await async_read_session_identity(reader)
+        transition_observed = started.done()
+        read = asyncio.create_task(
+            async_read_session_identity(reader), eager_start=True
+        )
+        try:
+            if not (read.done() or started.done()):
+                await asyncio.wait({read, started}, return_when=asyncio.FIRST_COMPLETED)
+            if started.done():
+                start_deadline.reschedule(None)
+            identity = await read
+        finally:
+            read.cancel()
+            await asyncio.gather(read, return_exceptions=True)
         if identity and identity != identity_baseline and expected is None:
             expected = identity
             bind_identity(identity)
