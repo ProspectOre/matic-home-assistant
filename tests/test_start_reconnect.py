@@ -77,6 +77,82 @@ async def test_a_read_in_flight_at_the_start_deadline_is_lost_contact(hass):
         )
 
 
+async def test_a_start_reported_during_a_read_holds_that_read(hass):
+    robot = FakeRobot()
+    robot.show("docked")
+
+    async def read() -> bytes | None:
+        # The robot reports starting mid-read; the read then outlasts the
+        # start deadline before it fails.
+        await asyncio.sleep(START_TIMEOUT / 2)
+        robot.show("cleaning", current_area=ROOM.name)
+        await asyncio.sleep(START_TIMEOUT)
+        return None
+
+    with pytest.raises(RobotConnectionLostError):
+        await async_wait_for_owned_start(
+            robot.port(session_identity=read),
+            START_TIMEOUT,
+            None,
+            ROOM,
+            lambda _identity: None,
+            b"",
+            OURS,
+        )
+
+
+async def test_a_start_reported_during_a_slow_owned_read_is_confirmed(hass):
+    robot = FakeRobot()
+    robot.show("docked")
+    reads = 0
+
+    async def read() -> bytes | None:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            # The robot reports starting mid-read, and the read answers with
+            # the run's task only after the start deadline.
+            await asyncio.sleep(START_TIMEOUT / 2)
+            robot.show("cleaning", current_area=ROOM.name)
+            await asyncio.sleep(START_TIMEOUT)
+        return OURS
+
+    activity = await async_wait_for_owned_start(
+        robot.port(session_identity=read),
+        START_TIMEOUT,
+        None,
+        ROOM,
+        lambda _identity: None,
+        b"",
+        OURS,
+    )
+    assert activity is RobotActivity.CLEANING
+    assert reads == 2
+
+
+async def test_a_start_that_fails_during_a_read_keeps_the_start_deadline(hass):
+    robot = FakeRobot()
+    robot.show("docked")
+
+    async def read() -> bytes | None:
+        # The robot reports an error mid-read, and the read then hangs.
+        await asyncio.sleep(START_TIMEOUT / 2)
+        robot.show("error")
+        await asyncio.Event().wait()
+        return None
+
+    with pytest.raises(TimeoutError):
+        await async_wait_for_owned_start(
+            robot.port(session_identity=read),
+            START_TIMEOUT,
+            None,
+            ROOM,
+            lambda _identity: None,
+            b"",
+            OURS,
+        )
+
+
 async def test_the_robot_back_after_the_start_timeout_keeps_its_start(
     hass, monkeypatch
 ):
