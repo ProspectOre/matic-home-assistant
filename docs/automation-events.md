@@ -20,7 +20,7 @@ Each event's type is `matic_robot_` plus the name in the second column.
 | Plan area finished | `area_finished` | area fields |
 | Plan area failed | `area_failed` | area fields, `reason_code` |
 | Plan finished | `plan_finished` | `entity_id`, `plan_id`, `run_id`, `outcome`, `reason_code`, `cause`, `provenance`, `terminal_activity`, times, room counts, sometimes `missing_rooms` |
-| Plan docked | `plan_docked` | `entity_id`, `plan_id`, `run_id`, `outcome`, `docked_at` |
+| Plan docked | `plan_docked` | `entity_id`, `plan_id`, `run_id`, `outcome`, `reason_code`, `terminal_activity`, `docked_at`, `provenance` |
 | Cleaning finished | `cleaning_finished` | `device_id`, `entry_id`, `started_at`, `ended_at`, `duration_seconds`, `completed`, `rooms`, `completed_rooms`, `room_durations`, `stop_reason` |
 | Firmware changed | `firmware_changed` | `device_id`, `entry_id`, `previous_version`, `firmware_version` |
 | Firmware checked | `firmware_analyzed` | `entry_id`, `firmware_version`, `compatibility_status`, change counts |

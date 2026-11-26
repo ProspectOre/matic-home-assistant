@@ -137,6 +137,12 @@ async def test_stop_now_ends_the_room_being_finished(
     finished = await plan.wait_for_finished()
     if seen_late:
         assert finished["terminal_activity"] == "cleaning"
+        # No DOCK goes out while the robot has not reported the stop.
+        for _ in range(5):
+            await plan.poll()
+            await asyncio.sleep(stop_return.DOCK_SETTLE_POLL_SECONDS)
+        assert DOCK_PAYLOAD not in robot.received()[sent:]
+        assert not plan.docked
         robot.release_commands()
     # The dock watcher sends DOCK once the robot reports the stop settled.
     async with asyncio.timeout(10):
@@ -155,6 +161,7 @@ async def test_stop_now_ends_the_room_being_finished(
         "cancelled",
         "managed_stop",
         0,
+        # Unordered, the run can end before the stop is seen, as in seen_late.
         *(("cleaning",) if seen_late else ("cleaning", "idle", "returning")),
     )
     assert (await _docked(plan))["outcome"] == "stopped_docked"
