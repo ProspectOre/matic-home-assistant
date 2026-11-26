@@ -289,61 +289,81 @@ def seconds_nanos[Buffer: (bytes, memoryview)](
     return seconds, nanos
 
 
-def uuid_from_fixed64(high: bytes | memoryview, low: bytes | memoryview) -> str:
-    """Join Matic's two little-endian fixed64 words into a UUID string."""
-    value = (int.from_bytes(high, "little") << 64) | int.from_bytes(low, "little")
-    return str(UUID(int=value))
-
-
-def uuid_string(
-    payload: bytes,
+def uuid_string[Buffer: (bytes, memoryview)](
+    payload: Buffer,
     *,
-    max_depth: int = 4,
+    path: tuple[int, ...] | None = None,
     max_fields: int | None = None,
     field_budget: WireFieldBudget | None = None,
 ) -> str:
-    """Decode Matic's nested two-fixed64 UUID representation."""
+    """Decode Matic's UUID, a message of two fixed64 words: high 1, low 2.
+
+    With ``path`` the UUID sits under exactly those single-field wrappers and
+    each word appears once with its wire type; other field numbers may sit
+    beside the words. Without it, the first message within four nested ones
+    that holds both words is read, and the first occurrence of each wins.
+    """
+    if path is None:
+        return _search_uuid(payload, 4, max_fields, field_budget)
+    for number in path:
+        fields = decode_fields(
+            payload, max_fields=max_fields, field_budget=field_budget
+        )
+        if (
+            len(fields) != 1
+            or fields[0].number != number
+            or fields[0].wire_type != 2
+            or isinstance(fields[0].value, int)
+        ):
+            raise DecodeError("Matic UUID has an unknown wrapper")
+        payload = fields[0].value
     fields = decode_fields(payload, max_fields=max_fields, field_budget=field_budget)
-    high = next(
-        (
-            field.value
-            for field in fields
-            if field.number == 1
-            and field.wire_type == 1
-            and isinstance(field.value, bytes)
-            and len(field.value) == 8
-        ),
-        None,
-    )
-    low = next(
-        (
-            field.value
-            for field in fields
-            if field.number == 2
-            and field.wire_type == 1
-            and isinstance(field.value, bytes)
-            and len(field.value) == 8
-        ),
-        None,
+    words = [[field for field in fields if field.number == n] for n in (1, 2)]
+    if any(len(word) != 1 or word[0].wire_type != 1 for word in words):
+        raise DecodeError("invalid Matic UUID")
+    high, low = words[0][0].value, words[1][0].value
+    assert not isinstance(high, int) and not isinstance(low, int)
+    return _uuid_from_fixed64(high, low)
+
+
+def _search_uuid[Buffer: (bytes, memoryview)](
+    payload: Buffer,
+    depth: int,
+    max_fields: int | None,
+    field_budget: WireFieldBudget | None,
+) -> str:
+    fields = decode_fields(payload, max_fields=max_fields, field_budget=field_budget)
+    high, low = (
+        next(
+            (
+                field.value
+                for field in fields
+                if field.number == number
+                and field.wire_type == 1
+                and not isinstance(field.value, int)
+            ),
+            None,
+        )
+        for number in (1, 2)
     )
     if high is not None and low is not None:
-        return uuid_from_fixed64(high, low)
-    if max_depth > 0:
+        return _uuid_from_fixed64(high, low)
+    if depth > 0:
         for field in fields:
-            if field.wire_type != 2 or not isinstance(field.value, bytes):
+            if field.wire_type != 2 or isinstance(field.value, int):
                 continue
             try:
-                return uuid_string(
-                    field.value,
-                    max_depth=max_depth - 1,
-                    max_fields=max_fields,
-                    field_budget=field_budget,
-                )
+                return _search_uuid(field.value, depth - 1, max_fields, field_budget)
             except WireFieldBudgetExceeded, WireFieldLimitExceeded:
                 raise
             except DecodeError:
                 continue
     raise DecodeError("invalid Matic UUID")
+
+
+def _uuid_from_fixed64(high: bytes | memoryview, low: bytes | memoryview) -> str:
+    value = (int.from_bytes(high, "little") << 64) | int.from_bytes(low, "little")
+    return str(UUID(int=value))
 
 
 def _decode_varint(payload: bytes | memoryview, offset: int) -> tuple[int, int]:

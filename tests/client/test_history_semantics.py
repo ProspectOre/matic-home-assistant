@@ -208,6 +208,7 @@ def test_rejects_empty_goals_and_conflicting_partition_ids() -> None:
     start = _bfield(1, b"") + _bfield(3, _bfield(2, _bfield(1, b"")))
     assert decode_history_semantics(_payload(start_payload=start)) is None
     assert decode_history_semantics(_payload(goal_ids=((1, 2), (3, 4)))) is None
+    assert decode_history_semantics(_payload(goal_ids=((0, 0),))) is None
 
 
 def test_rejects_missing_summary_fields() -> None:
@@ -352,10 +353,6 @@ def test_wire_helpers_reject_wrong_types_duplicates_and_missing_fields() -> None
         semantics._optional_message((WireField(1, 0, 1),), 1)
     with pytest.raises(DecodeError):
         semantics._optional_message((WireField(1, 2, 1),), 1)
-    with pytest.raises(DecodeError):
-        semantics._required_fixed64((), 1)
-    with pytest.raises(DecodeError):
-        semantics._required_fixed64((WireField(1, 1, b"1234567"),), 1)
     with pytest.raises(DecodeError):
         semantics._required_fixed32((), 1)
     assert semantics.room_duration_seconds(()) == 0

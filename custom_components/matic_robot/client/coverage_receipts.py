@@ -21,7 +21,7 @@ from .coverage_goals import (
     coverage_readback_matches,
 )
 from .models import FloorPlan
-from .wire import WireFieldBudget, decode_fields, uuid_from_fixed64
+from .wire import WireFieldBudget, decode_fields, uuid_string
 
 _MAX_ROOMS = 512
 _MAX_FIELDS = 96 * 1024
@@ -61,33 +61,10 @@ def _one(payload: bytes, number: int, budget: WireFieldBudget) -> bytes:
 
 
 def _uuid_hash(payload: bytes) -> str:
-    """Decode only the observed two-wrapper UUID, never the first nested leaf."""
+    """Hash the observed two-wrapper UUID, never the first nested leaf."""
     if len(payload) > 64:
         raise DecodeError("receipt UUID exceeds its byte limit")
-    for _ in range(2):
-        fields = decode_fields(payload, max_fields=2)
-        if (
-            len(fields) != 1
-            or fields[0].number != 2
-            or fields[0].wire_type != 2
-            or not isinstance(fields[0].value, bytes)
-        ):
-            raise DecodeError("receipt UUID has an unknown wrapper")
-        payload = fields[0].value
-    fields = decode_fields(payload, max_fields=2)
-    values = {field.number: field.value for field in fields}
-    if (
-        len(fields) != 2
-        or values.keys() != {1, 2}
-        or any(field.wire_type != 1 for field in fields)
-        or any(
-            not isinstance(value, bytes) or len(value) != 8 for value in values.values()
-        )
-    ):
-        raise DecodeError("receipt UUID has an invalid fixed64 pair")
-    high, low = values[1], values[2]
-    assert isinstance(high, bytes) and isinstance(low, bytes)
-    return _hash(uuid_from_fixed64(high, low).encode("ascii"))
+    return _hash(uuid_string(payload, path=(2, 2), max_fields=2).encode("ascii"))
 
 
 def native_session_hash(payload: bytes, *, active: bool = False) -> str | None:

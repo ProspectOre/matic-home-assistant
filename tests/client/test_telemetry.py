@@ -113,27 +113,6 @@ def test_nested_water_flow_property_rejects_field_amplification() -> None:
     assert decode_water_flow_factor(_bfield(1, dense)) is None
 
 
-def test_schedule_nested_field_budget_prevents_aggregate_allocation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from google.protobuf.message import DecodeError
-
-    allocated = []
-    original = wire_module.WireField
-
-    def capture(*args, **kwargs):
-        allocated.append(args)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(wire_module, "WireField", capture)
-    nested = _vfield(1, 0) * 600
-    with pytest.raises(DecodeError):
-        cleaning_schedule_module._uuid_candidates(
-            _bfield(1, nested) + _bfield(2, nested)
-        )
-    assert len(allocated) == cleaning_schedule_module._SCHEDULE_MAX_FIELDS
-
-
 def test_decode_safe_telemetry_fixtures() -> None:
     version = b"\x0a\x06v200.1\x12\x06stable\x18\x19\x20\x01"
     timezone = b"\x0a\x0b\x12\x09Etc/UTC+1"
@@ -363,7 +342,7 @@ def test_decode_wifi_schedule_and_history() -> None:
         _bfield(1, weekly)
         + _bfield(2, b"Morning")
         + _vfield(3, 1)
-        + _bfield(7, room_id)
+        + _bfield(7, _bfield(1, _bfield(7, _bfield(3, _bfield(3, room_id)))))
         + _bfield(8, b"")
     )
     schedule = decode_schedule(payload)
@@ -372,7 +351,7 @@ def test_decode_wifi_schedule_and_history() -> None:
     assert schedule.weekdays == ("monday", "wednesday")
     assert schedule.timezone == "America/Los_Angeles"
     assert schedule.enabled is True
-    assert schedule.ordered is None
+    assert schedule.ordered is True
     assert len(schedule.room_ids) == 1
 
     def timestamp(value: int) -> bytes:
@@ -461,8 +440,9 @@ def test_schedule_decoder_enforces_payload_field_and_uuid_budgets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     room_id = _fixed64(1, 1) + _fixed64(2, 2)
+    block = _bfield(7, _bfield(3, _bfield(3, room_id)))
     weekly = _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 510))
-    payload = _bfield(1, weekly) + _bfield(7, room_id)
+    payload = _bfield(1, weekly) + _bfield(7, _bfield(1, block))
 
     monkeypatch.setattr(
         cleaning_schedule_module, "_SCHEDULE_MAX_BYTES", len(payload) - 1
@@ -474,6 +454,9 @@ def test_schedule_decoder_enforces_payload_field_and_uuid_budgets(
     assert decode_schedule(payload) is None
 
     monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_FIELDS", 1024)
+    schedule = decode_schedule(payload)
+    assert schedule is not None
+    assert schedule.room_ids == ("00000000-0000-0001-0000-000000000002",)
     monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_UUIDS", 0)
     assert decode_schedule(payload) is None
 
@@ -700,5 +683,10 @@ def test_schedule_cleaning_mode_edge_cases() -> None:
     assert mode_of(_schedule_with_goals()) is None
     weekly = _bfield(1, _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 630)))
     assert mode_of(weekly + _bfield(7, b"\x0a\xff")) is None
-    assert mode_of(weekly + _bfield(7, _fixed64(1, 1) + _fixed64(2, 2))) is None
+    stray_uuid = weekly + _bfield(7, _fixed64(1, 1) + _fixed64(2, 2))
+    assert mode_of(stray_uuid) is None
+    # Rooms come only from the per-room blocks; a UUID elsewhere is not one.
+    stray = decode_schedule(stray_uuid)
+    assert stray is not None
+    assert stray.room_ids == ()
     assert mode_of(weekly + _vfield(7, 1)) is None

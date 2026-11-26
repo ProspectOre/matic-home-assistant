@@ -19,6 +19,7 @@ from custom_components.matic_robot.client.wire import (
     uuid_string,
     wire_shape,
 )
+from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
 @pytest.mark.parametrize(
@@ -59,7 +60,37 @@ def test_point_and_nested_uuid_decode() -> None:
     nested_uuid = b"\x0a\x12\x09" + b"\x01" * 8 + b"\x11" + b"\x02" * 8
     assert uuid_string(nested_uuid) == "01010101-0101-0101-0202-020202020202"
     with pytest.raises(DecodeError, match="invalid Matic UUID"):
-        uuid_string(b"", max_depth=0)
+        uuid_string(b"")
+    four_deep = _bfield(1, _bfield(1, _bfield(1, nested_uuid)))
+    assert uuid_string(four_deep) == "01010101-0101-0101-0202-020202020202"
+    with pytest.raises(DecodeError, match="invalid Matic UUID"):
+        uuid_string(_bfield(1, four_deep))
+
+
+_UUID = "00000000-0000-0001-0000-000000000002"
+_WORDS = _fixed64(1, 1) + _fixed64(2, 2)
+
+
+def test_uuid_at_a_known_path_reads_only_its_exact_wrappers_and_words() -> None:
+    wrapped = _bfield(2, _bfield(2, _WORDS))
+    assert uuid_string(wrapped, path=(2, 2)) == _UUID
+    assert uuid_string(memoryview(_WORDS + _vfield(3, 1)), path=()) == _UUID
+    # The search reads what the exact path refuses.
+    assert uuid_string(wrapped + _vfield(9, 1)) == _UUID
+    with pytest.raises(DecodeError, match="unknown wrapper"):
+        uuid_string(wrapped + _vfield(9, 1), path=(2, 2))
+    for wrapper in (_bfield(1, _bfield(2, _WORDS)), _vfield(2, 1)):
+        with pytest.raises(DecodeError, match="unknown wrapper"):
+            uuid_string(wrapper, path=(2, 2))
+    for leaf in (
+        b"",
+        _fixed64(1, 1),
+        _WORDS + _fixed64(2, 3),
+        _WORDS + _vfield(1, 1),
+        _bfield(1, _WORDS),
+    ):
+        with pytest.raises(DecodeError, match="invalid Matic UUID"):
+            uuid_string(leaf, path=())
 
 
 def test_uuid_search_skips_non_message_and_invalid_nested_fields() -> None:
