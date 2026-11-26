@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
 import { paintOverlayOnCanvas } from "./map_studio_v4_overlay_canvas.mjs";
-import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
+import { catalogEntry, installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
 // The Wi-Fi signal layer is off by default. Map options turns it on, which
 // reads the current floor's survey; the row explains an empty survey, and a
@@ -230,8 +230,10 @@ test("an empty survey says how to start one", async ({ page }) => {
   });
 });
 
+// The integration always sends the endpoint; this row is one without it.
 test("the row stays hidden without a survey endpoint", async ({ page }) => {
-  const panel = await mountPanel(page, null);
+  const { wifi_heatmap_url: _endpoint, ...entry } = catalogEntry();
+  const panel = await mountPanel(page, null, "typescript", { initialCatalogEntries: [entry] });
   await clickInShadow(panel, "[aria-controls=map-options]");
   await expect.poll(() => panel.evaluate((element) => Boolean(element.shadowRoot))).toBe(true);
   expect(await wifiRow(panel)).toBeNull();

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { build } from "esbuild";
 import { liveScene, pageId } from "./scene_manifest_fixture.mjs";
 
@@ -46,7 +47,48 @@ function sceneManifest(scenePoint, rooms) {
   }]);
 }
 
-const emptyPlans = { rooms: [], plans: [], selected_plan: null };
+// What Home Assistant sends Matic Map, recorded by tests/e2e/test_browser_wire.py.
+const wire = JSON.parse(readFileSync(new URL("fixtures/backend_wire.json", import.meta.url), "utf8"));
+
+/** A recorded read with this fixture's values; it cannot add a field Home Assistant does not send. */
+const recorded = (read, values = {}) => {
+  const unknown = Object.keys(values).filter((key) => !(key in read));
+  if (unknown.length > 0) throw new Error(`not in the recorded read: ${unknown.join(", ")}`);
+  return { ...structuredClone(read), ...values };
+};
+
+const [liveFloor, savedFloor] = wire.history.floors;
+const [savedMap] = wire.history.snapshots;
+// The fixture's own paths, which it routes below; the robot is on its live floor
+// with one saved map of another floor.
+const backend = {
+  catalogEntry: recorded(wire.catalog, {
+    scene_url: "/api/matic_robot/slam_scene/synthetic",
+    history_url: "/api/matic_robot/slam_history/synthetic",
+    areas_url: "/api/matic_robot/areas/synthetic",
+    plans_url: "/api/matic_robot/plans/synthetic",
+    wifi_heatmap_url: "/api/matic_robot/wifi_heatmap/synthetic",
+    floor_layers_url: "/api/matic_robot/floor_layers/synthetic",
+  }),
+  history: recorded(wire.history, { snapshots: [], floors: [
+    recorded(liveFloor, { label: "Home", snapshots: [] }),
+    recorded(savedFloor, { label: "Loft", ordinal: 2, snapshots: [recorded(savedMap, {
+      created_at: "2026-09-25T12:00:00Z", point_count: 1, scene_url: "/api/matic_robot/slam_scene/history",
+      // No comparison: the saved scene is the one-point scene below.
+      comparison_group: null, frame: null,
+    })] }),
+  ] }),
+  areas: recorded(wire.areas, { rooms: [], areas: [], selected_area: null }),
+  area: wire.areas.areas[0],
+  plan: wire.plans.plans[0],
+  savedPlan: wire.saved_plan,
+  snapshot: wire.workspace_snapshot,
+  invalidation: wire.invalidation,
+  pose: wire.pose,
+};
+/** The fixture's catalog row, as Home Assistant sends it. */
+export const catalogEntry = () => structuredClone(backend.catalogEntry);
+const emptyPlans = recorded(wire.plans, { rooms: [], plans: [], selected_plan: null });
 
 // Opens the plan picker through the public intent. The home plan card opens
 // the default plan's Run view, so tests that need the
@@ -76,9 +118,9 @@ export async function installPanelFixture(page, {
   // Home Assistant's per-user frontend data (frontend/get_user_data), keyed by
   // key. Null leaves the fixture without a websocket connection, so without a pose.
   userData = {},
-  // The Wi-Fi survey response. Null leaves the URL out of the catalog, as before.
+  // The Wi-Fi survey response. Null leaves it unserved.
   wifiSignal = null,
-  // The carpet and vent response. Null leaves the URL out of the catalog.
+  // The carpet and vent response. Null leaves it unserved.
   floorTypes = null,
   // The Photos read (photo_gallery_view.py); every photo route answers with a
   // 1x1 WebP. Null leaves both unserved.
@@ -142,53 +184,19 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, liveManifest, plans, areas, followed, sceneUpdate, posePosition, initialCatalogEntries, initialRobotStates, registries, userData, wifiSignal, floorTypes, photoGallery }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, liveManifest, plans, areas, followed, sceneUpdate, posePosition, initialCatalogEntries, initialRobotStates, registries, userData, wifiSignal, floorTypes, photoGallery, backend }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
     });
-    const catalog = { entries: [{
-      entry_id: "synthetic-entry",
-      scene_url: "/api/matic_robot/slam_scene/synthetic",
-      history_url: "/api/matic_robot/slam_history/synthetic",
-      areas_url: "/api/matic_robot/areas/synthetic",
-      plans_url: "/api/matic_robot/plans/synthetic",
-      ...(wifiSignal ? { wifi_heatmap_url: "/api/matic_robot/wifi_heatmap/synthetic" } : {}),
-      ...(floorTypes ? { floor_layers_url: "/api/matic_robot/floor_layers/synthetic" } : {}),
-      map_revision: 7,
-      map_floor_coherent: true,
-      map_session_verified: true,
-      map_session_key: "a".repeat(64),
-      map_complete: true,
-      map_truncated: false,
-      selected_floor_ordinal: 1,
-      map_floor_ordinal: 1,
-      history_count: 1,
-      history_floor_count: 2,
-      map_health: "ready",
-      stream_failures: 0,
-      bootstrap_state: "complete",
-      bootstrap_photo_seen: true,
-      bootstrap_structure_seen: true,
-      bootstrap_failures: 0,
-      runner_locked: false,
-      stop_settle_pending: false,
-      plan_running: false,
-      native_reconciliation_pending: false,
-      native_session_active: false,
-    }] };
+    const catalog = { entries: [backend.catalogEntry] };
     let catalogEntries = initialCatalogEntries || catalog.entries;
     let robotStates = initialRobotStates || { "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: "synthetic-entry" } } };
     let catalogReads = 0;
     let deferredCatalogs = 0;
     const pendingCatalogs = [];
     let historyReads = 0;
-    let history = { entry_id: "synthetic-entry", live_available: true, floors: [
-      { id: "current", active: true, read_only: false, live_available: true, label: "Home", ordinal: null, snapshots: [] },
-      { id: "saved-1", active: false, read_only: true, live_available: false, label: "Loft", ordinal: 2,
-        snapshots: [{ id: "saved-shot", created_at: "2026-09-25T12:00:00Z", revision: 6, point_count: 1,
-          scene_url: "/api/matic_robot/slam_scene/history" }] },
-    ] };
+    let history = backend.history;
     const entryBHistory = { ...history, entry_id: "synthetic-entry-b", floors: history.floors.map((floor) => ({
       ...floor,
       snapshots: floor.snapshots.map((snapshot) => ({
@@ -220,12 +228,14 @@ export async function installPanelFixture(page, {
     let latestReads = 0;
     let sceneUpdates = 0;
     let latestUnchanged = 0;
-    const planCatalog = structuredClone(plans || { rooms: [], plans: [], selected_plan: null });
+    const planCatalog = structuredClone(plans);
+    // A new plan as the list shows it, without the next-run preview this fixture does not compute.
+    const { next_run_preview: _preview, next_run_estimate_seconds: _estimate, ...listedPlan } = backend.plan;
     const applySavedPlan = (data) => {
       let plan = data.plan_id && planCatalog.plans.find((candidate) => candidate.id === data.plan_id);
       if (data.plan_id && !plan) throw new Error(`unknown synthetic plan: ${data.plan_id}`);
       if (!plan) {
-        plan = { id: `synthetic-plan-${planCatalog.plans.length + 1}` };
+        plan = { ...structuredClone(listedPlan), id: `synthetic-plan-${planCatalog.plans.length + 1}` };
         planCatalog.plans.push(plan);
       }
       plan.name = data.name;
@@ -234,8 +244,16 @@ export async function installPanelFixture(page, {
       plan.return_to_base = data.return_to_base;
       plan.finish_current_room = data.finish_current_room;
       plan.finish_current_room_threshold = data.finish_current_room_threshold;
-      plan.room_order = data.rooms.map((room) => room.room);
-      plan.rooms = data.rooms.map((room) => ({
+      plan.occupancy_aware = data.occupancy_aware ?? false;
+      plan.occupancy_sensors = data.occupancy_sensors ?? {};
+      // Custom areas are steps of the plan, not rooms.
+      plan.entries = data.rooms.map((step) => step.area === undefined
+        ? { kind: "room", room_id: step.room }
+        : { kind: "area", area_id: step.area, cleaning_mode: step.cleaning_mode, coverage_setting: step.coverage_setting,
+            name: areaCatalog?.areas?.find((area) => area.id === step.area)?.name ?? step.area });
+      const rooms = data.rooms.filter((step) => step.area === undefined);
+      plan.room_order = rooms.map((room) => room.room);
+      plan.rooms = rooms.map((room) => ({
         room_id: room.room,
         cleaning_mode: room.cleaning_mode,
         coverage_setting: room.coverage_setting,
@@ -252,7 +270,12 @@ export async function installPanelFixture(page, {
         },
       }));
       if (data.select || !planCatalog.selected_plan) planCatalog.selected_plan = plan.id;
-      return { response: { plan: { id: plan.id } } };
+      // save_plan returns the stored plan: its fields as the list shows them, area
+      // steps without the name the list adds, and the stored timeouts.
+      const saved = Object.fromEntries(Object.entries(backend.savedPlan)
+        .map(([key, value]) => [key, structuredClone(key in plan ? plan[key] : value)]));
+      saved.entries = saved.entries.map(({ name: _name, ...step }) => step);
+      return { response: { plan: saved } };
     };
     const fetchWithAuth = async (path, options = {}) => {
       const entryB = path.endsWith("-b");
@@ -262,17 +285,15 @@ export async function installPanelFixture(page, {
         const savedId = typeof body.area_id === "string" ? body.area_id : "synthetic-area";
         const commitArea = () => {
           if (!areaCatalog?.areas) return;
+          // The saved area as the areas view lists it; it has an outline only when one was drawn.
+          const saved = { ...structuredClone(backend.area), id: savedId, name: body.name, circles: body.circles,
+            ...(body.outline ? { outline: body.outline } : {}), cleaning_mode: body.cleaning_mode,
+            coverage_setting: body.coverage_setting, status: "current", can_rebind: false };
           areaCatalog = {
             ...areaCatalog,
             areas: areaCatalog.areas.some((candidate) => candidate.id === savedId)
-              ? areaCatalog.areas.map((candidate) => candidate.id === savedId
-                ? { ...candidate, name: body.name, circles: body.circles, outline: body.outline ?? null,
-                    cleaning_mode: body.cleaning_mode, coverage_setting: body.coverage_setting,
-                    status: "current", can_rebind: false }
-                : candidate)
-              : [...areaCatalog.areas, { id: savedId, name: body.name, circles: body.circles,
-                  outline: body.outline ?? null, cleaning_mode: body.cleaning_mode,
-                  coverage_setting: body.coverage_setting, status: "current", can_rebind: false }],
+              ? areaCatalog.areas.map((candidate) => candidate.id === savedId ? saved : candidate)
+              : [...areaCatalog.areas, saved],
           };
         };
         const result = json({ id: savedId });
@@ -342,10 +363,8 @@ export async function installPanelFixture(page, {
           return new Response(null, { status: 503 });
         }
         const result = json(areaCatalog ?? {
-        scene_url: `/api/matic_robot/slam_scene/${entryB ? "synthetic-b" : "synthetic"}`,
-        rooms: [],
-        areas: [],
-        selected_area: null,
+          ...backend.areas,
+          scene_url: `/api/matic_robot/slam_scene/${entryB ? "synthetic-b" : "synthetic"}`,
         });
         if (deferredAreaReads > 0) {
           deferredAreaReads -= 1;
@@ -415,25 +434,31 @@ export async function installPanelFixture(page, {
     const poseSubscribers = new Set();
     const invalidationSubscribers = new Set();
     let workspaceSequence = 0;
-    let announcedScene = null;
+    // Every resource's revision, as each snapshot and invalidation carries them.
+    const revisions = { ...backend.snapshot.revisions };
     // The invalidation the server sends when `resource` reaches `revision`.
     const announce = (resource, revision) => {
       workspaceSequence += 1;
-      const invalidation = { epoch: "synthetic-workspace-epoch", sequence: workspaceSequence,
-        coherence_generation: 1, revisions: { workspace: workspaceSequence, [resource]: revision }, resources: [resource] };
+      Object.assign(revisions, { workspace: workspaceSequence, [resource]: revision });
+      const invalidation = { ...backend.invalidation, sequence: workspaceSequence,
+        revisions: { ...revisions }, resources: [resource] };
       for (const send of invalidationSubscribers) send({ type: "invalidate", invalidation });
     };
     // The scene invalidation the server sends when the map changes.
-    const announceScene = (revision) => {
-      announcedScene = revision;
-      announce("scene", revision);
-    };
+    const announceScene = (revision) => announce("scene", revision);
+    // Without robot time (observed_at), which the integration also sends when the robot gives none.
     const wirePose = (entryId, position) => ({
-      position, heading: null, source: position ? "exact_pose" : "current_area",
-      scene_revision: 7, scene_epoch: null, map_floor_coherent: true,
+      ...backend.pose, position, source: position ? "exact_pose" : "current_area",
       map_session_key: entryId.endsWith("-b") ? "b".repeat(64) : "a".repeat(64),
-      pose_age_seconds: position ? 0 : null,
+      pose_age_seconds: position ? 0 : null, observed_at: null,
     });
+    // The snapshot's projection of the entry, from the catalog row: the same fields, without its map diagnostics.
+    const projectedEntry = (entryId) => {
+      const row = catalogEntries.find((entry) => entry.entry_id === entryId);
+      return row ? Object.fromEntries(Object.keys(backend.snapshot.payload.entry)
+        .filter((key) => key in row).map((key) => [key, structuredClone(row[key])])) : null;
+    };
+    let heldSnapshots = null;
     const userDataFailures = [];
     const workspaceCalls = [];
     let deferredUserDataReads = 0;
@@ -466,18 +491,29 @@ export async function installPanelFixture(page, {
           userStore[message.key] = structuredClone(message.value);
           return null;
         }
+        if (message.type === "matic_robot/workspace_snapshot" && heldSnapshots) {
+          return new Promise((resolve) => heldSnapshots.push(() => resolve(connection.sendMessagePromise(message))));
+        }
         if (message.type === "matic_robot/workspace_snapshot") {
+          // As workspace_socket.snapshot: Home Assistant refuses an entry it has not
+          // loaded, and while the robot is away sends a stale, unverified snapshot.
+          if (!catalogEntries.some((row) => row.entry_id === message.entry_id)) {
+            throw { code: "home_assistant_error", message: "Matic entry is unavailable" };
+          }
+          const available = Object.values(robotStates)
+            .find((state) => state.attributes?.matic_entry_id === message.entry_id)?.state !== "unavailable";
+          const entry = available ? projectedEntry(message.entry_id) : null;
+          const verified = Boolean(entry?.map_floor_coherent && entry.map_session_verified);
+          const { scene: _scene, ...withoutScene } = revisions;
           return {
-            schema: 1,
-            capabilities: { snapshot: 1 },
-            epoch: "synthetic-workspace-epoch",
+            ...backend.snapshot,
             sequence: workspaceSequence,
-            coherence_generation: 1,
-            revisions: announcedScene === null ? {} : { workspace: workspaceSequence, scene: announcedScene },
+            revisions: entry ? { ...revisions } : withoutScene,
             entry_id: message.entry_id,
-            identity: { entry_id: message.entry_id, floor_mission_id: 1, floor_verified: true },
-            status: { state: "ready", reason: null, retryable: false },
-            payload: { available: true, entry: null },
+            identity: { ...backend.snapshot.identity, entry_id: message.entry_id,
+              floor_mission_id: verified ? backend.snapshot.identity.floor_mission_id : null, floor_verified: verified },
+            status: available ? backend.snapshot.status : { state: "stale", reason: "snapshot_required", retryable: true },
+            payload: { available, entry },
           };
         }
         throw new Error(`unexpected synthetic message: ${message.type}`);
@@ -498,7 +534,7 @@ export async function installPanelFixture(page, {
         invalidationSubscribers.add(callback);
         queueMicrotask(() => {
           subscriber(posePosition);
-          if (sceneUpdate && announcedScene === null) announceScene(8);
+          if (sceneUpdate && revisions.scene !== 8) announceScene(8);
         });
         return () => {
           poseSubscribers.delete(subscriber);
@@ -635,6 +671,16 @@ export async function installPanelFixture(page, {
       // Push the robot's position, and any other wire fields, to every open workspace subscription.
       pushPose: (position, fields = {}) => { for (const subscriber of poseSubscribers) subscriber(position, fields); },
       announceScene,
+      // Hold workspace snapshots until released: each carries the entry's
+      // catalog row, so a test that holds the catalog read holds them too.
+      holdWorkspaceSnapshots: () => { heldSnapshots ??= []; },
+      releaseWorkspaceSnapshots: () => {
+        const held = heldSnapshots ?? [];
+        heldSnapshots = null;
+        for (const release of held) release();
+      },
+      // `resource` changed on the server.
+      announce: (resource) => announce(resource, (revisions[resource] ?? 0) + 1),
       // The saved-map list changed on the server.
       announceHistory: () => announce("history", workspaceSequence + 1),
       get openSubscriptions() { return invalidationSubscribers.size; },
@@ -672,6 +718,7 @@ export async function installPanelFixture(page, {
     wifiSignal,
     floorTypes,
     photoGallery,
+    backend,
   });
   await remount();
   return {

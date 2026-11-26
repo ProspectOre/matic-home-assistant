@@ -171,7 +171,11 @@ class WorkspaceSocket:
         try:
             self._entry(entry_id)
         except WorkspaceError:
-            self._remove_entry(entry_id)
+            # A tracked entry's state listener removes it when it unloads. An
+            # event from one still setting up is not a removal, and removing
+            # it would close its sources for good.
+            if entry_id not in self._tracked_entries:
+                self._remove_entry(entry_id)
             return
 
         kind = data.get("kind")

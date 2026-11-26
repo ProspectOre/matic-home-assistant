@@ -1,0 +1,417 @@
+{
+  "catalog": {
+    "entry_id": "synthetic-entry",
+    "scene_url": "/api/matic_robot/slam_scene/synthetic-entry",
+    "history_url": "/api/matic_robot/slam_history/synthetic-entry",
+    "areas_url": "/api/matic_robot/areas/synthetic-entry",
+    "plans_url": "/api/matic_robot/plans/synthetic-entry",
+    "wifi_heatmap_url": "/api/matic_robot/wifi_heatmap/synthetic-entry",
+    "floor_layers_url": "/api/matic_robot/floor_layers/synthetic-entry",
+    "history_count": 1,
+    "history_floor_count": 2,
+    "map_revision": 7,
+    "scene_revision": 7,
+    "map_scene_epoch": "synthetic-scene-epoch",
+    "map_floor_coherent": true,
+    "selected_floor_ordinal": 1,
+    "map_floor_ordinal": 1,
+    "map_session_verified": true,
+    "map_session_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "map_block_reason": null,
+    "runner_locked": false,
+    "stop_settle_pending": false,
+    "plan_running": false,
+    "native_reconciliation_pending": false,
+    "native_session_active": false,
+    "map_health": "ready",
+    "map_complete": true,
+    "map_truncated": false,
+    "stream_failures": 0,
+    "bootstrap_state": "complete",
+    "bootstrap_photo_seen": true,
+    "bootstrap_structure_seen": true,
+    "bootstrap_failures": 0,
+    "cached_tiles": 36,
+    "structural_tiles": 36,
+    "overlapping_tiles": 36,
+    "layer_overlap": 1.0,
+    "dropped_photo_tiles": 0,
+    "dropped_structure_tiles": 0,
+    "invalid_tiles": 0,
+    "stream_state": "connected"
+  },
+  "history": {
+    "entry_id": "synthetic-entry",
+    "live_available": true,
+    "snapshots": [
+      {
+        "id": "saved-shot",
+        "content_id": "dddddddddddddddddddddddd",
+        "created_at": "2026-09-25T12:00:00+00:00",
+        "revision": 6,
+        "point_count": 36864,
+        "scene_url": "/api/matic_robot/slam_history_scene/synthetic-entry/saved-shot",
+        "name": null,
+        "retention": "automatic",
+        "deleted_until": null,
+        "imported": false,
+        "comparison_group": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "frame": {
+          "format_version": 1,
+          "coordinate_version": 1,
+          "origin_cells": [
+            0,
+            0
+          ],
+          "meters_per_cell": 0.015,
+          "span_cells": [
+            288,
+            128
+          ],
+          "coverage": {
+            "status": "verified",
+            "observed_cells": 36864,
+            "mask_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "diff_eligible": true
+          },
+          "diff_eligible": true
+        }
+      }
+    ],
+    "floors": [
+      {
+        "id": "current",
+        "active": true,
+        "read_only": false,
+        "live_available": true,
+        "label": "Floor 7",
+        "snapshots": [
+          {
+            "id": "saved-shot",
+            "content_id": "dddddddddddddddddddddddd",
+            "created_at": "2026-09-25T12:00:00+00:00",
+            "revision": 6,
+            "point_count": 36864,
+            "scene_url": "/api/matic_robot/slam_history_scene/synthetic-entry/saved-shot",
+            "name": null,
+            "retention": "automatic",
+            "deleted_until": null,
+            "imported": false,
+            "comparison_group": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "frame": {
+              "format_version": 1,
+              "coordinate_version": 1,
+              "origin_cells": [
+                0,
+                0
+              ],
+              "meters_per_cell": 0.015,
+              "span_cells": [
+                288,
+                128
+              ],
+              "coverage": {
+                "status": "verified",
+                "observed_cells": 36864,
+                "mask_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "diff_eligible": true
+              },
+              "diff_eligible": true
+            }
+          }
+        ]
+      },
+      {
+        "id": "saved-1",
+        "active": false,
+        "read_only": true,
+        "ordinal": 1,
+        "label": "Floor 8",
+        "snapshots": []
+      }
+    ]
+  },
+  "areas": {
+    "scene_url": "/api/matic_robot/slam_scene/synthetic-entry",
+    "rooms": [
+      {
+        "room_id": "room_c1d79365ea288b25",
+        "name": "Kitchen",
+        "boundary": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            2.0,
+            0.0
+          ],
+          [
+            2.0,
+            1.5
+          ],
+          [
+            0.0,
+            1.5
+          ]
+        ]
+      },
+      {
+        "room_id": "room_d066485c62ab1394",
+        "name": "Study",
+        "boundary": [
+          [
+            2.0,
+            0.0
+          ],
+          [
+            4.0,
+            0.0
+          ],
+          [
+            4.0,
+            1.5
+          ],
+          [
+            2.0,
+            1.5
+          ]
+        ]
+      }
+    ],
+    "areas": [
+      {
+        "id": "rug",
+        "name": "Rug",
+        "circles": [
+          {
+            "x": 1.0,
+            "y": 0.75,
+            "radius": 0.3
+          }
+        ],
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+        "status": "current",
+        "can_rebind": false
+      }
+    ],
+    "selected_area": "rug",
+    "zones": []
+  },
+  "plans": {
+    "entry_id": "synthetic-entry",
+    "floor_token": "c040a540bdf31a2e145b9407a7ce9040b524b96b09e4d3cb3e0fec6eacf155e5",
+    "rooms": [
+      {
+        "room_id": "room_c1d79365ea288b25",
+        "name": "Kitchen"
+      },
+      {
+        "room_id": "room_d066485c62ab1394",
+        "name": "Study"
+      }
+    ],
+    "plans": [
+      {
+        "id": "daily",
+        "name": "Daily",
+        "enabled": true,
+        "run_behavior": "intelligent",
+        "rooms": [
+          {
+            "room_id": "room_c1d79365ea288b25",
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard"
+          }
+        ],
+        "room_order": [
+          "room_c1d79365ea288b25"
+        ],
+        "entries": [
+          {
+            "kind": "room",
+            "room_id": "room_c1d79365ea288b25"
+          },
+          {
+            "kind": "area",
+            "area_id": "rug",
+            "cleaning_mode": "mop",
+            "coverage_setting": "standard",
+            "name": "Rug"
+          }
+        ],
+        "return_to_base": true,
+        "finish_current_room": false,
+        "finish_current_room_threshold": 50,
+        "occupancy_aware": false,
+        "occupancy_sensors": {},
+        "next_run_preview": {
+          "entries": [
+            {
+              "kind": "room",
+              "room_id": "room_c1d79365ea288b25",
+              "name": "Kitchen",
+              "cleaning_mode": "vacuum",
+              "coverage_setting": "standard",
+              "cadence_reasons": []
+            },
+            {
+              "kind": "area",
+              "area_id": "rug",
+              "name": "Rug",
+              "cleaning_mode": "mop",
+              "coverage_setting": "standard",
+              "cadence_reasons": []
+            }
+          ],
+          "mission_boundaries": [
+            1
+          ],
+          "preview_token": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "blocker": null
+        },
+        "next_run_estimate_seconds": null
+      }
+    ],
+    "selected_plan": "daily"
+  },
+  "saved_plan": {
+    "id": "daily",
+    "name": "Daily",
+    "enabled": true,
+    "run_behavior": "intelligent",
+    "rooms": [
+      {
+        "room_id": "room_c1d79365ea288b25",
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard"
+      }
+    ],
+    "entries": [
+      {
+        "kind": "room",
+        "room_id": "room_c1d79365ea288b25"
+      },
+      {
+        "kind": "area",
+        "area_id": "rug",
+        "cleaning_mode": "mop",
+        "coverage_setting": "standard"
+      }
+    ],
+    "room_order": [
+      "room_c1d79365ea288b25"
+    ],
+    "return_to_base": true,
+    "finish_current_room": false,
+    "finish_current_room_threshold": 50,
+    "occupancy_aware": false,
+    "occupancy_sensors": {},
+    "start_timeout": 120,
+    "completion_timeout": 21600
+  },
+  "workspace_snapshot": {
+    "schema": 1,
+    "capabilities": {
+      "snapshot": 1,
+      "subscription": 1,
+      "rest_catalog": 1,
+      "catalog_projection": 1
+    },
+    "epoch": "synthetic-workspace-epoch",
+    "sequence": 0,
+    "coherence_generation": 1,
+    "entry_id": "synthetic-entry",
+    "identity": {
+      "entry_id": "synthetic-entry",
+      "floor_mission_id": 7,
+      "floor_verified": true
+    },
+    "status": {
+      "state": "ready",
+      "reason": null,
+      "retryable": false
+    },
+    "revisions": {
+      "workspace": 0,
+      "status": 0,
+      "robot_state": 0,
+      "plans": 0,
+      "areas": 0,
+      "plan_state": 0,
+      "scene": 7,
+      "history": 0,
+      "activity": 0
+    },
+    "payload": {
+      "available": true,
+      "entry": {
+        "entry_id": "synthetic-entry",
+        "scene_url": "/api/matic_robot/slam_scene/synthetic-entry",
+        "history_url": "/api/matic_robot/slam_history/synthetic-entry",
+        "areas_url": "/api/matic_robot/areas/synthetic-entry",
+        "plans_url": "/api/matic_robot/plans/synthetic-entry",
+        "wifi_heatmap_url": "/api/matic_robot/wifi_heatmap/synthetic-entry",
+        "floor_layers_url": "/api/matic_robot/floor_layers/synthetic-entry",
+        "history_count": 1,
+        "history_floor_count": 2,
+        "map_revision": 7,
+        "scene_revision": 7,
+        "map_scene_epoch": "synthetic-scene-epoch",
+        "map_floor_coherent": true,
+        "selected_floor_ordinal": 1,
+        "map_floor_ordinal": 1,
+        "map_session_verified": true,
+        "map_session_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "map_block_reason": null,
+        "runner_locked": false,
+        "stop_settle_pending": false,
+        "plan_running": false,
+        "native_reconciliation_pending": false,
+        "native_session_active": false,
+        "map_health": "ready",
+        "map_complete": true,
+        "map_truncated": false,
+        "stream_failures": 0,
+        "bootstrap_state": "complete",
+        "bootstrap_photo_seen": true,
+        "bootstrap_structure_seen": true,
+        "bootstrap_failures": 0
+      }
+    }
+  },
+  "invalidation": {
+    "epoch": "synthetic-workspace-epoch",
+    "sequence": 1,
+    "coherence_generation": 1,
+    "revisions": {
+      "workspace": 1,
+      "status": 0,
+      "robot_state": 0,
+      "plans": 0,
+      "areas": 1,
+      "plan_state": 0,
+      "scene": 7,
+      "history": 0
+    },
+    "resources": [
+      "areas",
+      "plan_state"
+    ]
+  },
+  "pose": {
+    "position": [
+      1.0,
+      0.75
+    ],
+    "heading": null,
+    "source": "exact_pose",
+    "scene_revision": 7,
+    "scene_epoch": "synthetic-scene-epoch",
+    "map_floor_coherent": true,
+    "map_session_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pose_age_seconds": 0.0,
+    "observed_at": 1790000000.0
+  }
+}

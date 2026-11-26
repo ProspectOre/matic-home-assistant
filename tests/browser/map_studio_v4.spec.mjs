@@ -3549,7 +3549,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
     expect(beforeDetach).toMatchObject({ canEdit: true, canStart: true });
 
-    await page.evaluate(() => window.__remountPanel.remove());
+    await page.evaluate(() => { window.__panelFixture.holdWorkspaceSnapshots(); window.__remountPanel.remove(); });
     const detached = await page.evaluate(() => {
       const state = window.__remountPanel.getWorkspaceSnapshot();
       const module = window.__remountModule;
@@ -3608,7 +3608,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
     expect(afterStaleResult).toEqual(reattachedPending);
 
-    await page.evaluate(() => window.__remountGap.gates[1].release());
+    await page.evaluate(() => { window.__remountGap.gates[1].release(); window.__panelFixture.releaseWorkspaceSnapshots(); });
     await expect.poll(() => page.evaluate(() => {
       const state = window.__remountPanel.getWorkspaceSnapshot();
       const module = window.__remountModule;
