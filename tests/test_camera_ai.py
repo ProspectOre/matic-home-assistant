@@ -213,6 +213,7 @@ async def test_staged_photo_expires_without_another_request(
     path = source._staged[token].path
 
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=ttl - 1))
+    await asyncio.gather(*tuple(source._cleanup_tasks))
     assert token in source._staged
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=ttl))
     await asyncio.gather(*tuple(source._cleanup_tasks))
