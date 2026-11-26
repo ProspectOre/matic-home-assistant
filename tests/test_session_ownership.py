@@ -1592,7 +1592,17 @@ async def test_failed_managed_dispatch_recovers_only_its_exact_session(hass, rep
     "reported",
     ["command", "transient_command", "replacement", "pre_transmission", "unreadable"],
 )
-async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, reported):
+async def test_failed_managed_dispatch_stops_only_its_exact_session(
+    hass, monkeypatch, reported
+):
+    if reported == "transient_command":
+        # Recovery finds the identity on the read after a 1 ms retry sleep. A
+        # starved loop can resume that sleep after the 20 ms test window, so
+        # keep the production window, which only a broken recovery reaches.
+        monkeypatch.setattr(
+            "custom_components.matic_robot.managed_dispatch.DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS",
+            10,
+        )
     robot = FakeRobot()
     from homeassistant.exceptions import HomeAssistantError
 
