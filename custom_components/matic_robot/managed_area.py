@@ -288,6 +288,7 @@ class _AreaLegRun:
                 expected_dispatch_identity=expected_identity,
                 expected_dispatch_history=expected_history,
                 expected_dispatch_revision=expected_revision,
+                cancel_event=self.cancel_event,
             )
             await self.checkpoint_dispatch(dispatch)
         await self.manager.ledger.async_mark_area_started(

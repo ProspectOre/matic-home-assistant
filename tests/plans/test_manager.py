@@ -297,6 +297,55 @@ async def test_reconciliation_tasks_are_lifecycle_bound(hass) -> None:
     assert not manager.control.actor("serial").reconciliation_tasks
 
 
+async def test_a_cancelled_unload_waiter_still_ends_the_run_and_cleans_up(
+    hass,
+) -> None:
+    """Cancelling the caller neither cancels the run nor skips its cleanup."""
+    manager = CleaningPlanManager(hass)
+    control = manager.control
+    cancel = control.prepare_run("serial")
+    ending = asyncio.Event()
+    release = asyncio.Event()
+
+    async def run() -> str:
+        control.register_run_task("serial")
+        await cancel.wait()
+        # The run records how it ended, which takes a moment.
+        ending.set()
+        await release.wait()
+        return "ended on its cancel event"
+
+    run_task = asyncio.create_task(run())
+    watcher = asyncio.create_task(asyncio.Event().wait())
+    control.register_reconciliation_task("serial", watcher)
+    await asyncio.sleep(0)
+    metadata_settled = asyncio.Event()
+
+    async def settle_metadata(_serial_number: str) -> None:
+        metadata_settled.set()
+
+    with patch.object(
+        manager.repository, "async_wait_metadata_persistence", settle_metadata
+    ):
+        waiter = asyncio.create_task(control.async_cancel_and_wait("serial"))
+        await ending.wait()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert not run_task.done()
+        assert not watcher.done()
+
+        release.set()
+        assert await run_task == "ended on its cancel event"
+        async with asyncio.timeout(1):
+            await metadata_settled.wait()
+    await asyncio.sleep(0)
+    assert watcher.cancelled()
+    assert not control.actor("serial").reconciliation_tasks
+    assert control.cancellation_reason("serial") == "config_entry_unload"
+    assert not control.actor("serial").teardowns
+
+
 async def test_dock_scope_cleanup_claims_unset_run_id(hass) -> None:
     """A live dock watcher claims an otherwise-unset activity scope."""
     manager = CleaningPlanManager(hass)

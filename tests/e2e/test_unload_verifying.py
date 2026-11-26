@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 from time import monotonic
+from typing import Any
+from uuid import uuid4
 
 from homeassistant.core import Event, HomeAssistant, callback
 
@@ -76,9 +78,8 @@ async def test_unload_while_a_held_record_is_awaited(
     expect_finished(finished, "completed", "all_rooms_verified", 2, "docked")
 
 
-async def test_unload_while_the_next_leg_inventory_stalls(
-    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
-) -> None:
+async def _room_then_rug(plan: PlanRun, robot: SimulatedRobot) -> Any:
+    """Save a plan of the Kitchen then a rug area, and return the plan manager."""
     session = plan.entry.runtime_data.session
     async with asyncio.timeout(10):
         while session.floor.value is None:
@@ -105,6 +106,34 @@ async def test_unload_while_the_next_leg_inventory_stalls(
         run_behavior="ordered",
         rooms=[{"room": "Kitchen", "cleaning_mode": "vacuum"}, {"area": "Rug"}],
     )
+    return plans
+
+
+async def _finish_kitchen(plan: PlanRun, robot: SimulatedRobot) -> None:
+    """Start the plan and end the Kitchen's mission; the robot drives home."""
+    await plan.start_service("run_selected_plan", plan="room-then-rug")
+    robot.finish_room()
+    await plan.poll()
+    robot.finish_session()
+    await plan.poll()
+
+
+async def _wait_for_phase(plan: PlanRun, plans: Any, phase: str) -> dict[str, Any]:
+    """Poll until the stored checkpoint reaches ``phase``, and return it."""
+    async with asyncio.timeout(10):
+        while True:
+            stored = (recovery_record(plans, plan.robot.serial_number) or {}).get(
+                "recovery_checkpoint", {}
+            )
+            if stored.get("phase") == phase:
+                return stored
+            await plan.poll()
+
+
+async def test_unload_while_the_next_leg_inventory_stalls(
+    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
+) -> None:
+    plans = await _room_then_rug(plan, robot)
     reads: list[int] = []
 
     @callback
@@ -114,11 +143,7 @@ async def test_unload_while_the_next_leg_inventory_stalls(
         robot.faults.stall(HISTORY)
 
     hass.bus.async_listen(f"{DOMAIN}_room_completed", stall_history)
-    await plan.start_service("run_selected_plan", plan="room-then-rug")
-    robot.finish_room()
-    await plan.poll()
-    robot.finish_session()
-    await plan.poll()
+    await _finish_kitchen(plan, robot)
     robot.arrive_at_dock()
     async with asyncio.timeout(10):
         while not reads:
@@ -146,3 +171,62 @@ async def test_unload_while_the_next_leg_inventory_stalls(
         rooms=1,
     )
     assert len(robot.received()) == sent
+
+
+async def test_unload_while_the_next_leg_baseline_stalls(
+    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
+) -> None:
+    plans = await _room_then_rug(plan, robot)
+    await _finish_kitchen(plan, robot)
+    # The handoff is saved while the robot drives home. Once it docks, the
+    # rug's dispatch rereads the history keys first, and that read stalls.
+    await _wait_for_phase(plan, plans, "handoff")
+    reads = robot.reads[HISTORY]
+    robot.faults.stall(HISTORY)
+    robot.arrive_at_dock()
+    await _wait_for_read(plan, robot, reads)
+    sent = len(robot.received())
+
+    await _unload_promptly(plan, hass)
+    assert len(robot.received()) == sent
+    assert recovery_record(plans, robot.serial_number) is not None
+
+
+async def test_unload_while_recovery_rereads_a_saved_leg_boundary(
+    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
+) -> None:
+    plans = await _room_then_rug(plan, robot)
+    await _finish_kitchen(plan, robot)
+    # A robot marks its idle state with a fresh v4 UUID, which the handoff
+    # saves and recovery compares before it rereads the history keys.
+    robot.set_property("active_session_key", uuid4().bytes)
+    await _wait_for_phase(plan, plans, "handoff")
+    # Unloading while the run waits for the robot to settle keeps the handoff.
+    assert await hass.config_entries.async_unload(plan.entry.entry_id)
+    reads = robot.reads[HISTORY]
+    robot.faults.stall(HISTORY)
+    robot.arrive_at_dock()
+
+    # Recovery rereads the handoff's history keys, and that read stalls.
+    assert await hass.config_entries.async_setup(plan.entry.entry_id)
+    await _wait_for_read(plan, robot, reads)
+    sent = len(robot.received())
+    await _unload_promptly(plan, hass)
+    assert len(robot.received()) == sent
+    checkpoint = recovery_record(plans, robot.serial_number)
+    assert checkpoint is not None
+    assert checkpoint["recovery_checkpoint"]["phase"] == "handoff"
+
+    # With the history readable, the next setup resumes the queue at the rug.
+    robot.faults.clear()
+    assert await hass.config_entries.async_setup(plan.entry.entry_id)
+    async with asyncio.timeout(10):
+        while len(robot.received()) == sent:
+            await plan.poll()
+    robot.finish_room()
+    await plan.poll()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+    finished = await plan.wait_for_finished()
+    expect_finished(finished, "completed", "all_rooms_verified", 1, "docked", rooms=1)

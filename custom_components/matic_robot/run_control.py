@@ -85,6 +85,8 @@ class RobotActor:
     generation: int = 0
     cancellation_reason: str | None = None
     stop_fence: _StopFence | None = None
+    # Unload cleanups that go on after their caller stopped waiting.
+    teardowns: set[asyncio.Future[None]] = field(default_factory=set)
 
 
 class RunControl:
@@ -582,9 +584,16 @@ class RunControl:
     async def async_cancel_and_wait(
         self, serial_number: str, *, preserve_run: bool = False
     ) -> None:
-        """Interrupt a managed run and wait before its client can be closed."""
+        """Interrupt a managed run and wait before its client can be closed.
+
+        The run ends on its cancel event, which records why. A cancelled
+        caller stops waiting, but neither cancels the run nor skips the
+        cleanup after it: the run's watchers are still cancelled and its
+        metadata settled once it ends.
+        """
         actor = self.actor(serial_number)
         task = actor.run_task
+        run: asyncio.Task[Any] | None = None
         if task is not None and not task.done():
             if actor.cancellation_reason not in {"managed_stop", "motion_replaced"}:
                 actor.cancellation_reason = (
@@ -593,10 +602,20 @@ class RunControl:
             actor.finish_room_event.clear()
             actor.cancel_event.set()
             if task is not asyncio.current_task():
-                # A cancelled waiter must not cancel the run, which ends on its
-                # cancel event and records why.
-                await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+                run = task
+        teardown = asyncio.ensure_future(self._async_end_run(serial_number, run))
+        # The actor keeps the teardown alive after a cancelled caller.
+        actor.teardowns.add(teardown)
+        teardown.add_done_callback(actor.teardowns.discard)
+        await asyncio.shield(teardown)
 
+    async def _async_end_run(
+        self, serial_number: str, run: asyncio.Task[Any] | None
+    ) -> None:
+        """Wait for ``run`` to end, then cancel its watchers and settle metadata."""
+        actor = self.actor(serial_number)
+        if run is not None:
+            await asyncio.gather(run, return_exceptions=True)
         reconciliation_tasks = tuple(actor.reconciliation_tasks)
         actor.reconciliation_tasks = set()
         actor.dock_watchers = {}

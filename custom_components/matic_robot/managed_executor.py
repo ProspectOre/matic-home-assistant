@@ -398,6 +398,7 @@ class _PlanRun:
                     expected_dispatch_identity=b"",
                     expected_dispatch_history=history,
                     expected_dispatch_revision=revision,
+                    cancel_event=self.cancel_event,
                 )
 
             async def back_to_handoff() -> None:

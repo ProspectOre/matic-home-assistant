@@ -261,6 +261,7 @@ class _LegRun:
                 expected_dispatch_identity=self.expected_identity,
                 expected_dispatch_history=self.expected_history,
                 expected_dispatch_revision=self.expected_revision,
+                cancel_event=self.cancel_event,
             )
         else:
             if self.dispatch.rooms != tuple(self.leg):

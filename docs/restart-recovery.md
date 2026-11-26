@@ -30,7 +30,9 @@ a handoff phase before it waits for the robot to settle, so a restart between
 legs can resume the queue. Saving that phase needs the robot's history keys; a
 restart or reload while they are still being read ends the read at once and
 leaves the finished leg verifying, so recovery rereads its history and ends the
-run without starting the next leg.
+run without starting the next leg. The next leg's start, and recovery of a
+saved handoff, reread those keys first; a restart or reload ends either read
+at once without sending a command.
 
 ## What to expect
 

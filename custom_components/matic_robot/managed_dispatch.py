@@ -171,10 +171,12 @@ async def async_dispatch_leg_command(
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
     expected_dispatch_revision: str | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> PreparedRoomDispatch:
     """Start one owned leg mission and keep what its completion is judged by.
 
     A custom area leg is its own mission, started with the same ownership.
+    Setting ``cancel_event`` ends the history read before the start at once.
     """
     area = rooms if isinstance(rooms, AreaLeg) else None
     leg = () if isinstance(rooms, AreaLeg) else tuple(rooms)
@@ -182,8 +184,13 @@ async def async_dispatch_leg_command(
         raise managed_run.validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    history_baseline = await _async_dispatch_history_baseline(
-        robot, tracked=on_claim is not None, expected_hashes=expected_dispatch_history
+    history_baseline = await managed_run.async_unless_cancelled(
+        _async_dispatch_history_baseline(
+            robot,
+            tracked=on_claim is not None,
+            expected_hashes=expected_dispatch_history,
+        ),
+        cancel_event,
     )
     identity_baseline: bytes | None = None
     for attempt in range(observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
