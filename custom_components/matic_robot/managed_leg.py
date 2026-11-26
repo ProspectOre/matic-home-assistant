@@ -765,13 +765,12 @@ class _LegRun:
 
         ledger = self.manager.ledger
 
-        async def record_unverified(room: CleaningRoom) -> None:
+        async def record_unverified(room: CleaningRoom) -> bool:
             nonlocal marker, marker_saved
             if self.single:
-                await ledger.async_mark_ended_unverified(
+                return await ledger.async_mark_ended_unverified(
                     self.serial_number, self.plan_id, room
                 )
-                return
             async with dispatch_control.managed_reconciliation_guard(
                 self.manager, self.serial_number, self.motion_token
             ) as owned:
@@ -786,6 +785,7 @@ class _LegRun:
                     **self.stored_marker(None if marker_saved else marker),
                 )
             marker_saved = True
+            return True
 
         settled = await LegSettlement(
             hass=self.hass,

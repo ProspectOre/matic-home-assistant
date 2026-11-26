@@ -524,3 +524,40 @@ async def test_recovery_closes_an_unproven_room_as_the_leg_runner_does(
     rooms = manager.repository.robot("serial")["rotations"]["plan"]["rooms"]
     assert rooms["hall"]["last_result"] == ("cancelled" if stop else "ended_unverified")
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("during_write", [False, True])
+@pytest.mark.parametrize("stop", [None, "after_room"])
+async def test_recovery_leaves_an_unproven_room_after_losing_the_robot(
+    hass, recovery_state, stop, during_write
+):
+    """A takeover after a credit stops recovery cancelling or closing the rest."""
+    manager, entry, checkpoint, _ = recovery_state
+    checkpoint["rooms"].append(
+        asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
+    )
+    checkpoint["verification_deadline"] = (
+        dt_util.utcnow() + timedelta(seconds=0.05)
+    ).isoformat()
+    checkpoint["stop_intent"] = stop
+    manager.repository.robot("serial")["last_run"]["room_count"] = 2
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        completed_record(),
+    )
+    events = []
+    for result in ("ended_unverified", "cancelled"):
+        hass.bus.async_listen(f"matic_robot_room_{result}", events.append)
+    take_robot_after_room_completed(hass, manager, during_write=during_write)
+    await async_recover_managed_run(hass, entry, "serial")
+    await hass.async_block_till_done()
+    assert events == []
+    run = manager.history.snapshot("serial")["last_run"]
+    assert (run["outcome"], run["reason_code"]) == (
+        ("cancelled", "managed_stop")
+        if stop
+        else ("unverified", "restart_recovery_superseded")
+    )
+    assert run["completed_room_count"] == 1
+    rotation = manager.repository.robot("serial")["rotations"].get("plan", {})
+    assert "hall" not in rotation.get("rooms", {})

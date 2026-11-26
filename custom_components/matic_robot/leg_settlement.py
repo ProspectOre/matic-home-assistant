@@ -92,7 +92,8 @@ class LegSettlement:
     ending_early: Callable[[], bool]
     entered_room_ids: Collection[str]
     # Records a room the history left due.
-    record_unverified: Callable[[CleaningRoom], Awaitable[None]]
+    # Records a room left due; False when the run no longer owns it.
+    record_unverified: Callable[[CleaningRoom], Awaitable[bool]]
     # Rooms a restarted run settled before Home Assistant stopped.
     settled_room_ids: Collection[str] = ()
 
@@ -191,9 +192,13 @@ class LegSettlement:
                     room, "skipped", reason_code="owner_skipped"
                 )
             elif self.ending_early() and room.room_id not in self.entered_room_ids:
-                await ledger.async_mark_cancelled(
-                    self.serial_number, self.plan_id, room
-                )
+                if not await ledger.async_mark_cancelled(
+                    self.serial_number,
+                    self.plan_id,
+                    room,
+                    completion_is_current=self.evidence_is_current,
+                ):
+                    raise PlanCancelledError(_OWNERSHIP_CHANGED)
                 self.announce(
                     room,
                     "cancelled",
@@ -208,7 +213,8 @@ class LegSettlement:
                     room, ended, reason_code=f"room_{ended.result}", cause="robot"
                 )
             else:
-                await self.record_unverified(room)
+                if not await self.record_unverified(room):
+                    raise PlanCancelledError(_OWNERSHIP_CHANGED)
                 self.announce(
                     room,
                     "ended_unverified",

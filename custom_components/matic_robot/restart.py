@@ -802,7 +802,10 @@ async def _async_settle_ended_leg(
             ending_early=lambda: entered is not None,
             entered_room_ids=entered or (),
             record_unverified=partial(
-                manager.ledger.async_mark_ended_unverified, serial_number, run.plan_id
+                manager.ledger.async_mark_ended_unverified,
+                serial_number,
+                run.plan_id,
+                completion_is_current=still_owned,
             ),
             settled_room_ids=restarted.completed_room_ids | restarted.settled_room_ids,
         ).async_settle()

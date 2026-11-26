@@ -1162,7 +1162,8 @@ class PlanLedger:
         room: CleaningRoom,
         *,
         native_reconciliation: Mapping[str, object] | None = None,
-    ) -> None:
+        completion_is_current: Callable[[], bool] | None = None,
+    ) -> bool:
         """Record an operational room handoff without claiming completion."""
 
         def mutate() -> bool:
@@ -1187,7 +1188,9 @@ class PlanLedger:
             robot["active_plan"] = None
             return True
 
-        await self.repository.async_mutate_and_save(serial_number, mutate)
+        return await self._async_commit_room_result(
+            serial_number, mutate, completion_is_current
+        )
 
     async def async_mark_failed(
         self,
@@ -1577,8 +1580,13 @@ class PlanLedger:
         )
 
     async def async_mark_cancelled(
-        self, serial_number: str, plan_id: str, room: CleaningRoom
-    ) -> None:
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        *,
+        completion_is_current: Callable[[], bool] | None = None,
+    ) -> bool:
         def mutate() -> bool:
             now_value = dt_util.utcnow()
             record = self.room(serial_number, plan_id, room)
@@ -1593,7 +1601,9 @@ class PlanLedger:
             self.repository.robot(serial_number)["active_plan"] = None
             return True
 
-        await self.repository.async_mutate_and_save(serial_number, mutate)
+        return await self._async_commit_room_result(
+            serial_number, mutate, completion_is_current
+        )
 
     def rotation(self, serial_number: str, plan_id: str) -> dict[str, Any]:
         rotations = self.repository.robot(serial_number)["rotations"]
