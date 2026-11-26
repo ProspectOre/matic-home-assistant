@@ -581,7 +581,10 @@ async def _async_resume_handoff(recovery: _Recovery, rejoined: _Rejoined) -> str
     manager, serial_number = recovery.manager, recovery.serial_number
     identity = rejoined.identity
     if (
-        changed := await _async_handoff_change(rejoined.robot, recovery.checkpoint)
+        changed := await async_unless_cancelled(
+            _async_handoff_change(rejoined.robot, recovery.checkpoint),
+            recovery.cancel,
+        )
     ) is not None:
         return changed
     await manager.recovery.async_mark_recovery_status(
