@@ -655,7 +655,7 @@ async def async_wait_for_settled_leg_handoff(
     """
     deadline = monotonic() + max(0.0, timeout_seconds)
     settled = HOME | {RobotActivity.READY}
-    contact = ReconnectWindow()
+    contact = ReconnectWindow(sent=False)
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError

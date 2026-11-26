@@ -232,7 +232,7 @@ async def test_settled_leg_handoff_ends_a_silent_robot_as_lost_contact(
     """A robot that stops answering between legs is not waited out for minutes."""
     robot = FakeRobot()
     robot.show("returning")
-    with pytest.raises(RobotConnectionLostError):
+    with pytest.raises(RobotConnectionLostError) as error:
         await async_wait_for_settled_leg_handoff(
             robot.port(
                 active_session=AsyncMock(side_effect=MaticError("offline")),
@@ -242,6 +242,8 @@ async def test_settled_leg_handoff_ends_a_silent_robot_as_lost_contact(
             expected_identity=b"previous",
             timeout_seconds=5,
         )
+    # The next leg hasn't gone out.
+    assert error.value.sent is False
 
 
 async def test_settled_leg_handoff_answer_restarts_the_reconnect_window(
@@ -274,14 +276,34 @@ async def test_settled_leg_handoff_answer_restarts_the_reconnect_window(
     )
 
 
+_RUG = {
+    "kind": "area",
+    "area_id": "rug",
+    "name": "Rug",
+    "cleaning_mode": "vacuum",
+    "coverage_setting": "quick",
+    "binding_fingerprint": "f" * 64,
+}
+
+
+@pytest.mark.parametrize("next_leg", ["room", "area"])
 async def test_a_robot_silent_between_legs_ends_the_run_as_connection_lost(
-    hass, short_reconnect
+    hass, short_reconnect, next_leg
 ) -> None:
-    """The next leg is not sent, nothing is stopped and only the first room counts."""
+    """The next leg is reported unsent, nothing is stopped, the first room counts."""
     robot = FakeRobot()
     robot.show("returning")
     manager = memory_manager(hass)
-    rooms = [plan_room("Kitchen", "room-kitchen"), heavy_room("Study", "room-study")]
+    kitchen = plan_room("Kitchen", "room-kitchen")
+    if next_leg == "room":
+        rooms, entries, unsent = (
+            [kitchen, heavy_room("Study", "room-study")],
+            None,
+            "Study",
+        )
+    else:
+        rooms, unsent = [kitchen], "Rug"
+        entries = [{"kind": "room", "room_id": kitchen.room_id}, _RUG]
     sender = AsyncMock()
 
     async def complete_first_leg(*args, **kwargs) -> bool:
@@ -297,7 +319,7 @@ async def test_a_robot_silent_between_legs_ends_the_run_as_connection_lost(
             "custom_components.matic_robot.plan_model.leg_groups",
             side_effect=lambda rooms, **_: [[room] for room in rooms],
         ),
-        pytest.raises(RobotConnectionLostError),
+        pytest.raises(ServiceValidationError) as error,
     ):
         await asyncio.wait_for(
             async_execute_rooms(
@@ -315,10 +337,14 @@ async def test_a_robot_silent_between_legs_ends_the_run_as_connection_lost(
                 managed_user_command=sender,
                 floor_is_current=lambda: True,
                 floor_token="a" * 64,
+                entries=entries,
             ),
             5,
         )
 
+    assert error.value.translation_key == "room_not_sent_connection_lost"
+    assert error.value.translation_placeholders == {"room": unsent}
+    assert isinstance(error.value.__cause__, RobotConnectionLostError)
     assert run.await_count == 1
     sender.assert_not_awaited()
     last_run = manager.history.snapshot("serial")["last_run"]

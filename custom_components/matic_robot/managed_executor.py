@@ -26,6 +26,7 @@ from .const import DOMAIN, EVENT_PLAN_FINISHED, EVENT_PLAN_STARTED
 from .managed_run import (
     PlanCancelledError,
     PreparedRoomDispatch,
+    RobotConnectionLostError,
     RoomInterruptedError,
     RoomOwnershipLostError,
     RoomStoppedInPlaceError,
@@ -428,15 +429,22 @@ class _PlanRun:
                 raise err.service_error(leg[0].name) from err
             if prepared is not None:
                 return _Handoff(prepared, history, revision)
-        if not await observation.async_wait_for_settled_leg_handoff(
-            self.robot,
-            self.cancel_event,
-            expected_identity=self.native_identity,
-            # A refused command whose session shows up late is the robot
-            # taking it after all: never send it twice.
-            reject_new_identity=refused_on_return,
-            finish_room_event=self.finish_room_event,
-        ):
+        try:
+            settled = await observation.async_wait_for_settled_leg_handoff(
+                self.robot,
+                self.cancel_event,
+                expected_identity=self.native_identity,
+                # A refused command whose session shows up late is the robot
+                # taking it after all: never send it twice.
+                reject_new_identity=refused_on_return,
+                finish_room_event=self.finish_room_event,
+            )
+        except RobotConnectionLostError as err:
+            # Name the leg that wasn't sent.
+            raise err.service_error(
+                leg.name if isinstance(leg, AreaLeg) else leg[0].name
+            ) from err
+        if not settled:
             # The previous native leg is complete, but the robot never reached
             # a safe handoff state. Leave the remaining settings legs
             # unattempted; issuing STOP here would restart the OEM stop
