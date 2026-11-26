@@ -94,7 +94,6 @@ replaced before it is committed.
   (failed), a restart that rejoins the same native task without dispatching
   again, and a restart after the task ended (unverified). Rooms with their
   own mode and strength send only those goals and get per-mode history.
-- One-room and two-room plans complete, Smart Stop, stop and lose contact alike.
 - Changing a running plan: skip the next room, bring the last room forward,
   clean a finished room again, and refusing to skip the only room left.
 - Each vacuum action and `send_command` command sends its one command, and a
