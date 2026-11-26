@@ -589,7 +589,8 @@ class RunControl:
         The run ends on its cancel event, which records why. A cancelled
         caller stops waiting, but neither cancels the run nor skips the
         cleanup after it: the run's watchers are still cancelled and its
-        metadata settled once it ends.
+        metadata settled once it ends, unless the entry was set up again
+        meanwhile and they now belong to the new entry.
         """
         actor = self.actor(serial_number)
         task = actor.run_task
@@ -603,19 +604,26 @@ class RunControl:
             actor.cancel_event.set()
             if task is not asyncio.current_task():
                 run = task
-        teardown = asyncio.ensure_future(self._async_end_run(serial_number, run))
+        teardown = asyncio.ensure_future(
+            self._async_end_run(serial_number, run, actor.generation)
+        )
         # The actor keeps the teardown alive after a cancelled caller.
         actor.teardowns.add(teardown)
         teardown.add_done_callback(actor.teardowns.discard)
         await asyncio.shield(teardown)
 
     async def _async_end_run(
-        self, serial_number: str, run: asyncio.Task[Any] | None
+        self, serial_number: str, run: asyncio.Task[Any] | None, generation: int
     ) -> None:
-        """Wait for ``run`` to end, then cancel its watchers and settle metadata."""
+        """Wait for ``run`` to end, then cancel its watchers and settle metadata.
+
+        A setup since ``generation`` owns the watchers and metadata now.
+        """
         actor = self.actor(serial_number)
         if run is not None:
             await asyncio.gather(run, return_exceptions=True)
+            if actor.generation != generation:
+                return
         reconciliation_tasks = tuple(actor.reconciliation_tasks)
         actor.reconciliation_tasks = set()
         actor.dock_watchers = {}

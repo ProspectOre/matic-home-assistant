@@ -346,6 +346,41 @@ async def test_a_cancelled_unload_waiter_still_ends_the_run_and_cleans_up(
     assert not control.actor("serial").teardowns
 
 
+async def test_a_late_unload_cleanup_leaves_a_new_entrys_watchers(hass) -> None:
+    """Cleanup outliving its caller does not touch an entry set up since."""
+    manager = CleaningPlanManager(hass)
+    control = manager.control
+    cancel = control.prepare_run("serial")
+    release = asyncio.Event()
+
+    async def run() -> None:
+        control.register_run_task("serial")
+        await cancel.wait()
+        await release.wait()
+
+    run_task = asyncio.create_task(run())
+    await asyncio.sleep(0)
+    waiter = asyncio.create_task(control.async_cancel_and_wait("serial"))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    # The entry is set up again before the old run has ended.
+    control.activate_robot("serial")
+    watcher = asyncio.create_task(asyncio.Event().wait())
+    control.register_reconciliation_task("serial", watcher, dock=True, run_id="new")
+    (teardown,) = control.actor("serial").teardowns
+    release.set()
+    await run_task
+    async with asyncio.timeout(1):
+        await teardown
+    assert not watcher.done()
+    assert control.dock_reconciliation_active("serial")
+    watcher.cancel()
+    await asyncio.gather(watcher, return_exceptions=True)
+
+
 async def test_metadata_wait_returns_before_a_finished_worker_is_forgotten(
     hass,
 ) -> None:
