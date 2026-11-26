@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
+import pytest
 from homeassistant.core import Context
 
 from custom_components.matic_robot import managed_dispatch, stop_return
@@ -13,6 +14,8 @@ from custom_components.matic_robot.stop_return import (
     async_send_stop,
     schedule_dock_after_stop,
 )
+from tests.plans.fakes import memory_manager
+from tests.session_fakes import direct_state
 
 ENTITY = "vacuum.matic"
 
@@ -98,19 +101,61 @@ async def test_a_run_closes_at_the_dock_only_for_its_own_stop(hass) -> None:
     )
 
 
-async def test_a_stop_no_run_owns_clears_its_own_fence(hass) -> None:
-    """Without a run, the watcher clears the stop's fence once it is home."""
+async def test_a_run_stop_with_no_run_clears_its_own_fence_at_home(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no run to close, the robot's report of home ends the stop's fence."""
+    monkeypatch.setattr(stop_return, "DOCK_SETTLE_POLL_SECONDS", 0)
+    manager = memory_manager(hass)
+    token = manager.control.begin_managed_motion("serial")
+    entry = _entry()
+    client = entry.runtime_data.session.client
+    client.async_get_active_cleaning_session_state = AsyncMock(return_value=False)
+    client.async_get_state = AsyncMock(return_value=direct_state(charging_idle=True))
+    entry.runtime_data.client = client
+    hass.states.async_set(ENTITY, "docked", {})
+
+    control = manager.control
     with patch.object(
-        stop_return, "async_dock_when_stop_settles", new=MagicMock()
-    ) as watch:
-        watch.return_value = asyncio.sleep(0)
-        schedule_dock_after_stop(
-            hass, _entry(), _manager(), "serial", ENTITY, run_id=None
+        control, "async_mark_stop_pending", wraps=control.async_mark_stop_pending
+    ) as fence:
+        await managed_dispatch.async_managed_user_command(
+            hass, entry, manager, "serial", ENTITY, None, token, UserCommand.STOP
         )
         await hass.async_block_till_done()
 
-    assert watch.call_args.kwargs["on_docked"] is None
-    assert watch.call_args.kwargs["run_id"] is None
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.STOP)
+    fence.assert_awaited_once_with("serial", run_id=None)
+    assert not manager.control.stop_pending("serial")
+
+
+async def test_a_run_stop_reads_its_run_then_stops_as_teardown_cleanup(hass) -> None:
+    """The run is read before the lease, and the watcher gets the run's context."""
+    entry, manager = _entry(), _manager()
+    order: list[object] = []
+    manager.ledger.active_run_id = MagicMock(
+        side_effect=lambda _serial: order.append("run_id") or "run-1"
+    )
+
+    @asynccontextmanager
+    async def managed_command(serial_number: str, token: int, **kwargs: bool):
+        order.append(("lease", serial_number, token, kwargs))
+        yield
+
+    manager.control.managed_command = managed_command
+    context = Context()
+    with patch.object(managed_dispatch, "schedule_dock_after_stop") as watch:
+        await managed_dispatch.async_managed_user_command(
+            hass, entry, manager, "serial", ENTITY, context, 7, UserCommand.STOP
+        )
+
+    assert order == ["run_id", ("lease", "serial", 7, {"teardown_cleanup": True})]
+    manager.control.async_mark_stop_pending.assert_awaited_once_with(
+        "serial", run_id="run-1"
+    )
+    watch.assert_called_once_with(
+        hass, entry, manager, "serial", ENTITY, run_id="run-1", context=context
+    )
 
 
 async def test_a_runs_dock_goes_out_under_its_lease_without_a_stop_fence(hass) -> None:
