@@ -858,7 +858,10 @@ async def test_photo_analysis_needs_question_and_entity_first() -> None:
     with pytest.raises(HomeAssistantError) as raised:
         await photo_tours.async_run_photo_tour(
             hass,
-            SimpleNamespace(entry_id="entry-one"),
+            SimpleNamespace(
+                entry_id="entry-one",
+                runtime_data=SimpleNamespace(photo_tours=photo_tours.PhotoTours()),
+            ),
             "vacuum.matic",
             [],
             question="Is water visible?",

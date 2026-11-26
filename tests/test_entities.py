@@ -63,6 +63,7 @@ from custom_components.matic_robot.client.slam_tiles import (
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.entity import MaticEntity
+from custom_components.matic_robot.photo_tours import PhotoTours
 from custom_components.matic_robot.plan_model import (
     CleaningRoom,
     PlanStopDecision,
@@ -350,6 +351,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
                 async_refresh_after_snap=AsyncMock(),
                 async_expect_photo=MagicMock(return_value=MagicMock()),
             ),
+            photo_tours=PhotoTours(),
         ),
         options={},
         entry_id="entry",
