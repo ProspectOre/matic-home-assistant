@@ -13,13 +13,6 @@ from homeassistant.util import dt as dt_util
 
 from .client import CleaningModeResult, CleaningSessionRecord, FloorPlan, Room
 
-
-def native_statistics_have_ambiguous_floor(floor_plan: FloorPlan) -> bool:
-    """Whether room-name-only history could belong to another known floor."""
-    known_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
-    return len(known_floor_ids | {floor_plan.mission_id}) > 1
-
-
 # The modes a native session reports per room; a combined clean reports both.
 NATIVE_MODES = frozenset({"vacuum", "mop"})
 
