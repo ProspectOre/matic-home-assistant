@@ -101,6 +101,29 @@ async def test_a_start_reported_during_a_read_holds_that_read(hass):
         )
 
 
+async def test_a_start_that_fails_during_a_read_keeps_the_start_deadline(hass):
+    robot = FakeRobot()
+    robot.show("docked")
+
+    async def read() -> bytes | None:
+        # The robot reports an error mid-read, and the read then hangs.
+        await asyncio.sleep(START_TIMEOUT / 2)
+        robot.show("error")
+        await asyncio.Event().wait()
+        return None
+
+    with pytest.raises(TimeoutError):
+        await async_wait_for_owned_start(
+            robot.port(session_identity=read),
+            START_TIMEOUT,
+            None,
+            ROOM,
+            lambda _identity: None,
+            b"",
+            OURS,
+        )
+
+
 async def test_the_robot_back_after_the_start_timeout_keeps_its_start(
     hass, monkeypatch
 ):

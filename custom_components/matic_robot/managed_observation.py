@@ -903,7 +903,7 @@ async def _async_confirm_started_identity(
         try:
             if not (read.done() or started.done()):
                 await asyncio.wait({read, started}, return_when=asyncio.FIRST_COMPLETED)
-            if started.done():
+            if started.done() and not started.cancelled() and not started.exception():
                 start_deadline.reschedule(None)
             identity = await read
         finally:
