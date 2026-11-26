@@ -63,6 +63,7 @@ For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
 | Delayed native history | Initial `unverified`/pending reconciliation, then exact room/run match or expiry | Award completion only on an exact match; cleaning opportunity is tracked separately |
 | Home Assistant restart recovery | Durable checkpoint, matching floor/native mission, same `run_id`, and new observation session | Retain verified results; resume only with matching ownership |
 | External/OEM interruption | Native ownership change, `cause: unknown`, and `external_unknown` provenance | No completion credit and no guessed fault |
+| Robot stops answering | `plan_finished: unverified` with `connection_lost` and `cause: unknown` after the reconnect window, and no command sent after the outage | No completion credit for the room in progress, no STOP |
 | Timeout or robot error | `plan_finished: failed`, stable failure code, room failure event | No completion credit |
 | Start lost or not acknowledged | `plan_finished: failed`, at most one coverage START, and STOP only when the robot reports the session this run dispatched | No completion credit and no second START |
 | Rotation preview and execution | Same room order and selection reasons | Advance opportunity on a confirmed cleaning start; credit completion only after verification |
