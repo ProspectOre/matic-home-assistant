@@ -99,7 +99,11 @@ async def test_a_new_task_seen_after_reconnecting_is_a_takeover(
     simulator.link.restore()
 
     finished = await plan.outcome()
-    expect_finished(finished, "unverified", "native_task_taken_over", 0, "cleaning")
+    # The first read after the reconnect can land before the state stream
+    # makes the vacuum available again.
+    expect_finished(
+        finished, "unverified", "native_task_taken_over", 0, "cleaning", "unavailable"
+    )
     assert isinstance(plan.error, ServiceValidationError)
     assert plan.error.translation_key == "room_taken_over"
     assert robot.received() == received
