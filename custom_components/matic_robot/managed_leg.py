@@ -433,7 +433,10 @@ class _LegRun:
             return None
 
         await observation.async_wait_with_native_identity(
-            confirm_ownership, self.robot.session_identity, self.native_identity
+            confirm_ownership,
+            self.robot.session_identity,
+            self.native_identity,
+            self.cancel_event,
         )
         if (
             self.finish_room_event is not None

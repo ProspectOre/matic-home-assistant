@@ -786,8 +786,12 @@ async def async_wait_with_native_identity[T](
     outcome: Callable[[], Awaitable[T]],
     reader: Callable[[], Awaitable[bytes | None]],
     expected: bytes | None,
+    cancel_event: asyncio.Event | None = None,
 ) -> T:
-    """Notice replacement even when the OEM task keeps cleaning the same room."""
+    """Notice replacement even when the OEM task keeps cleaning the same room.
+
+    ``cancel_event`` ends the wait for an outcome that doesn't watch it.
+    """
 
     async def wait_for_outcome() -> T:
         return await outcome()
@@ -796,6 +800,8 @@ async def async_wait_with_native_identity[T](
     contact = ReconnectWindow()
     try:
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise PlanCancelledError
             transition_observed = changed.done()
             if transition_observed:
                 changed.result()

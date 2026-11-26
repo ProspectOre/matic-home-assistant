@@ -13,6 +13,7 @@ from custom_components.matic_robot.managed_observation import (
     async_active_session_state,
     async_wait_for_active_session_resolution,
     async_wait_for_room_outcome,
+    async_wait_with_native_identity,
 )
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
@@ -276,3 +277,22 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
             )
             is False
         )
+
+
+async def test_a_stop_ends_the_wait_for_a_robot_that_isnt_answering(hass) -> None:
+    """The outcome has already settled, so only the cancel event ends the wait."""
+    cancelled, read = asyncio.Event(), asyncio.Event()
+
+    async def unanswered() -> None:
+        read.set()
+
+    async def settled() -> None:
+        return None
+
+    waiter = asyncio.create_task(
+        async_wait_with_native_identity(settled, unanswered, OWNED_SESSION, cancelled)
+    )
+    await asyncio.wait_for(read.wait(), 1)
+    cancelled.set()
+    with pytest.raises(PlanCancelledError):
+        await asyncio.wait_for(waiter, 3)
