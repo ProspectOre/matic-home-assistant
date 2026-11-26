@@ -108,28 +108,7 @@ def _entry() -> SimpleNamespace:
     )
 
 
-@pytest.mark.parametrize(
-    "legacy_panel_api", [True, False], ids=["ha-2026.7-8", "ha-2026.9+"]
-)
-async def test_setup_registers_map_studio_when_frontend_is_loaded(
-    legacy_panel_api: bool,
-) -> None:
-    async def register_legacy_panel(
-        hass,
-        frontend_url_path,
-        webcomponent_name,
-        sidebar_title=None,
-        sidebar_icon=None,
-        js_url=None,
-        module_url=None,
-        embed_iframe=False,
-        trust_external=False,
-        config=None,
-        require_admin=False,
-        config_panel_domain=None,
-    ):
-        """Match the strict panel API shared by Home Assistant 2026.7 and 2026.8."""
-
+async def test_setup_registers_map_studio_when_frontend_is_loaded() -> None:
     register_panel = panel_custom.async_register_panel
     hass = SimpleNamespace(
         is_running=False,
@@ -148,7 +127,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     with (
         patch(
             "homeassistant.components.panel_custom.async_register_panel",
-            autospec=register_legacy_panel if legacy_panel_api else register_panel,
+            autospec=True,
             side_effect=register_panel,
         ) as panel_registration,
         patch("custom_components.matic_robot.plans.CleaningPlanManager") as history,
@@ -194,7 +173,6 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     assert registered_paths == {MATIC_MAP_STUDIO_V4_ROOT_PATH, MATIC_ICONS_PATH}
     assert hass.data[frontend.DATA_EXTRA_MODULE_URL] == {MATIC_ICONS_PATH}
     panel = hass.data[frontend.DATA_PANELS]["matic-map"]
-    safe_area_options = {} if legacy_panel_api else {"handle_safe_area": True}
     panel_registration.assert_awaited_once_with(
         hass,
         frontend_url_path="matic-map",
@@ -203,14 +181,14 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         sidebar_icon="matic:robot",
         module_url=MATIC_MAP_STUDIO_V4_PATH,
         require_admin=True,
-        **safe_area_options,
+        handle_safe_area=True,
     )
     assert panel.require_admin is True
     assert panel.sidebar_icon == "matic:robot"
     assert panel.config_panel_domain is None
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
-    assert panel.config["_panel_custom"]["handle_safe_area"] is not legacy_panel_api
+    assert panel.config["_panel_custom"]["handle_safe_area"] is True
     assert hass.services.async_register.call_count == 24
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"

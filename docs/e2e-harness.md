@@ -50,7 +50,7 @@ rather than wait minutes; the logic is unchanged.
 
 ## Faults
 
-`robot.faults` breaks the streams of one collection or channel, by name;
+`robot.faults` breaks the streams of one collection or channel, by name (`bot_info`, the identity read, takes `delay` and `stall`);
 `simulator.link` breaks the connection. Both are in `tests/e2e/sim_faults.py`.
 A `reset` or `corrupt` acts once, on the first stream that has handled `after`
 messages, so the retry succeeds; an open subscription takes it at once.
@@ -122,7 +122,7 @@ replaced before it is committed.
 - A keepalive ping finds a silent link with no request waiting; refused pings
   double its interval; one stream's fault leaves the others open.
 - A lost or unacknowledged plan start fails the run and is not sent again.
-- A revoked credential starts reauthentication. Setup handles each pairing code outcome.
+- A revoked credential starts reauthentication. Setup handles each pairing code outcome. Reconfigure saves a moved robot's address only after the pinned robot answers there, and names each failure: unreachable, timed out, new certificate, refused pairing, another serial or another robot. It pairs again, over Bluetooth or a pasted pairing, and re-pins a reset robot.
 - Matic Map's plan list, previews, delete and progress reset, as it sends them.
 - Client level: unknown credentials, fingerprint and serial pinning, snapshot,
   tracked and pushed collections, unsupported endpoints, map-tap postures and held photos.
