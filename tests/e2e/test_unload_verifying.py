@@ -173,11 +173,26 @@ async def test_unload_while_the_next_leg_inventory_stalls(
     assert len(robot.received()) == sent
 
 
+async def _finish_rug(plan: PlanRun, robot: SimulatedRobot, sent: int) -> None:
+    """Wait for recovery to start the rug, clean it and see the run complete."""
+    async with asyncio.timeout(10):
+        while len(robot.received()) == sent:
+            await plan.poll()
+    robot.finish_room()
+    await plan.poll()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+    finished = await plan.wait_for_finished()
+    expect_finished(finished, "completed", "all_rooms_verified", 1, "docked", rooms=1)
+
+
 async def test_unload_while_the_next_leg_baseline_stalls(
     plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
 ) -> None:
     plans = await _room_then_rug(plan, robot)
     await _finish_kitchen(plan, robot)
+    robot.set_property("active_session_key", uuid4().bytes)
     # The handoff is saved while the robot drives home. Once it docks, the
     # rug's dispatch rereads the history keys first, and that read stalls.
     await _wait_for_phase(plan, plans, "handoff")
@@ -189,7 +204,15 @@ async def test_unload_while_the_next_leg_baseline_stalls(
 
     await _unload_promptly(plan, hass)
     assert len(robot.received()) == sent
-    assert recovery_record(plans, robot.serial_number) is not None
+    # Nothing was sent, so the handoff stays resumable.
+    checkpoint = recovery_record(plans, robot.serial_number)
+    assert checkpoint is not None
+    stored = checkpoint["recovery_checkpoint"]
+    assert (stored["phase"], stored["leg_index"]) == ("handoff", 1)
+
+    robot.faults.clear()
+    assert await hass.config_entries.async_setup(plan.entry.entry_id)
+    await _finish_rug(plan, robot, sent)
 
 
 async def test_unload_while_recovery_rereads_a_saved_leg_boundary(
@@ -220,13 +243,4 @@ async def test_unload_while_recovery_rereads_a_saved_leg_boundary(
     # With the history readable, the next setup resumes the queue at the rug.
     robot.faults.clear()
     assert await hass.config_entries.async_setup(plan.entry.entry_id)
-    async with asyncio.timeout(10):
-        while len(robot.received()) == sent:
-            await plan.poll()
-    robot.finish_room()
-    await plan.poll()
-    robot.finish_session()
-    await plan.poll()
-    robot.arrive_at_dock()
-    finished = await plan.wait_for_finished()
-    expect_finished(finished, "completed", "all_rooms_verified", 1, "docked", rooms=1)
+    await _finish_rug(plan, robot, sent)

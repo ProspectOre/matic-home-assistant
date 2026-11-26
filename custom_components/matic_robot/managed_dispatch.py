@@ -172,17 +172,17 @@ async def async_dispatch_leg_command(
     expected_dispatch_history: frozenset[str] | None = None,
     expected_dispatch_revision: str | None = None,
     cancel_event: asyncio.Event | None = None,
+    on_dispatching: Callable[[], Awaitable[object]] | None = None,
 ) -> PreparedRoomDispatch:
     """Start one owned leg mission and keep what its completion is judged by.
 
     A custom area leg is its own mission, started with the same ownership.
+    ``on_dispatching`` runs once the handoff boundary holds, before the claim
+    and the start: a stop or unload before then sent nothing.
     """
     area = rooms if isinstance(rooms, AreaLeg) else None
     leg = () if isinstance(rooms, AreaLeg) else tuple(rooms)
-    if floor_is_current is not None and not floor_is_current():
-        raise managed_run.validation_error(
-            "The robot's room map is unavailable", "room_plan_unavailable"
-        )
+    _require_current_floor(floor_is_current)
     history_baseline = await _async_dispatch_history_baseline(
         robot, on_claim is not None, expected_dispatch_history, cancel_event
     )
@@ -204,10 +204,7 @@ async def async_dispatch_leg_command(
         or (expected_dispatch_identity != b"" and identity_baseline == b"")
     ):
         raise RoomTakenOverError("The native task changed during the handoff boundary")
-    if floor_is_current is not None and not floor_is_current():
-        raise managed_run.validation_error(
-            "The robot's room map is unavailable", "room_plan_unavailable"
-        )
+    _require_current_floor(floor_is_current)
     managed_session_id = uuid4()
     dispatched_at = dt_util.utcnow()
     command: PlanStart
@@ -238,14 +235,13 @@ async def async_dispatch_leg_command(
             floor_token=floor_token,
             idle_revision=expected_dispatch_revision,
         )
+    if on_dispatching is not None:
+        await on_dispatching()
     if on_claim is not None:
         # The claim is durable before the start is sent. Native history may
         # arrive immediately after the robot accepts it.
         await on_claim(str(managed_session_id))
-        if floor_is_current is not None and not floor_is_current():
-            raise managed_run.validation_error(
-                "The robot's room map is unavailable", "room_plan_unavailable"
-            )
+        _require_current_floor(floor_is_current)
     if on_dispatch is not None:
         on_dispatch()
     try:
@@ -307,6 +303,14 @@ async def async_dispatch_leg_command(
         identity,
         session_hash=hashlib.sha256(str(managed_session_id).encode()).hexdigest(),
     )
+
+
+def _require_current_floor(floor_is_current: Callable[[], bool] | None) -> None:
+    """Refuse the dispatch when the robot left the floor the run was planned on."""
+    if floor_is_current is not None and not floor_is_current():
+        raise managed_run.validation_error(
+            "The robot's room map is unavailable", "room_plan_unavailable"
+        )
 
 
 async def _async_dispatch_history_baseline(

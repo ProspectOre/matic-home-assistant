@@ -136,6 +136,7 @@ class _LegRun:
     expected_identity: bytes | None
     expected_history: frozenset[str] | None
     expected_revision: str | None
+    on_dispatching: Callable[[], Awaitable[object]] | None
     # The room the robot is cleaning, or the recovered run's current room.
     active_room: CleaningRoom
     # The mission sent, or the prepared one this leg adopts.
@@ -262,6 +263,7 @@ class _LegRun:
                 expected_dispatch_history=self.expected_history,
                 expected_dispatch_revision=self.expected_revision,
                 cancel_event=self.cancel_event,
+                on_dispatching=self.on_dispatching,
             )
         else:
             if self.dispatch.rooms != tuple(self.leg):
@@ -939,6 +941,7 @@ async def async_run_room_leg(
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
     expected_dispatch_revision: str | None = None,
+    on_dispatching: Callable[[], Awaitable[object]] | None = None,
 ) -> bool:
     """Run one leg and report whether every room in it settled.
 
@@ -972,6 +975,7 @@ async def async_run_room_leg(
         expected_identity=expected_dispatch_identity,
         expected_history=expected_dispatch_history,
         expected_revision=expected_dispatch_revision,
+        on_dispatching=on_dispatching,
         active_room=next(
             (room for room in leg if room.room_id == recovered_room_id), leg[0]
         ),

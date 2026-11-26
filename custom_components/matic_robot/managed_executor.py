@@ -329,8 +329,6 @@ class _PlanRun:
                 if settled_handoff is None:
                     break
                 handoff = settled_handoff
-            if handoff.dispatch is None:
-                await self.advance(LegDispatching(index))
             settled = await self.async_run_leg(index, leg, handoff)
             self.expected_identity = None
             if not settled:
@@ -381,7 +379,6 @@ class _PlanRun:
             async def dispatch(
                 on_identity: Callable[[bytes | None], None],
             ) -> PreparedRoomDispatch:
-                await self.advance(LegDispatching(index))
                 return await dispatch_control.async_dispatch_leg_command(
                     self.robot,
                     leg,
@@ -399,6 +396,7 @@ class _PlanRun:
                     expected_dispatch_history=history,
                     expected_dispatch_revision=revision,
                     cancel_event=self.cancel_event,
+                    on_dispatching=partial(self.advance, LegDispatching(index)),
                 )
 
             async def back_to_handoff() -> None:
@@ -479,6 +477,7 @@ class _PlanRun:
                 expected_dispatch_identity=self.expected_identity,
                 expected_dispatch_history=handoff.history,
                 expected_dispatch_revision=handoff.revision,
+                on_dispatching=partial(self.advance, LegDispatching(index)),
                 on_native_identity=self.bind_native_identity,
                 run_id=self.run_id,
                 checkpoint_dispatch=self.save_dispatch,
@@ -513,6 +512,7 @@ class _PlanRun:
             expected_dispatch_identity=self.expected_identity,
             expected_dispatch_history=handoff.history,
             expected_dispatch_revision=handoff.revision,
+            on_dispatching=partial(self.advance, LegDispatching(index)),
             on_native_identity=self.bind_native_identity,
             run_id=self.run_id,
             record_room_completed=self.record_room_completed,

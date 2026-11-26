@@ -262,6 +262,7 @@ class _AreaLegRun:
         expected_identity: bytes | None,
         expected_history: frozenset[str] | None,
         expected_revision: str | None,
+        on_dispatching: Callable[[], Awaitable[object]] | None,
     ) -> PreparedRoomDispatch:
         """Start the area, or resume a recovered dispatch, and record it started."""
         self.dispatch_attempted = prepared is not None
@@ -289,6 +290,7 @@ class _AreaLegRun:
                 expected_dispatch_history=expected_history,
                 expected_dispatch_revision=expected_revision,
                 cancel_event=self.cancel_event,
+                on_dispatching=on_dispatching,
             )
             await self.checkpoint_dispatch(dispatch)
         await self.manager.ledger.async_mark_area_started(
@@ -403,6 +405,7 @@ async def async_run_area_leg(
     expected_dispatch_history: frozenset[str] | None,
     expected_dispatch_revision: str | None,
     on_native_identity: Callable[[bytes | None], None],
+    on_dispatching: Callable[[], Awaitable[object]] | None = None,
     run_id: str,
     checkpoint_dispatch: Callable[[PreparedRoomDispatch], Awaitable[None]],
     provenance: str,
@@ -437,6 +440,7 @@ async def async_run_area_leg(
             expected_identity=expected_dispatch_identity,
             expected_history=expected_dispatch_history,
             expected_revision=expected_dispatch_revision,
+            on_dispatching=on_dispatching,
         )
         await leg.async_watch(dispatch, settle_history=settle_history)
     except PlanCancelledError, asyncio.CancelledError:
