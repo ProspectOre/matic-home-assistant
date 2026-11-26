@@ -45,6 +45,7 @@ from custom_components.matic_robot.const import (
     PLATFORMS,
 )
 from custom_components.matic_robot.media_source import DATA_PHOTO_ATTACHMENT_SOURCE
+from custom_components.matic_robot.photo_tours import PhotoTours
 from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_view_data import observe_trail
@@ -108,28 +109,7 @@ def _entry() -> SimpleNamespace:
     )
 
 
-@pytest.mark.parametrize(
-    "legacy_panel_api", [True, False], ids=["ha-2026.7-8", "ha-2026.9+"]
-)
-async def test_setup_registers_map_studio_when_frontend_is_loaded(
-    legacy_panel_api: bool,
-) -> None:
-    async def register_legacy_panel(
-        hass,
-        frontend_url_path,
-        webcomponent_name,
-        sidebar_title=None,
-        sidebar_icon=None,
-        js_url=None,
-        module_url=None,
-        embed_iframe=False,
-        trust_external=False,
-        config=None,
-        require_admin=False,
-        config_panel_domain=None,
-    ):
-        """Match the strict panel API shared by Home Assistant 2026.7 and 2026.8."""
-
+async def test_setup_registers_map_studio_when_frontend_is_loaded() -> None:
     register_panel = panel_custom.async_register_panel
     hass = SimpleNamespace(
         is_running=False,
@@ -148,7 +128,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     with (
         patch(
             "homeassistant.components.panel_custom.async_register_panel",
-            autospec=register_legacy_panel if legacy_panel_api else register_panel,
+            autospec=True,
             side_effect=register_panel,
         ) as panel_registration,
         patch("custom_components.matic_robot.plans.CleaningPlanManager") as history,
@@ -194,7 +174,6 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     assert registered_paths == {MATIC_MAP_STUDIO_V4_ROOT_PATH, MATIC_ICONS_PATH}
     assert hass.data[frontend.DATA_EXTRA_MODULE_URL] == {MATIC_ICONS_PATH}
     panel = hass.data[frontend.DATA_PANELS]["matic-map"]
-    safe_area_options = {} if legacy_panel_api else {"handle_safe_area": True}
     panel_registration.assert_awaited_once_with(
         hass,
         frontend_url_path="matic-map",
@@ -203,14 +182,14 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         sidebar_icon="matic:robot",
         module_url=MATIC_MAP_STUDIO_V4_PATH,
         require_admin=True,
-        **safe_area_options,
+        handle_safe_area=True,
     )
     assert panel.require_admin is True
     assert panel.sidebar_icon == "matic:robot"
     assert panel.config_panel_domain is None
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
-    assert panel.config["_panel_custom"]["handle_safe_area"] is not legacy_panel_api
+    assert panel.config["_panel_custom"]["handle_safe_area"] is True
     assert hass.services.async_register.call_count == 24
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
@@ -781,6 +760,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             run_trails=run_trails,
             wifi_survey=_wifi_survey(),
             photos=SimpleNamespace(async_shutdown=AsyncMock()),
+            photo_tours=PhotoTours(),
             cleaning_plans=plans,
         ),
     )
@@ -881,6 +861,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             run_trails=run_trails,
             wifi_survey=_wifi_survey(),
             photos=SimpleNamespace(async_shutdown=AsyncMock()),
+            photo_tours=PhotoTours(),
         ),
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
@@ -966,8 +947,15 @@ async def test_teardown_allows_only_existing_managed_token_cleanup(
             await asyncio.gather(command, return_exceptions=True)
 
 
-async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
-    """A failed platform unload must not strand a preserved managed run."""
+@pytest.mark.parametrize(
+    ("recovery_run", "pending_stop_run_id"),
+    [({"run_id": "run"}, None), (None, "run")],
+    ids=["recovery", "pending_stop_settlement"],
+)
+async def test_failed_enabled_unload_reschedules_recovery(
+    hass, recovery_run, pending_stop_run_id
+) -> None:
+    """A failed platform unload must not strand a preserved run or its stop."""
     plans = SimpleNamespace(
         repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
         control=SimpleNamespace(
@@ -975,10 +963,11 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
             async_close_command_admission_and_wait=AsyncMock(),
             begin_command_teardown=MagicMock(),
             reopen_metadata_admission=MagicMock(),
+            pending_stop_run_id=MagicMock(return_value=pending_stop_run_id),
         ),
         ledger=SimpleNamespace(),
         recovery=SimpleNamespace(
-            recovery_run=MagicMock(return_value={"run_id": "run"}),
+            recovery_run=MagicMock(return_value=recovery_run),
             async_retire_recovery=AsyncMock(),
         ),
     )
@@ -993,42 +982,7 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
         data={CONF_SERIAL_NUMBER: "serial"},
         entry_id="entry",
         async_create_background_task=MagicMock(side_effect=capture_task),
-        runtime_data=SimpleNamespace(cleaning_plans=plans),
-    )
-    hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
-    await async_unload_entry(hass, entry)
-    plans.control.reopen_metadata_admission.assert_called_once_with("serial")
-    entry.async_create_background_task.assert_called_once()
-    assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
-
-
-async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
-    plans = SimpleNamespace(
-        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
-        control=SimpleNamespace(
-            async_cancel_and_wait=AsyncMock(),
-            async_close_command_admission_and_wait=AsyncMock(),
-            begin_command_teardown=MagicMock(),
-            reopen_metadata_admission=MagicMock(),
-            pending_stop_run_id=MagicMock(return_value="run"),
-        ),
-        ledger=SimpleNamespace(),
-        recovery=SimpleNamespace(
-            recovery_run=MagicMock(return_value=None), async_retire_recovery=AsyncMock()
-        ),
-    )
-    target_tasks = []
-
-    def capture_task(_hass, target, name):
-        target_tasks.append((target, name))
-        target.close()
-
-    entry = SimpleNamespace(
-        disabled_by=None,
-        data={CONF_SERIAL_NUMBER: "serial"},
-        entry_id="entry",
-        async_create_background_task=MagicMock(side_effect=capture_task),
-        runtime_data=SimpleNamespace(cleaning_plans=plans),
+        runtime_data=SimpleNamespace(cleaning_plans=plans, photo_tours=PhotoTours()),
     )
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
     await async_unload_entry(hass, entry)
@@ -1058,7 +1012,7 @@ async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
         data={CONF_SERIAL_NUMBER: "serial"},
         entry_id="entry",
         async_create_background_task=MagicMock(),
-        runtime_data=SimpleNamespace(cleaning_plans=plans),
+        runtime_data=SimpleNamespace(cleaning_plans=plans, photo_tours=PhotoTours()),
     )
     hass.is_stopping = True
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)

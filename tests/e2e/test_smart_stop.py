@@ -9,6 +9,7 @@ import pytest
 from homeassistant.core import HomeAssistant, callback
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
+from custom_components.matic_robot import stop_return
 from custom_components.matic_robot.const import (
     DOMAIN,
     EVENT_PLAN_DOCKED,
@@ -114,23 +115,58 @@ async def test_stop_finishes_the_current_room_and_skips_the_rest(
     assert STOP_PAYLOAD not in robot.received()
 
 
+@pytest.mark.parametrize("seen_late", [False, True], ids=["seen", "seen_late"])
 async def test_stop_now_ends_the_room_being_finished(
-    plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
+    plan: PlanRun,
+    robot: SimulatedRobot,
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    seen_late: bool,
 ) -> None:
+    monkeypatch.setattr(stop_return, "DOCK_SETTLE_POLL_SECONDS", 0.05)
+    order = _run_ends(hass)
     await _start_smart_stop_plan(plan)
     await _smart_stop(plan)
     assert robot.phase is Phase.CLEANING
 
     sent = len(robot.received())
+    if seen_late:
+        # The robot takes the STOP but reports it only after the run ended.
+        robot.hold_commands()
     await _stop(hass, stop_now=True, expected_run_id=plan.run_id)
-    await plan.poll()
+    finished = await plan.wait_for_finished()
+    if seen_late:
+        assert finished["terminal_activity"] == "cleaning"
+        # No DOCK goes out while the robot has not reported the stop.
+        for _ in range(5):
+            await plan.poll()
+            await asyncio.sleep(stop_return.DOCK_SETTLE_POLL_SECONDS)
+        assert DOCK_PAYLOAD not in robot.received()[sent:]
+        assert not plan.docked
+        robot.release_commands()
+    # The dock watcher sends DOCK once the robot reports the stop settled.
+    async with asyncio.timeout(10):
+        while DOCK_PAYLOAD not in robot.received()[sent:]:
+            await plan.poll()
 
     assert robot.received()[sent:] == [STOP_PAYLOAD, DOCK_PAYLOAD]
     assert robot.phase is Phase.RETURNING
     robot.arrive_at_dock()
     finished = await plan.outcome()
-    # The Kitchen was cut short, so no room counts as cleaned.
-    expect_finished(finished, "cancelled", "managed_stop", 0, "idle", "docked")
+    # The Kitchen was cut short, so no room counts as cleaned. plan_finished
+    # reports the activity last seen when the run ended, which can precede
+    # the robot's report of the stop; plan_docked closes the run either way.
+    expect_finished(
+        finished,
+        "cancelled",
+        "managed_stop",
+        0,
+        # Unordered, the run can end before the stop is seen, as in seen_late.
+        *(("cleaning",) if seen_late else ("cleaning", "idle", "returning")),
+    )
+    assert (await _docked(plan))["outcome"] == "stopped_docked"
+    assert order == [EVENT_PLAN_FINISHED, EVENT_PLAN_DOCKED]
+    assert _stored_outcome(plan) == "stopped_docked"
 
 
 async def test_the_preview_shows_the_missions_the_run_sends(

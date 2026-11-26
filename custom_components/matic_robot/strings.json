@@ -2075,7 +2075,7 @@
       "message": "The robot's battery level is unavailable, so the photo tour was not started."
     },
     "photo_tour_stopped": {
-      "message": "The photo tour stopped because the robot was given another command."
+      "message": "The photo tour stopped because the robot was given another command or the integration was reloaded or disabled."
     },
     "photo_tour_robot_busy": {
       "message": "The robot is busy with a clean or on its way to the dock. Take photos once it has docked."

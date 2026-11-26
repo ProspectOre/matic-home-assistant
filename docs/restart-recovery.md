@@ -27,7 +27,10 @@ A room leg is one start followed by a settings update per room. The update is
 sent only to the mission the run generated, on the map it started with, while
 the first room is cleaning. When a leg finishes, the run saves the next leg and
 a handoff phase before it waits for the robot to settle, so a restart between
-legs can resume the queue.
+legs can resume the queue. Saving that phase needs the robot's history keys; a
+restart or reload while they are still being read ends the read at once and
+leaves the finished leg verifying, so recovery rereads its history and ends the
+run without starting the next leg.
 
 ## What to expect
 

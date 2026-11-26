@@ -18,7 +18,7 @@ body:
   - type: input
     attributes:
       label: Home Assistant version and installation
-      placeholder: 2026.7.2, Home Assistant OS
+      placeholder: 2026.10.0, Home Assistant OS
     validations:
       required: true
   - type: input

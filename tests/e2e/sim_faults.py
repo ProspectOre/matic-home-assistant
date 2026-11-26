@@ -34,6 +34,9 @@ class Fault(Enum):
 class Faults:
     """Scripted failures, each keyed by a collection or channel name.
 
+    ``bot_info`` names the identity read, which only ``delay`` and ``stall``
+    hold.
+
     ``delay`` and ``stall`` hold until ``clear``. ``reset`` and ``corrupt``
     are queued: the first stream that has handled ``after`` messages takes
     the fault, so the client's retry or resubscription succeeds. Queuing one
