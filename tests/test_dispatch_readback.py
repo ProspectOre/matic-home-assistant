@@ -1,5 +1,6 @@
 """What a leg's start readback concludes from the identity the robot reports."""
 
+import asyncio
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from tests.wire_builders import _session_identity
 
 ROOM = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
 FOREIGN = _session_identity(UUID("55555555-5555-4555-8555-555555555555"))
+HANG = object()
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +44,8 @@ def fast_readback(monkeypatch):
         # The start went out and the robot stopped answering: lost contact.
         ([None], RobotConnectionLostError, "stopped answering"),
         ([b"", None], RobotConnectionLostError, "stopped answering"),
+        # A read still waiting when the readback gives up is not an answer.
+        ([b"", b"", HANG], RobotConnectionLostError, "stopped answering"),
     ],
 )
 async def test_start_readback_tells_lost_contact_from_another_task(
@@ -57,7 +61,10 @@ async def test_start_readback_tells_lost_contact_from_another_task(
         if not reads:
             return b""
         # The last scripted answer repeats until the readback gives up.
-        return reads.pop(0) if len(reads) > 1 else reads[0]
+        answer = reads.pop(0) if len(reads) > 1 else reads[0]
+        if answer is HANG:
+            await asyncio.Event().wait()
+        return answer
 
     robot.on_start = start
     bound = []

@@ -375,12 +375,13 @@ async def _async_recover_managed_dispatch_identity(
     """Boundedly recover only this command's identity after an uncertain write.
 
     Return that identity, or None, and whether the robot answered the last
-    read: a different identity is an answer, a failed read is not.
+    read: a different identity is an answer, a failed or unfinished read is not.
     """
     answered = False
     try:
         async with asyncio.timeout(DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS):
             while True:
+                answered = False
                 observed = await observation.async_read_session_identity(reader)
                 answered = observed is not None
                 if observed and observed != baseline:
