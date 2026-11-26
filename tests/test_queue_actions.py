@@ -31,8 +31,10 @@ from custom_components.matic_robot.run_history import _ROOM_RESULTS
 from custom_components.matic_robot.run_machine import RoomSettled
 from custom_components.matic_robot.verified_completion import global_room
 from tests.plans.fakes import (
+    LEG_OUTCOME,
     kitchen_leg_ends,
     leg_manager,
+    leg_outcomes,
     leg_record,
     memory_manager,
     plan_room,
@@ -397,8 +399,8 @@ async def test_one_room_leg_settles_a_skipped_room(monkeypatch) -> None:
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            mission_ends,
+            LEG_OUTCOME,
+            leg_outcomes(mission_ends),
         ),
     ):
         settled = await async_run_room_leg(

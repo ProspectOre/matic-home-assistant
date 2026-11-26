@@ -100,7 +100,7 @@ async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
     with (
         patch(
             "custom_components.matic_robot.managed_observation.async_wait_with_native_identity",
-            return_value=RoomRunOutcome.STOPPED_IN_PLACE,
+            return_value=(RoomRunOutcome.STOPPED_IN_PLACE, None),
         ),
         patch(
             "custom_components.matic_robot.stop_return.DOCK_SETTLE_TIMEOUT_SECONDS", 0
@@ -194,10 +194,7 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
         active = manager.history.snapshot("serial")["active_plan"]
         assert active["status"] == "suspended" and active["suspend_reason"] == reason
         assert 0 < args[1] <= 100
-        if multi:
-            assert isinstance(kwargs["resume_event"], asyncio.Event)
-        else:
-            assert kwargs["resume_event"] is None
+        assert isinstance(kwargs["resume_event"], asyncio.Event)
         hass.set_state(CoreState.stopping)
         raise asyncio.CancelledError
 

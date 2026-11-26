@@ -9,10 +9,10 @@ from homeassistant.exceptions import ServiceValidationError
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import RobotActivity
 from custom_components.matic_robot.managed_observation import (
+    LegOutcomeObserver,
     _async_wait_for_robot_activity,
     async_active_session_state,
     async_wait_for_active_session_resolution,
-    async_wait_for_room_outcome,
     async_wait_with_native_identity,
 )
 from custom_components.matic_robot.managed_run import (
@@ -22,6 +22,20 @@ from custom_components.matic_robot.managed_run import (
 )
 from tests.plans.fakes import OWNED_SESSION, plan_room
 from tests.session_fakes import FakeRobot
+
+
+async def async_wait_for_room_outcome(
+    robot, room, cancel_event=None, *, initial_observed=False
+) -> RoomRunOutcome:
+    """The next outcome a fresh observer of a one-room leg reports."""
+    observer = LegOutcomeObserver(
+        robot, [room], room, initial_observed=initial_observed
+    )
+    try:
+        outcome, _changed = await observer.next(cancel_event)
+    finally:
+        observer.close()
+    return outcome
 
 
 async def test_a_task_that_ends_in_place_is_not_a_completion_candidate(hass) -> None:

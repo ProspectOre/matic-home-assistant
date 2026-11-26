@@ -22,7 +22,13 @@ from custom_components.matic_robot.managed_run import (
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plan_records import ActivePlan
 from custom_components.matic_robot.robot_commands import CleanRooms
-from tests.plans.fakes import mission_ends, plan_room, run_plan_call
+from tests.plans.fakes import (
+    LEG_OUTCOME,
+    leg_outcomes,
+    mission_ends,
+    plan_room,
+    run_plan_call,
+)
 from tests.session_fakes import FakeRobot, run_step
 from tests.test_services import _execution_call
 from tests.wire_builders import _session_identity
@@ -416,7 +422,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
             AsyncMock(return_value=RobotActivity.CLEANING),
         ) as wait,
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
+            LEG_OUTCOME,
             mission_ends(robot),
         ),
     ):
@@ -551,8 +557,8 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(side_effect=TimeoutError),
+            LEG_OUTCOME,
+            leg_outcomes(AsyncMock(side_effect=TimeoutError)),
         ),
         pytest.raises(ServiceValidationError, match="Timed out") as failure,
     ):
@@ -611,8 +617,8 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(side_effect=RoomTakenOverError("replacement task")),
+            LEG_OUTCOME,
+            leg_outcomes(AsyncMock(side_effect=RoomTakenOverError("replacement task"))),
         ),
         pytest.raises(ServiceValidationError) as failure,
     ):
@@ -665,12 +671,14 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
             AsyncMock(side_effect=[RobotActivity.CLEANING, RobotActivity.CLEANING]),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(
-                side_effect=[
-                    RoomRunOutcome.SUSPENDED,
-                    RoomRunOutcome.HANDOFF_CANDIDATE,
-                ]
+            LEG_OUTCOME,
+            leg_outcomes(
+                AsyncMock(
+                    side_effect=[
+                        RoomRunOutcome.SUSPENDED,
+                        RoomRunOutcome.HANDOFF_CANDIDATE,
+                    ]
+                )
             ),
         ) as outcome,
     ):
@@ -744,8 +752,8 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+            LEG_OUTCOME,
+            leg_outcomes(AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE)),
         ) as outcome,
     ):
         await async_run_room_leg(

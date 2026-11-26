@@ -1609,6 +1609,7 @@ async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, report
             cancellation_reason=MagicMock(return_value=None),
             managed_reconciliation=MagicMock(return_value=nullcontext(True)),
             managed_motion_is_current=MagicMock(return_value=True),
+            pending_stop_run_id=MagicMock(return_value=None),
         ),
     )
     replacement_identity = _session_identity(
@@ -1703,6 +1704,7 @@ async def test_unavailable_native_history_baseline_fails_before_start(hass):
             cancellation_reason=MagicMock(return_value=None),
             managed_reconciliation=MagicMock(return_value=nullcontext(True)),
             managed_motion_is_current=MagicMock(return_value=True),
+            pending_stop_run_id=MagicMock(return_value=None),
         ),
     )
     sent = []

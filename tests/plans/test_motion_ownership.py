@@ -25,7 +25,14 @@ from custom_components.matic_robot.managed_run import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
-from tests.plans.fakes import OWNED_SESSION, memory_manager, plan_room, run_plan_call
+from tests.plans.fakes import (
+    LEG_OUTCOME,
+    OWNED_SESSION,
+    leg_outcomes,
+    memory_manager,
+    plan_room,
+    run_plan_call,
+)
 from tests.session_fakes import FakeRobot, run_step
 
 
@@ -317,8 +324,8 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(side_effect=terminal_error),
+            LEG_OUTCOME,
+            leg_outcomes(AsyncMock(side_effect=terminal_error)),
         ),
         pytest.raises(ServiceValidationError) as failure,
     ):

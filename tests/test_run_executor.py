@@ -13,7 +13,12 @@ from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.managed_observation import LegOutcomeObserver
 from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.plans.fakes import credit_rooms, memory_manager, plan_room, run_plan_call
+from tests.plans.fakes import (
+    credit_rooms,
+    memory_manager,
+    plan_room,
+    run_plan_call,
+)
 from tests.session_fakes import FakeRobot, robot_port
 from tests.wire_builders import _session_identity
 
@@ -349,17 +354,7 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
         raise RuntimeError("unexpected observer failure")
 
     robot.on_start = dispatch
-    if multi_room:
-        monkeypatch.setattr(
-            LegOutcomeObserver,
-            "next",
-            fail_after_replacement,
-        )
-    else:
-        monkeypatch.setattr(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            fail_after_replacement,
-        )
+    monkeypatch.setattr(LegOutcomeObserver, "next", fail_after_replacement)
     rooms = [ROOM]
     if multi_room:
         rooms.append(replace(ROOM, room_id="room-office", name="Office"))

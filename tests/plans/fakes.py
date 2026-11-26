@@ -79,15 +79,29 @@ def rotation_explanation(
 
 OWNED_SESSION = b"synthetic-owned-session"
 
+# Where a test replaces a leg's next observed outcome.
+LEG_OUTCOME = (
+    "custom_components.matic_robot.managed_observation.LegOutcomeObserver.next"
+)
+
+
+def leg_outcomes(outcome: Callable[..., Awaitable[RoomRunOutcome]]) -> AsyncMock:
+    """Feed a leg's observer the outcomes ``outcome`` returns, with no room change."""
+
+    async def next_outcome(*args: object) -> tuple[RoomRunOutcome, None]:
+        return await outcome(*args), None
+
+    return AsyncMock(side_effect=next_outcome)
+
 
 def mission_ends(robot: FakeRobot) -> AsyncMock:
-    """A room outcome after which the robot drives home, ending its session."""
+    """A leg outcome after which the robot drives home, ending its session."""
 
-    async def outcome(*_args: object, **_kwargs: object) -> RoomRunOutcome:
+    async def outcome(*_args: object) -> RoomRunOutcome:
         robot.show("returning")
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
-    return AsyncMock(side_effect=outcome)
+    return leg_outcomes(outcome)
 
 
 def kitchen_leg_ends(

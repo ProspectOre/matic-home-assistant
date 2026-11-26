@@ -47,7 +47,7 @@ from custom_components.matic_robot.plan_model import (
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 from tests.client.test_coverage_receipts import history_key
-from tests.plans.fakes import memory_manager, recovery_record
+from tests.plans.fakes import LEG_OUTCOME, leg_outcomes, memory_manager, recovery_record
 from tests.session_fakes import FakeRobot, robot_client, run_step, verifying_write
 
 SESSION = UUID(int=772)
@@ -285,8 +285,8 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+            LEG_OUTCOME,
+            leg_outcomes(AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE)),
         ),
     ):
         completed = await async_run_room_leg(
@@ -365,8 +365,8 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+            LEG_OUTCOME,
+            leg_outcomes(AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE)),
         ),
     ):
         completed = await async_run_room_leg(
@@ -544,8 +544,8 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
     if path == "room":
         overrides.append(
             patch(
-                "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-                AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+                LEG_OUTCOME,
+                leg_outcomes(AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE)),
             )
         )
     else:
@@ -655,8 +655,8 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
                 AsyncMock(return_value=RobotActivity.CLEANING),
             ),
             patch(
-                "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-                AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+                LEG_OUTCOME,
+                leg_outcomes(AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE)),
             ),
         ):
             return await async_run_room_leg(
