@@ -301,6 +301,42 @@ def _timestamp(nanoseconds: int) -> bytes:
     return bytes_field(1, varint_field(1, seconds) + varint_field(2, nanos))
 
 
+def app_history_value(
+    floor: SimFloor, room: SimRoom, started_at: int, ended_at: int
+) -> bytes:
+    """A finished clean of one room started in the Matic app, in the record's
+    current shape: the mission, the floor (partition) in each start goal, the
+    app as starter, a finished stop and a completed 300 s vacuum for the room.
+    """
+    goal = bytes_field(7, bytes_field(1, bytes_field(1, uuid_wire(floor.partition_id))))
+    app = bytes_field(3, bytes_field(2, bytes_field(1, b"")))
+    log = bytes_field(1, bytes_field(2, bytes_field(1, bytes_field(2, goal)) + app))
+    vacuum = bytes_field(
+        2,
+        varint_field(1, 0)
+        + bytes_field(
+            2,
+            varint_field(5, ROOM_STATUS_COMPLETED)
+            + bytes_field(4, varint_field(1, 300)),
+        ),
+    )
+    region = bytes_field(1, bytes_field(2, uuid_wire(room.id))) + bytes_field(
+        2, bytes_field(1, room.name.encode()) + vacuum
+    )
+    summary = (
+        bytes_field(3, _timestamp(started_at))
+        + bytes_field(4, _timestamp(ended_at))
+        + bytes_field(9, b"")
+        + bytes_field(10, bytes_field(5, bytes_field(2, b"")))
+        + bytes_field(11, bytes_field(1, region))
+    )
+    return (
+        bytes_field(1, fixed32_int(2, floor.mission_id))
+        + bytes_field(2, log)
+        + bytes_field(5, summary)
+    )
+
+
 @dataclass(slots=True)
 class Visit:
     """One room's consecutive goals in a task's plan, and when it finished."""
