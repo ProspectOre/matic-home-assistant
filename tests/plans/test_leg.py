@@ -256,6 +256,61 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
 
 
 @pytest.mark.parametrize("room_count", [1, 2], ids=["one_room", "two_rooms"])
+async def test_unrecorded_unverified_room_ends_the_leg(room_count: int) -> None:
+    """A room the ledger refuses to record, as for a removed robot, is not settled."""
+    robot = FakeRobot()
+    robot.show("cleaning")
+    hass = SimpleNamespace(bus=SimpleNamespace(async_fire=MagicMock()))
+
+    async def leg_outcome(*_args, **_kwargs):
+        robot.show("returning")
+        return RoomRunOutcome.HANDOFF_CANDIDATE
+
+    manager = SimpleNamespace(
+        control=SimpleNamespace(
+            managed_reconciliation=lambda *_args: nullcontext(True),
+            managed_motion_is_current=MagicMock(return_value=True),
+            register_reconciliation_task=MagicMock(),
+            cancellation_reason=MagicMock(return_value=None),
+        ),
+        ledger=SimpleNamespace(
+            active_target=MagicMock(return_value=None),
+            async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
+            async_mark_ended_unverified=AsyncMock(return_value=False),
+            async_mark_verifying=AsyncMock(),
+            async_mark_resumed=AsyncMock(),
+        ),
+    )
+    rooms = [plan_room("Kitchen", "room-kitchen"), plan_room("Office", "room-office")]
+    with (
+        patch(
+            "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
+            AsyncMock(return_value=RobotActivity.CLEANING),
+        ),
+        patch(LEG_OUTCOME, leg_outcomes(leg_outcome)),
+        pytest.raises(PlanCancelledError),
+    ):
+        await async_run_room_leg(
+            hass,
+            run_plan_call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms[:room_count],
+            robot.port(session_identity=robot.accepting),
+            7,
+            floor_token="floor",
+            checkpoint_dispatch=AsyncMock(),
+            advance=run_step,
+        )
+
+    manager.ledger.async_mark_ended_unverified.assert_awaited_once()
+    hass.bus.async_fire.assert_called_once()
+    assert hass.bus.async_fire.call_args.args[0] == f"{DOMAIN}_room_started"
+
+
+@pytest.mark.parametrize("room_count", [1, 2], ids=["one_room", "two_rooms"])
 async def test_failed_dispatch_preserves_its_transmitted_stop(
     hass, room_count: int
 ) -> None:
