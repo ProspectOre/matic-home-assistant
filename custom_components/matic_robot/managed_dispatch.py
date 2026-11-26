@@ -279,31 +279,9 @@ async def async_dispatch_leg_command(
         if identity is not None and on_identity is not None:
             on_identity(identity)
         raise
-    observed = await observation.async_read_session_identity(robot.session_identity)
-    identity = observed if observed and observed != identity_baseline else None
-    if identity is not None and not _identity_matches_session(
-        identity, managed_session_id
-    ):
-        # A newly observed foreign identity is explicit takeover evidence.
-        # Do not keep polling until a later value happens to match ours.
-        raise RoomTakenOverError(
-            "The dispatched native task was replaced before readback"
-        )
-    if identity is None:
-        identity, answered = await _async_recover_managed_dispatch_identity(
-            robot.session_identity,
-            managed_session_id,
-            identity_baseline,
-        )
-        if not answered:
-            # The start went out, so the robot may be cleaning this run's task.
-            raise RobotConnectionLostError(
-                "The robot stopped answering after the leg was sent"
-            )
-    if identity is None or not _identity_matches_session(identity, managed_session_id):
-        raise RoomTakenOverError(
-            "The dispatched native task could not be verified after readback"
-        )
+    identity = await _async_read_back_dispatch(
+        robot.session_identity, managed_session_id, identity_baseline
+    )
     if on_identity is not None:
         on_identity(identity)
     return PreparedRoomDispatch(
@@ -357,6 +335,36 @@ def _identity_matches_session(identity: bytes, session_id: UUID) -> bool:
         return uuid_string(identity) == str(session_id)
     except DecodeError:
         return False
+
+
+async def _async_read_back_dispatch(
+    reader: Callable[[], Awaitable[bytes | None]],
+    session_id: UUID,
+    baseline: bytes | None,
+) -> bytes:
+    """Return the identity of the task a sent leg started, or raise why not."""
+    observed = await observation.async_read_session_identity(reader)
+    identity = observed if observed and observed != baseline else None
+    if identity is not None and not _identity_matches_session(identity, session_id):
+        # A newly observed foreign identity is explicit takeover evidence.
+        # Do not keep polling until a later value happens to match ours.
+        raise RoomTakenOverError(
+            "The dispatched native task was replaced before readback"
+        )
+    if identity is None:
+        identity, answered = await _async_recover_managed_dispatch_identity(
+            reader, session_id, baseline
+        )
+        if not answered:
+            # The start went out, so the robot may be cleaning this run's task.
+            raise RobotConnectionLostError(
+                "The robot stopped answering after the leg was sent"
+            )
+    if identity is None or not _identity_matches_session(identity, session_id):
+        raise RoomTakenOverError(
+            "The dispatched native task could not be verified after readback"
+        )
+    return identity
 
 
 async def _async_recover_managed_dispatch_identity(
