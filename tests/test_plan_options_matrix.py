@@ -19,7 +19,7 @@ from custom_components.matic_robot.managed_executor import async_execute_rooms
 from custom_components.matic_robot.managed_run import RoomRunOutcome
 from custom_components.matic_robot.plan_model import CleaningRoom
 from tests.client.test_coverage_receipts import history_key
-from tests.plans.fakes import memory_manager
+from tests.plans.fakes import LEG_OUTCOME, leg_outcomes, memory_manager
 from tests.session_fakes import FakeRobot, one_room_missions
 from tests.wire_builders import _session_identity
 
@@ -355,8 +355,8 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
 
     robot.on_start = send
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
-        observe_boundary,
+        LEG_OUTCOME,
+        leg_outcomes(observe_boundary),
     )
     await asyncio.wait_for(
         async_execute_rooms(

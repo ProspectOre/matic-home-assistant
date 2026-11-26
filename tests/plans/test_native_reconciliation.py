@@ -38,7 +38,13 @@ from custom_components.matic_robot.native_history import (
     validated_native_reconciliation,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from tests.plans.fakes import memory_manager, mission_ends, plan_room, run_plan_call
+from tests.plans.fakes import (
+    LEG_OUTCOME,
+    memory_manager,
+    mission_ends,
+    plan_room,
+    run_plan_call,
+)
 from tests.session_fakes import FakeRobot, run_step
 
 
@@ -645,7 +651,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
             AsyncMock(return_value=RobotActivity.CLEANING),
         ),
         patch(
-            "custom_components.matic_robot.managed_observation.async_wait_for_room_outcome",
+            LEG_OUTCOME,
             mission_ends(robot),
         ),
     ):
