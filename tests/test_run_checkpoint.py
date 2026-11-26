@@ -96,6 +96,11 @@ async def test_executor_checkpoints_each_dispatch(hass, recovery_state, history_
     seen = []
 
     async def leg(*args, **kwargs):
+        # The dispatch saves the phase once the handoff boundary holds.
+        assert recovery_record(manager)["recovery_checkpoint"]["phase"] != (
+            "dispatching"
+        )
+        await kwargs["on_dispatching"]()
         saved = recovery_record(manager)
         assert saved["recovery_checkpoint"]["phase"] == "dispatching"
         if args[5] == [room2]:
@@ -231,6 +236,7 @@ async def test_a_two_leg_run_checkpoints_each_step_in_order(hass) -> None:
         await save(serial_number, run_id, checkpoint)
 
     async def leg(*args, **kwargs):
+        await kwargs["on_dispatching"]()
         dispatch = PreparedRoomDispatch(
             tuple(args[5]), frozenset({b"before"}), dt_util.utcnow(), None, b"session"
         )

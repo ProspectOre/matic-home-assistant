@@ -7,6 +7,7 @@ import pytest
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.matic_robot import managed_dispatch
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import CleaningSessionRecord
@@ -169,6 +170,27 @@ async def test_next_room_starts_before_the_robot_docks(hass) -> None:
         "room_unreachable"
     ]
     assert [e["room_id"] for e in _events(events, "room_completed")] == ["room-study"]
+
+
+async def test_both_room_dispatches_carry_the_run_cancel_and_dispatching_save(
+    hass, monkeypatch
+) -> None:
+    """The room leg and the on-return dispatch pass both through to the dispatch."""
+    robot = _Robot(hass, refuse_while_returning=False)
+    seen: list[tuple[str, object, object]] = []
+    dispatch = managed_dispatch.async_dispatch_leg_command
+
+    async def spy(*args, **kwargs):
+        seen.append((robot.state, kwargs["cancel_event"], kwargs["on_dispatching"]))
+        return await dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(managed_dispatch, "async_dispatch_leg_command", spy)
+    await _run(hass, robot)
+
+    assert [state for state, _, _ in seen] == ["docked", "returning"]
+    for _, cancel_event, on_dispatching in seen:
+        assert isinstance(cancel_event, asyncio.Event)
+        assert on_dispatching is not None
 
 
 async def test_refused_next_room_waits_for_the_dock(hass) -> None:
