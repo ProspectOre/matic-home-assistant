@@ -18,9 +18,17 @@ from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSI
 from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import SimulatedRobot
-from .plan_run import PlanRun, active_plan, expect_finished, recovery_record
+from .plan_run import (
+    VACUUM,
+    PlanRun,
+    active_plan,
+    expect_finished,
+    recovery_record,
+    state_becomes,
+)
 
 HISTORY = "coverage_session_history"
+SESSION = "active_session_key"
 
 
 async def _unload_promptly(plan: PlanRun, hass: HomeAssistant) -> None:
@@ -180,9 +188,16 @@ async def _finish_rug(plan: PlanRun, robot: SimulatedRobot, sent: int) -> None:
             await plan.poll()
     robot.finish_room()
     await plan.poll()
+    # The run ends at its next five-second area poll that reads the session
+    # end, and reports the vacuum's state then. Holding that read until the
+    # vacuum shows docked makes docked the state it ends in.
+    robot.faults.stall(SESSION)
     robot.finish_session()
     await plan.poll()
     robot.arrive_at_dock()
+    await plan.poll()
+    await state_becomes(plan.hass, VACUUM, "docked")
+    robot.faults.clear()
     finished = await plan.wait_for_finished()
     expect_finished(finished, "completed", "all_rooms_verified", 1, "docked", rooms=1)
 
