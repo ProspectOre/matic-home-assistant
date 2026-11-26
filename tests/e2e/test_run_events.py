@@ -80,7 +80,9 @@ async def test_a_plan_run_reaches_the_event_entity_in_order(
             }
         },
     )
-    hass.bus.async_listen(EVENT_PLAN_STARTED, lambda event: started.append(event.data))
+    hass.bus.async_listen(
+        EVENT_PLAN_STARTED, callback(lambda event: started.append(event.data))
+    )
     await plan.start()
     robot.finish_room()
     await plan.poll()

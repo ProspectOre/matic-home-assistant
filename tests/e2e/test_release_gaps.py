@@ -195,7 +195,11 @@ async def test_saved_area_plan_finishes_without_room_credit(
     for event_name in ("area_started", "area_finished"):
         hass.bus.async_listen(
             f"{DOMAIN}_{event_name}",
-            lambda event, name=event_name: area_events.append((name, dict(event.data))),
+            callback(
+                lambda event, name=event_name: area_events.append(
+                    (name, dict(event.data))
+                )
+            ),
         )
 
     await plan.start_service("run_selected_plan", plan="living-rug-plan")
@@ -466,7 +470,8 @@ async def _finish_grouped_run_with_history_held(
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     started: list[dict[str, object]] = []
     hass.bus.async_listen(
-        f"{DOMAIN}_room_started", lambda event: started.append(dict(event.data))
+        f"{DOMAIN}_room_started",
+        callback(lambda event: started.append(dict(event.data))),
     )
     await plan.start()
     async with asyncio.timeout(5):

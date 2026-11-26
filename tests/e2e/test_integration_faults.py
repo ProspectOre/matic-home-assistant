@@ -150,7 +150,7 @@ async def _failed_plan_start(
     )
     finished: list[dict[str, Any]] = []
     hass.bus.async_listen(
-        EVENT_PLAN_FINISHED, lambda event: finished.append(dict(event.data))
+        EVENT_PLAN_FINISHED, callback(lambda event: finished.append(dict(event.data)))
     )
     with pytest.raises(ServiceValidationError):
         await hass.services.async_call(

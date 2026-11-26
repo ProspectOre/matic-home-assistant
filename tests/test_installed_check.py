@@ -417,17 +417,25 @@ async def test_assistant_tools_are_called_through_the_mcp_bridge(
 
 async def test_silent_mcp_server_times_out_and_is_reaped(tmp_path: Path) -> None:
     server = tmp_path / "silent.py"
-    pid_file = tmp_path / "pid"
-    server.write_text(
-        "import os, pathlib, sys, time\n"
-        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
-        "time.sleep(30)\n"
-    )
-    with patch("scripts.installed_check.MCP_REQUEST_TIMEOUT", 0.05):
+    server.write_text("import time\ntime.sleep(30)\n")
+    spawned: list[asyncio.subprocess.Process] = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def record_spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        spawned.append(await spawn(*args, **kwargs))
+        return spawned[-1]
+
+    # The timeout can expire before the child runs a line, so take its pid
+    # from the spawn rather than from anything the child writes.
+    with (
+        patch("scripts.installed_check.MCP_REQUEST_TIMEOUT", 0.05),
+        patch("asyncio.create_subprocess_exec", record_spawn),
+    ):
         with pytest.raises(CheckFailed, match="timed out during initialize"):
             await call_mcp_tools([sys.executable, str(server)], ASSISTANT_TOOLS)
+    assert spawned[0].returncode is not None
     with pytest.raises(ProcessLookupError):
-        os.kill(int(pid_file.read_text()), 0)
+        os.kill(spawned[0].pid, 0)
 
 
 async def test_client_authenticates_and_matches_replies_by_id(
@@ -632,10 +640,30 @@ async def test_backup_event_wait_uses_backup_deadline_not_request_timeout(
     try:
         async with aiohttp.ClientSession() as session:
             ha = HomeAssistant(session, f"http://127.0.0.1:{port}", "token")
-            ha.request_timeout = 0.02
             await ha.connect()
+            send, receive = ha.send, ha.receive
+            sent: dict[str, int] = {}
+
+            async def record_send(message_type: str, **data: Any) -> int:
+                sent[message_type] = await send(message_type, **data)
+                return sent[message_type]
+
+            async def wait_with_short_request_timeout(
+                message_id: int, **kwargs: Any
+            ) -> dict[str, Any]:
+                # Only the event wait sees a request timeout shorter than the
+                # event's delay, so the other replies are not raced on time.
+                if message_id != sent.get("backup/subscribe_events"):
+                    return await receive(message_id, **kwargs)
+                ha.request_timeout = 0.02
+                try:
+                    return await receive(message_id, **kwargs)
+                finally:
+                    ha.request_timeout = HomeAssistant.request_timeout
+
+            ha.send = record_send  # type: ignore[method-assign]
+            ha.receive = wait_with_short_request_timeout  # type: ignore[method-assign]
             check = InstalledCheck(ha, _candidate(), Options())
-            check.backup_timeout = 0.5
             assert (await check.backup())["backup_id"] == "b1"
             await ha.close()
     finally:

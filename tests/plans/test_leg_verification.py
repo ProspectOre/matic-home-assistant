@@ -6,6 +6,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
@@ -518,7 +519,8 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
     manager = leg_manager()
     starts = []
     hass.bus.async_listen(
-        f"{DOMAIN}_room_started", lambda event: starts.append(event.data["room"])
+        f"{DOMAIN}_room_started",
+        callback(lambda event: starts.append(event.data["room"])),
     )
 
     async def send_command(command):
@@ -568,8 +570,7 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
         advance=run_step,
     )
     await hass.async_block_till_done()
-    # HA schedules listener callbacks independently; assert delivery multiplicity.
-    assert sorted(starts) == ["Kitchen", "Office"]
+    assert starts == ["Kitchen", "Office"]
     assert [
         call.args[2].name for call in manager.ledger.async_mark_started.await_args_list
     ] == ["Kitchen", "Office", "Kitchen", "Office"]

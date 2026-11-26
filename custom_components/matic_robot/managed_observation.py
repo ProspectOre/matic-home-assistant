@@ -75,7 +75,7 @@ async def async_verify_leg_completion(
     *,
     robot: RobotPort,
     cancel_event: asyncio.Event | None = None,
-    attempts: int = SESSION_HISTORY_ATTEMPTS,
+    attempts: int | None = None,
     allow_active_cleaning: bool = False,
     timeout_seconds: float | None = None,
     on_verified_session: Callable[[str], None] | None = None,
@@ -93,6 +93,7 @@ async def async_verify_leg_completion(
     """
     if baseline is None and session_hash is None:
         return None
+    attempts = SESSION_HISTORY_ATTEMPTS if attempts is None else attempts
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     required_room_ids = set(targets.values()) - set(skipped_room_ids)
     evidence: dict[str, tuple[str, int]] | None = None
@@ -476,7 +477,7 @@ async def async_adjudicate_room_end(
     *,
     robot: RobotPort,
     cancel_event: asyncio.Event | None = None,
-    attempts: int = SESSION_HISTORY_ATTEMPTS,
+    attempts: int | None = None,
     allow_active_cleaning: bool = False,
     on_verified_session: Callable[[str], None] | None = None,
     on_verified_completion: Callable[[str, int], None] | None = None,
@@ -491,6 +492,7 @@ async def async_adjudicate_room_end(
     """
     if baseline is None and session_hash is None:
         return NativeRoomVerdict.UNVERIFIED
+    attempts = SESSION_HISTORY_ATTEMPTS if attempts is None else attempts
     try:
         async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
             for attempt in range(attempts):

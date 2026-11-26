@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
@@ -113,7 +113,7 @@ async def test_a_plan_runs_the_rooms_left_and_relinks_a_recreated_room(
     # The plan cleans the kitchen and names the two rooms it skipped.
     started: list[dict[str, Any]] = []
     hass.bus.async_listen(
-        EVENT_PLAN_STARTED, lambda event: started.append(dict(event.data))
+        EVENT_PLAN_STARTED, callback(lambda event: started.append(dict(event.data)))
     )
     await _clean(plan, robot, plan.start_service("run_selected_plan", plan=PLAN))
     assert plan.room_id == kitchen
