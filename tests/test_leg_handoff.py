@@ -12,7 +12,10 @@ from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.leg_handoff import async_dispatch_on_return
 from custom_components.matic_robot.managed_executor import async_execute_rooms
-from custom_components.matic_robot.managed_run import PlanCancelledError
+from custom_components.matic_robot.managed_run import (
+    PlanCancelledError,
+    RobotConnectionLostError,
+)
 from custom_components.matic_robot.robot_commands import PlanStart
 from tests.client.test_coverage_receipts import history_key
 from tests.plans.fakes import memory_manager
@@ -256,6 +259,33 @@ async def test_a_taken_or_cancelled_dispatch_is_not_retried(error) -> None:
         stop_taken.assert_not_awaited()
     else:
         stop_taken.assert_awaited_once()
+
+
+@pytest.mark.parametrize("sent", [True, False])
+async def test_lost_contact_after_sending_is_not_a_refusal(sent) -> None:
+    async def dispatch(_on_identity):
+        raise RobotConnectionLostError(sent=sent)
+
+    on_refused = AsyncMock()
+    stop_taken = AsyncMock()
+    attempt = async_dispatch_on_return(
+        _robot("returning", b""),
+        dispatch,
+        lambda _identity: None,
+        on_refused,
+        stop_taken,
+        lambda: False,
+    )
+    if sent:
+        # The start went out, so the run ends as connection lost.
+        with pytest.raises(RobotConnectionLostError):
+            await attempt
+        on_refused.assert_not_awaited()
+    else:
+        # Nothing was sent, so the caller waits for the dock as for a refusal.
+        assert await attempt is None
+        on_refused.assert_awaited_once()
+    stop_taken.assert_not_awaited()
 
 
 async def test_a_refused_room_that_starts_late_is_never_sent_twice(hass) -> None:

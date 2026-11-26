@@ -10,7 +10,11 @@ from homeassistant.exceptions import HomeAssistantError
 
 from . import managed_observation as observation
 from .client import MaticError, RobotActivity
-from .managed_run import PlanCancelledError, PreparedRoomDispatch
+from .managed_run import (
+    PlanCancelledError,
+    PreparedRoomDispatch,
+    RobotConnectionLostError,
+)
 from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
 
@@ -62,6 +66,10 @@ async def async_dispatch_on_return(
             await stop_taken()
         raise
     except (HomeAssistantError, MaticError) as err:
+        if isinstance(err, RobotConnectionLostError) and err.sent:
+            # The leg went out and the robot went silent: its task may be
+            # running, so this is lost contact, not a refusal to retry.
+            raise
         if taken:
             await stop_taken()
             raise
