@@ -91,8 +91,7 @@ class LegSettlement:
     # each room the robot had not entered.
     ending_early: Callable[[], bool]
     entered_room_ids: Collection[str]
-    # Records a room the history left due.
-    # Records a room left due; False when the run no longer owns it.
+    # Records a room the history left due; False when the run no longer owns it.
     record_unverified: Callable[[CleaningRoom], Awaitable[bool]]
     # Rooms a restarted run settled before Home Assistant stopped.
     settled_room_ids: Collection[str] = ()
