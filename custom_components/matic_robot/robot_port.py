@@ -54,7 +54,7 @@ class RobotPort:
     error: Store[Exception | None]
     refresh: Callable[[], Awaitable[None]]
     active_session: Callable[[], Awaitable[bool | None]]
-    fresh_state: Callable[[], Awaitable[object]]
+    fresh_state: Callable[[], Awaitable[RobotOperationalState]]
     session_history: SessionHistory
     # The retained history's keys alone, read until the given ones arrive.
     session_keys: Callable[..., Awaitable[frozenset[bytes]]]

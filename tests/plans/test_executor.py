@@ -631,6 +631,46 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
     assert managed_command.await_args.args[1] is UserCommand.DOCK
 
 
+@pytest.mark.parametrize(
+    ("robot_reports", "docks"),
+    [("returning", False), ("docked", False), ("idle", True), ("unreadable", True)],
+)
+async def test_execute_rooms_docks_on_what_the_robot_reports(
+    hass, robot_reports: str, docks: bool
+) -> None:
+    """The robot's own state, read at the end, wins over a stale stored one."""
+    robot = FakeRobot()
+    robot.show("cleaning")
+    reported = FakeRobot()
+    if robot_reports == "unreadable":
+        fresh_state = AsyncMock(side_effect=MaticError("unavailable"))
+    else:
+        reported.show(robot_reports)
+        fresh_state = AsyncMock(return_value=reported.state.value.operational)
+    managed_command = AsyncMock()
+    with patch(
+        "custom_components.matic_robot.managed_leg.async_run_room_leg", _owned_leg()
+    ):
+        await async_execute_rooms(
+            hass,
+            run_plan_call(hass, return_to_base=True),
+            memory_manager(hass),
+            "vacuum.matic",
+            "serial",
+            [plan_room("Kitchen", "room-kitchen")],
+            floor_token="floor",
+            robot=robot.port(
+                session_identity=AsyncMock(return_value=OWNED_SESSION),
+                fresh_state=fresh_state,
+            ),
+            managed_user_command=managed_command,
+        )
+    fresh_state.assert_awaited_once()
+    assert [call.args[1] for call in managed_command.await_args_list] == (
+        [UserCommand.DOCK] if docks else []
+    )
+
+
 async def test_execute_rooms_stops_after_unverified_room(hass, monkeypatch) -> None:
     """A terminal room without native completion never dispatches the next room."""
     one_room_missions(monkeypatch)

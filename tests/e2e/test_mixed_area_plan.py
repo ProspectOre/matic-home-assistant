@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import traceback
 from typing import Any
+from unittest.mock import patch
 
+import pytest
 from homeassistant.core import HomeAssistant, callback
 
 from custom_components.matic_robot.area_binding import (
@@ -14,7 +16,7 @@ from custom_components.matic_robot.area_binding import (
 from custom_components.matic_robot.area_binding_formats import AREA_SCHEMA_VERSION
 from custom_components.matic_robot.const import DOMAIN
 
-from .hermes_sim import Phase, SimulatedRobot
+from .hermes_sim import DOCK_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import HISTORY, PlanRun, expect_finished
 from .sim_mission import SimFloor, message, messages, read_fields
 
@@ -35,6 +37,27 @@ async def _poll_until(plan: PlanRun, predicate: Any) -> None:
                     + f"; finished={plan.finished}"
                 )
             await plan.poll()
+
+
+async def _save_area(plan: PlanRun) -> None:
+    """Save the rug as a custom area bound to the robot's floor."""
+    session = plan.entry.runtime_data.session
+    await _poll_until(plan, lambda: session.floor.value is not None)
+    floor_plan = session.floor.value
+    assert floor_plan is not None
+    circles = [{"x": 1.0, "y": 0.75, "radius": 0.25}]
+    await plan.entry.runtime_data.cleaning_plans.catalog.async_save_area(
+        session.info.serial_number,
+        AREA_ID,
+        {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "name": AREA_NAME,
+            "circles": circles,
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+            "map_binding": binding_for_area(floor_plan, circles),
+        },
+    )
 
 
 def _native_modes(payload: bytes) -> list[tuple[str, str, int | None]]:
@@ -78,22 +101,7 @@ async def test_room_area_room_plan_uses_verified_native_handoffs(
 ) -> None:
     """Each requested leg gets its own session, evidence, and room or area credit."""
     session = plan.entry.runtime_data.session
-    await _poll_until(plan, lambda: session.floor.value is not None)
-    floor_plan = session.floor.value
-    assert floor_plan is not None
-    circles = [{"x": 1.0, "y": 0.75, "radius": 0.25}]
-    await plan.entry.runtime_data.cleaning_plans.catalog.async_save_area(
-        session.info.serial_number,
-        AREA_ID,
-        {
-            "schema_version": AREA_SCHEMA_VERSION,
-            "name": AREA_NAME,
-            "circles": circles,
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-            "map_binding": binding_for_area(floor_plan, circles),
-        },
-    )
+    await _save_area(plan)
     await plan.call(
         DOMAIN,
         "save_plan",
@@ -304,3 +312,38 @@ async def test_room_area_room_plan_uses_verified_native_handoffs(
         after["rotations"][PLAN]["areas"][AREA_ID]["completed_runs"]
         == plan_area_before + 1
     )
+
+
+async def test_area_end_sends_no_dock_to_a_robot_already_returning(
+    plan: PlanRun,
+    robot: SimulatedRobot,
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The DOCK decision reads the robot, not a state push still held back."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_observation.ROOM_STATUS_REFRESH_SECONDS",
+        0.05,
+    )
+    await _save_area(plan)
+    await plan.call(
+        DOMAIN, "save_plan", plan_id="rug", name="Rug", rooms=[{"area": AREA_NAME}]
+    )
+    finished: list[str] = []
+    hass.bus.async_listen(
+        f"{DOMAIN}_area_finished",
+        callback(lambda event: finished.append(event.data["area"])),
+    )
+    await plan.start_service("run_selected_plan", plan="rug")
+    robot.finish_room()
+    await plan.poll()
+    # The robot ends the area and heads home on its own. Its state push waits
+    # out the session's publish interval, held here until the run has ended.
+    throttle = plan.entry.runtime_data.session._state_publish
+    with patch.object(throttle, "request"):
+        robot.finish_session()
+        await plan.outcome()
+    throttle.request()
+    assert finished == [AREA_NAME]
+    assert robot.phase is Phase.RETURNING
+    assert DOCK_PAYLOAD not in robot.received()

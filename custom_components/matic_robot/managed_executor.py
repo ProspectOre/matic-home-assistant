@@ -58,6 +58,8 @@ from .run_machine import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_HOME_OR_RETURNING = observation.HOME | {RobotActivity.RETURNING}
+
 
 class _Handoff(NamedTuple):
     """How a leg starts: the dispatch it adopts and the boundary a new one checks."""
@@ -562,17 +564,22 @@ class _PlanRun:
             self.ending = ("unverified", "partial_native_result", "native_result")
         self.raise_if_cancelled()
         current = self.robot.observed()
-        home_or_returning = observation.HOME | {RobotActivity.RETURNING}
         if (
             not (self.call.data["return_to_base"] or self.finish_room_event.is_set())
             or current is None
             or self.outer_command is None
-            or dispatch_control.stop_is_pending(self.manager, self.serial_number)
-            or (current.activity in home_or_returning and not smart_stopped)
+        ):
+            return
+        activity = current.activity
+        if activity not in _HOME_OR_RETURNING:
+            activity = await self.async_robot_activity(activity)
+            self.raise_if_cancelled()
+        if dispatch_control.stop_is_pending(self.manager, self.serial_number) or (
+            activity in _HOME_OR_RETURNING and not smart_stopped
         ):
             return
         try:
-            if current.activity not in home_or_returning:
+            if activity not in _HOME_OR_RETURNING:
                 await self.outer_command(self.motion_token, UserCommand.DOCK)
             if smart_stopped:
                 dispatch_control.schedule_run_dock_confirmation(
@@ -591,6 +598,18 @@ class _PlanRun:
             raise managed_run.validation_error(
                 "The robot could not return to its dock", "robot_command_failed"
             ) from err
+
+    async def async_robot_activity(self, stored: RobotActivity) -> RobotActivity:
+        """Read what the robot is doing now, or keep ``stored`` if it can't say.
+
+        The stored state trails the robot's pushes by up to a publish
+        interval, so a robot that has just set off home can still show as
+        cleaning there.
+        """
+        try:
+            return (await self.robot.fresh_state()).activity
+        except MaticError:
+            return stored
 
     def cancelled(self, err: PlanCancelledError) -> None:
         """Attribute a cancelled run, or keep it for restart on shutdown."""
