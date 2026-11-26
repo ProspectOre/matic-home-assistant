@@ -1,5 +1,5 @@
 custom_components/matic_robot/area_binding_geometry.py 1629
-custom_components/matic_robot/config_flow.py 1632
+custom_components/matic_robot/config_flow.py 1607
 custom_components/matic_robot/managed_observation.py 1087
 custom_components/matic_robot/plan_ledger.py 1653
 custom_components/matic_robot/sensor.py 1181
