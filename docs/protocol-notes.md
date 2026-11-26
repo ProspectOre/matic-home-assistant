@@ -44,6 +44,15 @@ holds the decoder.
   integration reads the first as
   [a room the robot could not reach or finish](native-cleaning-results.md#rooms-the-robot-could-not-reach-or-finish).
 
+## Identifiers
+
+A room, floor or session ID is a message of two `fixed64` words, high in `1`
+and low in `2`, under wrappers that depend on the read.
+[wire.py](../custom_components/matic_robot/client/wire.py) decodes every one.
+Where the path is traced (cleaning history, session keys) it requires exactly
+those wrappers and one of each word; elsewhere it reads the first message
+within four nested ones that holds both words.
+
 ## Robot errors (`kabuki_state`)
 
 Packed wire error `220` (`12 02 dc 01`) is `SolventUnavailable` in the app.
@@ -65,6 +74,7 @@ needs a recording or the app's own text.
   repeated field `2` the unordered one. Each room is at `7/3/3` within its
   block. The decoder reads both lists, keeps each room once in first-seen
   order, and leaves the order unknown when the lists are missing or mixed.
+  An ID anywhere else in a schedule is not a room.
 - Weekdays run Monday to Sunday.
 - The app acknowledges every schedule record on the stream before the robot
   sends the next. A reader that closes its side without acknowledging sees

@@ -24,7 +24,6 @@ from custom_components.matic_robot.client.api import (
 from custom_components.matic_robot.client.auth import HermesCredential
 from custom_components.matic_robot.client.cleaning_schedule import (
     _schedule_room_ids,
-    _uuid_candidates,
     decode_schedule,
 )
 from custom_components.matic_robot.client.cleaning_session import (
@@ -1691,16 +1690,6 @@ def test_decode_schedule_reads_native_enabled_markers(marker, expected) -> None:
     assert schedule.ordered is None
 
 
-def test_uuid_candidates_bound_recursion_depth() -> None:
-    uuid_message = _fixed64(1, 1) + _fixed64(2, 2)
-    assert _uuid_candidates(_bfield(1, uuid_message)) != ()
-
-    nested = uuid_message
-    for _ in range(11):
-        nested = _bfield(1, nested)
-    assert _uuid_candidates(nested) == ()
-
-
 def _schedule_block(room: int, other: int) -> bytes:
     """Build one per-room schedule block shaped like a robot's."""
 
@@ -1730,8 +1719,6 @@ def test_decode_schedule_reads_room_ids_from_per_room_blocks() -> None:
 
     assert schedule is not None
     assert schedule.room_ids == (str(UUID(int=1)), str(UUID(int=2)))
-    # The generic scan stops before the depth these IDs sit at.
-    assert _uuid_candidates(payload) == ()
 
 
 @pytest.mark.parametrize("goal_field", [1, 2])

@@ -19,14 +19,15 @@ from .wire import (
     WireFieldBudget,
     WireFieldBudgetExceeded,
     WireFieldLimitExceeded,
+    bytes_fields,
     decode_fields,
-    uuid_from_fixed64,
+    first_bytes,
+    uuid_string,
 )
 
 _SCHEDULE_MAX_BYTES = 64 * 1024
 _SCHEDULE_MAX_FIELDS = 1024
 _SCHEDULE_MAX_UUIDS = 256
-_SCHEDULE_MAX_DEPTH = 4
 _WEEKDAYS = (
     "monday",
     "tuesday",
@@ -72,7 +73,7 @@ def decode_schedule(payload: bytes) -> CleaningSchedule | None:
         )
         ordered = _schedule_ordered(name_fields)
         enabled = _schedule_enabled(name_fields)
-        room_ids = _schedule_room_ids(payload) or _uuid_candidates(payload)
+        room_ids = _schedule_room_ids(payload)
     except DecodeError:
         return None
     return CleaningSchedule(
@@ -126,13 +127,6 @@ def _schedule_ordered(fields: tuple[WireField, ...]) -> bool | None:
 
 def _schedule_room_ids(payload: bytes) -> tuple[str, ...]:
     """Decode the floor-plan room ID from each bounded per-room goal block."""
-    from .wire import (
-        WireFieldLimitExceeded,
-        bytes_fields,
-        first_bytes,
-        uuid_string,
-    )
-
     found: dict[str, None] = {}
     budget = WireFieldBudget(_SCHEDULE_ROOM_MAX_FIELDS)
     for container in bytes_fields(payload, 7, field_budget=budget):
@@ -170,8 +164,6 @@ def _schedule_cleaning_mode(fields: tuple[WireField, ...]) -> str | None:
 
     Goals sit at 7.1 or 7.2 and carry the same 6.3 coverage spec as a start command;
     spec field 4 is the mode, 0 for vacuum and 1 for mop, omitted when 0.
-    The room walk in ``_uuid_candidates`` already rejects a schedule over the
-    shared field budget, so this budget only guards against a second walk.
     """
     field_budget = WireFieldBudget(_SCHEDULE_MAX_FIELDS)
     modes: set[int] = set()
@@ -222,38 +214,3 @@ def _schedule_cleaning_mode(fields: tuple[WireField, ...]) -> str | None:
     if modes == {0, 1}:
         return "vacuum_and_mop"
     return None
-
-
-def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
-    """Return stable UUID values nested in a protocol payload."""
-    found: list[str] = []
-    seen: set[str] = set()
-    field_budget = WireFieldBudget(_SCHEDULE_MAX_FIELDS)
-
-    def walk(data: bytes, depth: int) -> None:
-        if depth > _SCHEDULE_MAX_DEPTH:
-            return
-        try:
-            fields = decode_fields(data, field_budget=field_budget)
-        except WireFieldBudgetExceeded, WireFieldLimitExceeded:
-            raise
-        except DecodeError:
-            return
-        fixed = {
-            field.number: field.value
-            for field in fields
-            if field.wire_type == 1 and isinstance(field.value, bytes)
-        }
-        if set(fixed) >= {1, 2} and len(fixed[1]) == len(fixed[2]) == 8:
-            candidate = uuid_from_fixed64(fixed[1], fixed[2])
-            if candidate not in seen:
-                if len(found) >= _SCHEDULE_MAX_UUIDS:
-                    raise DecodeError("schedule has too many room identifiers")
-                seen.add(candidate)
-                found.append(candidate)
-        for field in fields:
-            if field.wire_type == 2 and isinstance(field.value, bytes):
-                walk(field.value, depth + 1)
-
-    walk(payload, 0)
-    return tuple(found)

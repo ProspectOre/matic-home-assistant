@@ -18,7 +18,7 @@ from .wire import (
     WireFieldBudget,
     decode_fields,
     seconds_nanos,
-    uuid_from_fixed64,
+    uuid_string,
 )
 
 # Large native records repeat opaque geometry in their goal envelopes.
@@ -30,6 +30,7 @@ MAX_ROOMS = 256
 MAX_NAME_BYTES = 512
 MAX_NAME_CHARS = 128
 MAX_DURATION_SECONDS = 366 * 24 * 60 * 60
+_NIL_UUID = "00000000-0000-0000-0000-000000000000"
 
 type HistoryField = WireField[memoryview]
 
@@ -95,12 +96,16 @@ def decode_history_semantics(payload: bytes) -> SemanticHistory | None:
             partition_identity_envelope = _fields(
                 _required_message(partition_envelope, 1), budget
             )
-            partition_identity = _fields(
-                _required_message(partition_identity_envelope, 2), budget
+            # The identity's enclosing message holds it to the nested byte limit.
+            partitions.append(
+                uuid_string(
+                    _required_message(partition_identity_envelope, 2),
+                    path=(),
+                    max_fields=MAX_HISTORY_FIELDS,
+                    field_budget=budget,
+                )
             )
-            partition_id = _decode_uuid(partition_identity, (1, 2))
-            partitions.append(partition_id)
-        if len(set(partitions)) != 1:
+        if len(set(partitions)) != 1 or partitions[0] == _NIL_UUID:
             return None
 
         initiator = _decode_initiator(start, budget)
@@ -192,25 +197,6 @@ def _optional_message(
         return None
     if not isinstance(values[0].value, memoryview):
         raise DecodeError("history optional message is malformed")
-    return values[0].value
-
-
-def _decode_uuid(fields: tuple[HistoryField, ...], words: tuple[int, int]) -> str:
-    high = _required_fixed64(fields, words[0])
-    low = _required_fixed64(fields, words[1])
-    if not any(high) and not any(low):
-        raise DecodeError("history UUID is zero")
-    return uuid_from_fixed64(high, low)
-
-
-def _required_fixed64(fields: tuple[HistoryField, ...], number: int) -> memoryview:
-    values = _known(fields, number, 1)
-    if (
-        len(values) != 1
-        or not isinstance(values[0].value, memoryview)
-        or len(values[0].value) != 8
-    ):
-        raise DecodeError("history fixed64 is missing")
     return values[0].value
 
 
@@ -322,9 +308,13 @@ def _decode_modern_rooms(
         entry = _fields(entry_payload, budget)
         region_envelope = _fields(_required_message(entry, 1), budget)
         region = _fields(_required_message(region_envelope, 2), budget)
-        room_identity = _fields(_required_message(region, 2), budget)
-        room_id = _decode_uuid(room_identity, (1, 2))
-        if room_id in room_ids:
+        room_id = uuid_string(
+            _required_message(region, 2),
+            path=(),
+            max_fields=MAX_HISTORY_FIELDS,
+            field_budget=budget,
+        )
+        if room_id == _NIL_UUID or room_id in room_ids:
             return None
         room_ids.add(room_id)
         area = _fields(_required_message(entry, 2), budget)
