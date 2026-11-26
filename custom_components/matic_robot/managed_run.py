@@ -288,12 +288,14 @@ class ReconnectWindow:
 
     An unreadable task identity means the robot is not answering, not that
     another task took over. The run waits for it as long as restart recovery
-    does, then ends as connection lost.
+    does, then ends as connection lost. ``sent`` says whether the run's leg
+    went out before that.
     """
 
-    __slots__ = ("_since",)
+    __slots__ = ("_sent", "_since")
 
-    def __init__(self) -> None:
+    def __init__(self, *, sent: bool = True) -> None:
+        self._sent = sent
         self._since: float | None = None
 
     @property
@@ -310,7 +312,9 @@ class ReconnectWindow:
         if self._since is None:
             self._since = now
         elif now - self._since >= RECONNECT_SECONDS:
-            raise RobotConnectionLostError("The robot stopped answering during the run")
+            raise RobotConnectionLostError(
+                "The robot stopped answering during the run", sent=self._sent
+            )
 
 
 def validation_error(
