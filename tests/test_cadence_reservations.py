@@ -82,7 +82,7 @@ async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
         CleaningRoom("room-b", "Room B", "vacuum", "standard"),
     ]
     with patch(
-        "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
+        "custom_components.matic_robot.stop_return.ensure_stop_settled",
         new=stop_fence,
     ):
         task = asyncio.create_task(
@@ -229,7 +229,7 @@ async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
         },
     )
     with patch(
-        "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
+        "custom_components.matic_robot.stop_return.ensure_stop_settled",
         new=hold_preflight,
     ):
         task = asyncio.create_task(
@@ -353,7 +353,7 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
+            "custom_components.matic_robot.stop_return.ensure_stop_settled",
             new=hold_preflight,
         ),
         patch(
@@ -526,7 +526,7 @@ async def test_executor_maps_a_conflicting_restored_reservation_to_validation_er
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
+            "custom_components.matic_robot.stop_return.ensure_stop_settled",
             new=AsyncMock(),
         ) as stop_settlement,
         pytest.raises(ServiceValidationError) as refused,
@@ -758,7 +758,7 @@ async def test_prepared_preview_rejection_cleans_reservation_before_dispatch(
 
     with (
         patch(
-            "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
+            "custom_components.matic_robot.stop_return.ensure_stop_settled",
             new=AsyncMock(),
         ),
         patch(
