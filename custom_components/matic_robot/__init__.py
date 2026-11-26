@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
@@ -43,6 +43,7 @@ from .media_source import existing_photo_attachment_source
 from .migrations import async_create_upgrade_issue, async_migrate_entry
 from .native_history_sync import NativeHistorySync, async_resume_native_reconciliation
 from .photo_library import PhotoLibrary, PhotoPlace, async_remove_photos
+from .photo_tours import PhotoTours
 from .plan_storage import PlanStoreTooOldError
 from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
@@ -82,6 +83,7 @@ class MaticRuntimeData:
     viewpoints: Viewpoints
     cleaning_mode: CleaningMode = CleaningMode.BOTH
     coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL
+    photo_tours: PhotoTours = field(default_factory=PhotoTours)
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
@@ -315,6 +317,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
     plans = entry.runtime_data.cleaning_plans
     serial_number = str(entry.data[CONF_SERIAL_NUMBER])
     plans.control.begin_command_teardown(serial_number)
+    await entry.runtime_data.photo_tours.async_shutdown()
     await plans.control.async_cancel_and_wait(serial_number, preserve_run=preserve_run)
     if not preserve_run:
         await plans.recovery.async_retire_recovery(serial_number, "config_entry_unload")

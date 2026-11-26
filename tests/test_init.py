@@ -45,6 +45,7 @@ from custom_components.matic_robot.const import (
     PLATFORMS,
 )
 from custom_components.matic_robot.media_source import DATA_PHOTO_ATTACHMENT_SOURCE
+from custom_components.matic_robot.photo_tours import PhotoTours
 from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_view_data import observe_trail
@@ -759,6 +760,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             run_trails=run_trails,
             wifi_survey=_wifi_survey(),
             photos=SimpleNamespace(async_shutdown=AsyncMock()),
+            photo_tours=PhotoTours(),
             cleaning_plans=plans,
         ),
     )
@@ -859,6 +861,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             run_trails=run_trails,
             wifi_survey=_wifi_survey(),
             photos=SimpleNamespace(async_shutdown=AsyncMock()),
+            photo_tours=PhotoTours(),
         ),
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
@@ -944,8 +947,15 @@ async def test_teardown_allows_only_existing_managed_token_cleanup(
             await asyncio.gather(command, return_exceptions=True)
 
 
-async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
-    """A failed platform unload must not strand a preserved managed run."""
+@pytest.mark.parametrize(
+    ("recovery_run", "pending_stop_run_id"),
+    [({"run_id": "run"}, None), (None, "run")],
+    ids=["recovery", "pending_stop_settlement"],
+)
+async def test_failed_enabled_unload_reschedules_recovery(
+    hass, recovery_run, pending_stop_run_id
+) -> None:
+    """A failed platform unload must not strand a preserved run or its stop."""
     plans = SimpleNamespace(
         repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
         control=SimpleNamespace(
@@ -953,10 +963,11 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
             async_close_command_admission_and_wait=AsyncMock(),
             begin_command_teardown=MagicMock(),
             reopen_metadata_admission=MagicMock(),
+            pending_stop_run_id=MagicMock(return_value=pending_stop_run_id),
         ),
         ledger=SimpleNamespace(),
         recovery=SimpleNamespace(
-            recovery_run=MagicMock(return_value={"run_id": "run"}),
+            recovery_run=MagicMock(return_value=recovery_run),
             async_retire_recovery=AsyncMock(),
         ),
     )
@@ -971,42 +982,7 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
         data={CONF_SERIAL_NUMBER: "serial"},
         entry_id="entry",
         async_create_background_task=MagicMock(side_effect=capture_task),
-        runtime_data=SimpleNamespace(cleaning_plans=plans),
-    )
-    hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
-    await async_unload_entry(hass, entry)
-    plans.control.reopen_metadata_admission.assert_called_once_with("serial")
-    entry.async_create_background_task.assert_called_once()
-    assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
-
-
-async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
-    plans = SimpleNamespace(
-        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
-        control=SimpleNamespace(
-            async_cancel_and_wait=AsyncMock(),
-            async_close_command_admission_and_wait=AsyncMock(),
-            begin_command_teardown=MagicMock(),
-            reopen_metadata_admission=MagicMock(),
-            pending_stop_run_id=MagicMock(return_value="run"),
-        ),
-        ledger=SimpleNamespace(),
-        recovery=SimpleNamespace(
-            recovery_run=MagicMock(return_value=None), async_retire_recovery=AsyncMock()
-        ),
-    )
-    target_tasks = []
-
-    def capture_task(_hass, target, name):
-        target_tasks.append((target, name))
-        target.close()
-
-    entry = SimpleNamespace(
-        disabled_by=None,
-        data={CONF_SERIAL_NUMBER: "serial"},
-        entry_id="entry",
-        async_create_background_task=MagicMock(side_effect=capture_task),
-        runtime_data=SimpleNamespace(cleaning_plans=plans),
+        runtime_data=SimpleNamespace(cleaning_plans=plans, photo_tours=PhotoTours()),
     )
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
     await async_unload_entry(hass, entry)
@@ -1036,7 +1012,7 @@ async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
         data={CONF_SERIAL_NUMBER: "serial"},
         entry_id="entry",
         async_create_background_task=MagicMock(),
-        runtime_data=SimpleNamespace(cleaning_plans=plans),
+        runtime_data=SimpleNamespace(cleaning_plans=plans, photo_tours=PhotoTours()),
     )
     hass.is_stopping = True
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
