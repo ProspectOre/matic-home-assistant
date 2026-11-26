@@ -157,3 +157,16 @@ test("a saved map shown for a failed live map keeps Try again until the live map
     "Skip", "Clean next", "Clean again",
   ]);
 });
+
+test("the workspace snapshot leaves a failed live map's Try again while a saved map stands in", async ({ page }) => {
+  const panel = await mountPanelWithFailedFirstMap(page, "cleaning", true);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingHistoryScenes.length)).toBe(1);
+  await page.evaluate(() => window.__panelFixture.pendingHistoryScenes.shift()());
+  // The socket opens once the saved map shows; its snapshot carries the catalog row.
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.workspaceCalls.map((call) => call.type)))
+    .toContain("matic_robot/workspace_snapshot");
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  const problem = panel.getByRole("alert").filter({ hasText: "Home Assistant couldn't load the map." });
+  await expect(problem).toBeVisible({ timeout: 1_000 });
+  expect(await page.evaluate(() => window.__firstMap.reads)).toBe(1);
+});
