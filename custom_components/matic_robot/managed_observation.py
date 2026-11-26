@@ -895,16 +895,17 @@ async def _async_confirm_started_identity(
 ) -> RobotActivity:
     """Wait for a new identity, never the task that preceded dispatch.
 
-    The start deadline is for the robot to start. Once it has, a robot that
-    stops answering is lost contact, so the reconnect window bounds that wait;
-    the deadline applies again when the robot answers.
+    Once the robot reports starting, the start deadline is held during each
+    identity read and the reconnect window bounds a silent robot; the deadline
+    applies again when the robot answers.
     """
     contact = ReconnectWindow()
     deadline = start_deadline.when()
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
-        transition_observed = started.done()
+        if transition_observed := started.done():
+            start_deadline.reschedule(None)
         identity = await async_read_session_identity(reader)
         if identity and identity != identity_baseline and expected is None:
             expected = identity
@@ -914,8 +915,7 @@ async def _async_confirm_started_identity(
             if signal is NativeTaskSignal.REPLACED:
                 raise RoomTakenOverError("The dispatched native task was replaced")
             if signal is NativeTaskSignal.ENDED:
-                # The robot ended the mission this run owns before the room
-                # was observed, for example when the room was unreachable.
+                # The owned mission ended before the room started (unreachable).
                 raise NativeTaskEndedError(
                     "The dispatched native task ended before the room started"
                 )

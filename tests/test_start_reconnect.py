@@ -59,6 +59,24 @@ async def test_silence_after_the_start_is_lost_contact_not_a_start_timeout(hass)
         )
 
 
+async def test_a_read_in_flight_at_the_start_deadline_is_lost_contact(hass):
+    async def read() -> bytes | None:
+        # Each read outlasts the start deadline before it fails.
+        await asyncio.sleep(START_TIMEOUT * 1.2)
+        return None
+
+    with pytest.raises(RobotConnectionLostError):
+        await async_wait_for_owned_start(
+            _started().port(session_identity=read),
+            START_TIMEOUT,
+            None,
+            ROOM,
+            lambda _identity: None,
+            b"",
+            OURS,
+        )
+
+
 async def test_the_robot_back_after_the_start_timeout_keeps_its_start(
     hass, monkeypatch
 ):
