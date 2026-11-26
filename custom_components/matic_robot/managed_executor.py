@@ -372,11 +372,11 @@ class _PlanRun:
         refused_on_return = leg_sent = False
         if isinstance(leg, list):
 
-            async def dispatching() -> None:
-                # From here the start may reach the robot.
+            def starting() -> None:
+                # The start goes out next, so the robot may take it.
                 nonlocal leg_sent
                 leg_sent = True
-                await self.progress.advance(LegDispatching(index))
+                self.bind_native_identity(None)
 
             async def dispatch(
                 on_identity: Callable[[bytes | None], None],
@@ -387,7 +387,7 @@ class _PlanRun:
                     self.motion_token,
                     floor_token=self.floor_token,
                     floor_is_current=self.floor_is_current,
-                    on_dispatch=lambda: self.bind_native_identity(None),
+                    on_dispatch=starting,
                     on_claim=lambda session_id: (
                         self.manager.ledger.async_claim_native_session(
                             self.serial_number, session_id, run_id=self.run_id
@@ -398,7 +398,9 @@ class _PlanRun:
                     expected_dispatch_history=history,
                     expected_dispatch_revision=revision,
                     cancel_event=self.cancel_event,
-                    on_dispatching=dispatching,
+                    on_dispatching=partial(
+                        self.progress.advance, LegDispatching(index)
+                    ),
                 )
 
             async def back_to_handoff() -> None:
