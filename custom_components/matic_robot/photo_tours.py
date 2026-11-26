@@ -123,10 +123,12 @@ class PhotoTours:
     """The entry's photo tour: one at a time, ended by another command or unload.
 
     Another command stops a tour: cancelled before it finishes up, or kept
-    from docking while it does. Unload cancels it either way and waits.
+    from docking while it does. Unload cancels it either way, waits, and
+    refuses any tour after it.
     """
 
     def __init__(self) -> None:
+        self._closed = False
         self._task: asyncio.Task[Any] | None = None
         self._finishing = False
         self._stop_requested = False
@@ -148,6 +150,7 @@ class PhotoTours:
 
     async def async_shutdown(self) -> None:
         """End the running tour, sending the robot nothing, and wait for it."""
+        self._closed = True
         task = self._task
         if task is None:
             return
@@ -175,6 +178,8 @@ class PhotoTours:
         is sent to the dock after the last photo and after a failure when
         ownership is still confirmed.
         """
+        if self._closed:
+            raise _error("photo_tour_stopped")
         if self._task is not None:
             raise _error("photo_tour_running")
         tour_question = _tour_question(hass, entry, question, ai_task_entity_id)
