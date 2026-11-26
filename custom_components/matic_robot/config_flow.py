@@ -99,6 +99,41 @@ class DifferentRobotError(MaticError):
     """A Matic-CA robot with another serial answered at the recovery address."""
 
 
+def _existing_robot_error(err: MaticError) -> str:
+    """Return the form error for a failed check of the robot an entry pins.
+
+    A timeout or a lost connection is a ``CannotConnectError``. Any other
+    failure, such as an endpoint that does not implement Handshake, means the
+    robot could not be verified, so nothing changes and the user can retry.
+    """
+    if isinstance(err, AuthenticationRequiredError):
+        return "invalid_credential"
+    if isinstance(err, CertificateMismatchError):
+        return "certificate_changed"
+    if isinstance(err, InvalidRobotCertificateError):
+        return "invalid_certificate"
+    if not isinstance(err, CannotConnectError):
+        _LOGGER.warning("Matic could not verify the robot: %s", err)
+    return "cannot_connect"
+
+
+def _recovery_error(err: MaticError) -> str:
+    """Return the recovery form error for a failed check of a reset robot.
+
+    A changed certificate is what recovery expects, so only one that fails
+    the Matic CA or names another hostname is reported, as invalid.
+    """
+    if isinstance(err, AuthenticationRequiredError):
+        return "recover_credential_rejected"
+    if isinstance(err, DifferentRobotError):
+        return "different_robot"
+    if isinstance(err, CertificateMismatchError | InvalidRobotCertificateError):
+        return "invalid_certificate"
+    if not isinstance(err, CannotConnectError):
+        _LOGGER.warning("Matic identity recovery could not verify the robot: %s", err)
+    return "recover_cannot_connect"
+
+
 async def _async_fetch_recovery_certificate(host: str, port: int) -> bytes:
     """Fetch a certificate for identity recovery, naming a failed Matic-CA check.
 
@@ -845,17 +880,8 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
         except AuthenticationRequiredError:
             return self._show_import_form({"base": "import_rejected"})
-        except CannotConnectError:
-            return self._show_import_form({"base": "cannot_connect"})
-        except CertificateMismatchError:
-            return self._show_import_form({"base": "certificate_changed"})
-        except InvalidRobotCertificateError:
-            return self._show_import_form({"base": "invalid_certificate"})
         except MaticError as err:
-            _LOGGER.warning(
-                "Matic credential import could not verify the robot: %s", err
-            )
-            return self._show_import_form({"base": "cannot_connect"})
+            return self._show_import_form({"base": _existing_robot_error(err)})
         self._raise_if_flow_removed()
         await self.async_set_unique_id(entry.unique_id)
         self._raise_if_flow_removed()
@@ -888,17 +914,8 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
         except AuthenticationRequiredError:
             return self._show_import_form({"base": "import_rejected"})
-        except DifferentRobotError:
-            error = "different_robot"
-        except CannotConnectError:
-            error = "recover_cannot_connect"
-        except CertificateMismatchError, InvalidRobotCertificateError:
-            error = "invalid_certificate"
         except MaticError as err:
-            _LOGGER.warning(
-                "Matic identity recovery could not verify the robot: %s", err
-            )
-            error = "recover_cannot_connect"
+            error = _recovery_error(err)
         else:
             self._raise_if_flow_removed()
             return self._async_finish_recovery(
@@ -1116,28 +1133,9 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._pairing_result = self._show_pairing_form(
                 "reauth_confirm", {"base": "bluetooth_unavailable"}
             )
-        except AuthenticationRequiredError:
-            self._pairing_result = self._show_pairing_form(
-                "reauth_confirm", {"base": "invalid_credential"}
-            )
-        except CannotConnectError:
-            self._pairing_result = self._show_pairing_form(
-                "reauth_confirm", {"base": "cannot_connect"}
-            )
-        except CertificateMismatchError:
-            self._pairing_result = self._show_pairing_form(
-                "reauth_confirm", {"base": "certificate_changed"}
-            )
-        except InvalidRobotCertificateError:
-            self._pairing_result = self._show_pairing_form(
-                "reauth_confirm", {"base": "invalid_certificate"}
-            )
         except MaticError as err:
-            _LOGGER.warning(
-                "Matic reauthentication could not verify the robot: %s", err
-            )
             self._pairing_result = self._show_pairing_form(
-                "reauth_confirm", {"base": "cannot_connect"}
+                "reauth_confirm", {"base": _existing_robot_error(err)}
             )
         else:
             await self.async_set_unique_id(entry.unique_id)
@@ -1182,14 +1180,8 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     entry.data,
                     credential,
                 )
-            except AuthenticationRequiredError:
-                errors["base"] = "invalid_credential"
-            except CannotConnectError:
-                errors["base"] = "cannot_connect"
-            except CertificateMismatchError:
-                errors["base"] = "certificate_changed"
-            except InvalidRobotCertificateError:
-                errors["base"] = "invalid_certificate"
+            except MaticError as err:
+                errors["base"] = _existing_robot_error(err)
             else:
                 await self.async_set_unique_id(entry.unique_id)
                 self._abort_if_unique_id_mismatch()
@@ -1281,12 +1273,8 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Matic-CA certificate for the stored serial and hostname.
         try:
             await _async_recovery_identity(*self._recovery_address, entry.data)
-        except DifferentRobotError:
-            error = "different_robot"
-        except CannotConnectError:
-            error = "recover_cannot_connect"
-        except InvalidRobotCertificateError:
-            error = "invalid_certificate"
+        except MaticError as err:
+            error = _recovery_error(err)
         else:
             if user_input.get(CONF_IMPORT_CREDENTIAL) is True:
                 return await self._async_choose_import("recover_identity", "recover")
@@ -1335,21 +1323,8 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._pairing_diagnostic = str(err)
             _LOGGER.warning("Matic Bluetooth identity recovery stopped: %s", err)
             error = "bluetooth_unavailable"
-        except AuthenticationRequiredError:
-            error = "recover_credential_rejected"
-        except DifferentRobotError:
-            error = "different_robot"
-        except CannotConnectError:
-            error = "recover_cannot_connect"
-        except CertificateMismatchError, InvalidRobotCertificateError:
-            error = "invalid_certificate"
         except MaticError as err:
-            # For example an endpoint that does not implement Handshake: the
-            # robot at this address could not be verified, so nothing changes.
-            _LOGGER.warning(
-                "Matic identity recovery could not verify the robot: %s", err
-            )
-            error = "recover_cannot_connect"
+            error = _recovery_error(err)
         else:
             self._pairing_result = self._async_finish_recovery(
                 entry, host, port, fingerprint, _bluetooth_credential_data(grant)
