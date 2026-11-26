@@ -1,7 +1,7 @@
 name: Nightly
 
 # Test runs the suite on the one Home Assistant version pyproject.toml pins.
-# This runs the suite and the live lane on the oldest supported version, the
+# This runs check.py and the live lane on the oldest supported version, the
 # newest stable one and the beta. GitHub starts a schedule only from the
 # default branch.
 on:
@@ -57,8 +57,10 @@ jobs:
             newest=$(echo homeassistant | uv pip compile -q --no-deps --no-header --no-annotate --prerelease allow -)
             [ "$tested" = "$newest" ] || echo "::warning::$newest is out, but $helper supports up to $tested."
           fi
+      # The same checks Test runs, so a Home Assistant release that breaks
+      # types, contracts or the client's isolation shows up here too.
       - if: matrix.suite == 'pytest'
-        run: pytest
+        run: python scripts/check.py --all --built
       - if: matrix.suite == 'live'
         run: |
           npx playwright install --with-deps chromium

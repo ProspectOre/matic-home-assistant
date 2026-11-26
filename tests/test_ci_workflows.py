@@ -147,7 +147,7 @@ def _commands(job: dict[str, Any]) -> list[str]:
 @pytest.mark.parametrize(
     ("workflow", "job", "reader"),
     [
-        ("nightly.yml", "nightly", "pytest"),
+        ("nightly.yml", "nightly", "scripts/check.py"),
         ("nightly.yml", "nightly", "npx playwright test"),
         (
             "windows-assistive-qualification.yml",
