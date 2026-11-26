@@ -521,10 +521,9 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
         "custom_components.matic_robot.managed_observation._async_wait_for_robot_activity",
         unconfirmed_start,
     )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
-        0,
-    )
+    monkeypatch.setattr(managed_observation_module, "SESSION_HISTORY_RETRY_SECONDS", 0)
+    # Two empty reads show history was asked again; all 151 cost wall time.
+    monkeypatch.setattr(managed_observation_module, "SESSION_HISTORY_ATTEMPTS", 2)
 
     async def read_identity():
         nonlocal reads, injected_transient
