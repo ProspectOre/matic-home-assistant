@@ -326,6 +326,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         plans.control.reopen_metadata_admission(serial_number)
+        entry.runtime_data.photo_tours.reopen()
     if (
         not unload_ok
         and preserve_run

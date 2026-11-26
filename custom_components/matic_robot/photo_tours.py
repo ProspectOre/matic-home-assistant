@@ -124,7 +124,7 @@ class PhotoTours:
 
     Another command stops a tour: cancelled before it finishes up, or kept
     from docking while it does. Unload cancels it either way, waits, and
-    refuses any tour after it.
+    refuses any tour after it until a failed unload reopens the runner.
     """
 
     def __init__(self) -> None:
@@ -157,6 +157,10 @@ class PhotoTours:
         self._stop_requested = self._cancelled = True
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+    def reopen(self) -> None:
+        """Accept tours again after the entry failed to unload."""
+        self._closed = False
 
     async def async_run(
         self,
