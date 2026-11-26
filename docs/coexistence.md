@@ -31,11 +31,11 @@ over, including when a native schedule replaces the task. It never sends
 another command to win the robot back. The source of the take-over is added
 once the history fields above are mapped.
 
-Only the robot reporting a different task counts as a take-over. A robot that
-stops answering, or whose current task can't be read, ends the plan as
-connection lost instead. The plan never sends a command to a robot it can't
-read, and credits no room it couldn't verify. How long it waits depends on
-where the plan is:
+A robot that stops answering, or whose current task can't be read, ends the
+plan as connection lost, not taken over. A robot that answers without the
+plan's own task is still taken over. The plan never sends a command to a robot
+it can't read, and credits no room it couldn't verify. How long it waits
+depends on where the plan is:
 
 - Before a room is sent, it reads the robot's task three times, a second
   apart. If none of those reads is answered, the room isn't sent.
