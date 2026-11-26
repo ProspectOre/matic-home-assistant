@@ -11,7 +11,7 @@ are its stored tally, which only ``count_room`` writes.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Collection, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
@@ -276,6 +276,31 @@ def transition(run: Run, event: RunEvent) -> tuple[Run, CheckpointWrite]:
         },
         drop=("verification_deadline",),
     )
+
+
+@dataclass(slots=True)
+class RunProgress:
+    """A run and its checkpoint, which each event moves together.
+
+    ``save`` stores the checkpoint whenever a write asks for it.
+    """
+
+    run: Run
+    checkpoint: RecoveryCheckpoint
+    save: Callable[[Mapping[str, Any]], Awaitable[None]]
+
+    def apply(self, event: RunEvent) -> CheckpointWrite:
+        """Move the run and apply the write to the checkpoint, without saving."""
+        self.run, write = transition(self.run, event)
+        self.checkpoint = write.applied(self.checkpoint)
+        return write
+
+    async def advance(self, event: RunEvent) -> CheckpointWrite:
+        """Move the run and save the checkpoint when its write asks."""
+        write = self.apply(event)
+        if write.save:
+            await self.save(self.checkpoint.stored())
+        return write
 
 
 def count_room(run: dict[str, Any], room_id: str) -> bool:
