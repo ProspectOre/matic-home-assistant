@@ -40,13 +40,13 @@ with `curl -X POST http://127.0.0.1:8124/step/<name>` for a name in `STEPS`;
 | Floor and task | `coverage_plan` serves the floor and retains the commanded goals as room visits, so a room cleaned again appears twice; `active_session_key` carries the task's session, and sixteen zero bytes when idle where a robot reports a v4 UUID, so a test that needs the idle revision a handoff saves sets one; `coverage_session_history` gets a record with per-room, per-mode results when the task ends. One live photographic and one structural map page confirm the floor. `sink_summon_locations` holds a sink posture once a test saves one. |
 | Navigation | The robot's state codes while driving somewhere are not recorded, so it arrives at once: ready in the room without a task, paused with one. A sink trip waits until the `refilled` step, then returns. A map-tap posture parks at its point: `latest_pose` reports that point and the posture's heading as a quaternion, and the current area is the room containing it. `block_next_goal` makes the next posture unreachable; the robot then reports nothing, because how a real robot reports one is not recorded. |
 
-Tests move the robot with explicit scripted steps such as `start_cleaning`,
-`finish_room`, `finish_session`, `arrive_at_dock`, `low_charge_recharge`,
-`fault`, `app_takes_over`, `refilled`, `hold_photos` and `release_photos`, then
-await the integration's accepted state before advancing. History timestamps use
-the wall clock because the integration binds a record to the dispatch time. A
-few tests shorten a wait constant (the dock-after-stop poll, the history window)
-rather than wait minutes; the logic is unchanged.
+Tests move the robot with scripted steps such as `start_cleaning`, `finish_room`,
+`finish_session`, `arrive_at_dock`, `low_charge_recharge`, `fault`,
+`app_takes_over`, `refilled`, `hold_photos`, `release_photos`, `hold_commands`
+and `release_commands`, then await the integration's accepted state. History
+timestamps use the wall clock because the integration binds a record to the
+dispatch time. A few tests shorten a wait constant (the dock-after-stop poll,
+the history window) rather than wait minutes; the logic is unchanged.
 
 ## Faults
 

@@ -20,6 +20,8 @@ from custom_components.matic_robot.robot_controls import (
 )
 
 START = datetime(2026, 10, 31, 1, 0, tzinfo=UTC)
+# Runtime data with a tour runner and nothing else a tour could read.
+_RUNNER_ONLY = SimpleNamespace(photo_tours=photo_tours.PhotoTours())
 
 
 def _state(
@@ -129,6 +131,7 @@ def _entry(
         runtime_data=SimpleNamespace(
             client=client,
             photos=store,
+            photo_tours=photo_tours.PhotoTours(),
             session=SimpleNamespace(
                 state=SimpleNamespace(value=SimpleNamespace(operational=operational)),
                 floor=SimpleNamespace(value=None),
@@ -973,14 +976,10 @@ async def test_tour_refuses_when_fresh_state_is_busy() -> None:
 
 async def test_only_one_tour_runs_per_robot() -> None:
     hass = _hass()
-    entry = _entry([], _Photos(), entry_id="locked")
-    lock = photo_tours._tours.setdefault("locked", photo_tours.asyncio.Lock())
-    await lock.acquire()
-    try:
-        with pytest.raises(HomeAssistantError) as raised:
-            await _run_rooms(hass, entry, "vacuum.matic", ["Den"])
-    finally:
-        lock.release()
+    entry = _entry([], _Photos())
+    entry.runtime_data.photo_tours._task = Mock()
+    with pytest.raises(HomeAssistantError) as raised:
+        await _run_rooms(hass, entry, "vacuum.matic", ["Den"])
 
     assert raised.value.translation_key == "photo_tour_running"
     assert _commands(hass) == []
@@ -1312,7 +1311,7 @@ async def test_tour_with_no_rooms_exits_without_cleanup(monkeypatch) -> None:
 @pytest.mark.parametrize("question", ["   ", "x" * 501])
 async def test_ai_question_is_validated_before_robot_state_access(question) -> None:
     hass = SimpleNamespace()
-    entry = SimpleNamespace(entry_id="question-validation")
+    entry = SimpleNamespace(entry_id="question-validation", runtime_data=_RUNNER_ONLY)
 
     with pytest.raises(HomeAssistantError) as raised:
         await _run_rooms(
@@ -1331,7 +1330,7 @@ async def test_unavailable_ai_task_is_refused_before_tour(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hass = SimpleNamespace()
-    entry = SimpleNamespace(entry_id="entity-validation")
+    entry = SimpleNamespace(entry_id="entity-validation", runtime_data=_RUNNER_ONLY)
     monkeypatch.setattr(
         photo_tours,
         "validate_ai_task_entity",

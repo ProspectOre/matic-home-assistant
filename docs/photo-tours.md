@@ -130,7 +130,10 @@ The tour requests docking when it finishes, or after an error, only while
 the robot is still parked where the tour left it. Start, Pause, Stop or Return
 to dock on the robot's Home Assistant entity ends a running tour with an error
 before it sends the robot anywhere else; photos it already took are kept. It does not send a stop
-or dock command to interrupt a task that took over. Docking is a request, not
+or dock command to interrupt a task that took over. Reloading or disabling
+the integration ends a running tour the same way, and sends the robot
+nothing: a robot parked at a stop docks on its own after its ten-minute
+countdown, as it does after any Go to room. Docking is a request, not
 proof that the robot physically reached the dock.
 
 No photo is returned for an unknown or mismatched room, an old capture, or an

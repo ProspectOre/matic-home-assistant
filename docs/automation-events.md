@@ -20,7 +20,7 @@ Each event's type is `matic_robot_` plus the name in the second column.
 | Plan area finished | `area_finished` | area fields |
 | Plan area failed | `area_failed` | area fields, `reason_code` |
 | Plan finished | `plan_finished` | `entity_id`, `plan_id`, `run_id`, `outcome`, `reason_code`, `cause`, `provenance`, `terminal_activity`, times, room counts, sometimes `missing_rooms` |
-| Plan docked | `plan_docked` | `entity_id`, `plan_id`, `run_id`, `outcome`, `docked_at` |
+| Plan docked | `plan_docked` | `entity_id`, `plan_id`, `run_id`, `outcome`, `reason_code`, `terminal_activity`, `docked_at`, `provenance` |
 | Cleaning finished | `cleaning_finished` | `device_id`, `entry_id`, `started_at`, `ended_at`, `duration_seconds`, `completed`, `rooms`, `completed_rooms`, `room_durations`, `stop_reason` |
 | Firmware changed | `firmware_changed` | `device_id`, `entry_id`, `previous_version`, `firmware_version` |
 | Firmware checked | `firmware_analyzed` | `entry_id`, `firmware_version`, `compatibility_status`, change counts |
@@ -39,7 +39,10 @@ started, Room started and Room finished for Kitchen, Plan area started and
 finished for the area, the room pair for Hall, then one Plan finished with `outcome: completed`.
 Other outcomes: `recharge_suspended`, `cancelled`, `failed`, `unverified`. A
 stopped run, Smart Stop included, ends with `cancelled`; when the robot then
-docks, Plan docked follows with `outcome: stopped_docked`. One-time room cleans from Matic Map or Clean room sequence send
+docks, Plan docked follows with `outcome: stopped_docked`.
+`terminal_activity` is the vacuum's state when the run ended; after Stop now
+the robot may not have reported the stop yet, so read the robot's end from
+Plan docked. One-time room cleans from Matic Map or Clean room sequence send
 room and plan events too, with a `plan_id` starting `__matic_manual_room_sequence__`.
 
 ## Run events in automations, the logbook and the dashboard
