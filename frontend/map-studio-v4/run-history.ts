@@ -91,6 +91,7 @@ class MaticRunHistoryV4 extends LitElement {
       case "low_battery": return this.#t("v4_run_low_battery", "Stopped because the battery was low");
       case "robot_problem": return this.#t("v4_run_robot_problem", "The robot reported a problem");
       case "taken_over": return this.#t("v4_run_taken_over", "The robot started a different task");
+      case "connection_lost": return this.#t("v4_run_connection_lost", "Home Assistant lost contact with the robot");
       case "home_assistant": return this.#t("v4_run_home_assistant", "Home Assistant restarted during the clean");
       case "interrupted": return this.#t("v4_run_interrupted", "Interrupted before it finished");
       case "unknown": return run.outcome === "not_finished"

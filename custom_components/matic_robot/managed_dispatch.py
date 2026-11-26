@@ -28,6 +28,7 @@ from .managed_run import (
     NativeHistoryBaselineUnavailableError,
     NativeHistoryIncompleteBaselineError,
     PreparedRoomDispatch,
+    RobotConnectionLostError,
     RoomTakenOverError,
 )
 from .plan_model import (
@@ -195,8 +196,10 @@ async def async_dispatch_leg_command(
         if attempt + 1 < observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
             await asyncio.sleep(observation.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
     if identity_baseline is None:
-        raise RoomTakenOverError(
-            "The native task before dispatch could not be verified"
+        # Nothing is sent to a robot that isn't answering, so there is no
+        # task to wait for.
+        raise RobotConnectionLostError(
+            "The robot didn't answer before the leg was sent"
         )
     if expected_dispatch_identity is not None and not (
         identity_baseline == expected_dispatch_identity

@@ -235,6 +235,8 @@ def run_ending(run: Mapping[str, Any]) -> str:
         return "robot_problem"
     if reason == "native_task_taken_over":
         return "taken_over"
+    if reason == "connection_lost":
+        return "connection_lost"
     if reason == "config_entry_unload":
         return "home_assistant"
     if reason in {"interrupted", "stopped_in_place", "native_task_ended"}:
@@ -375,6 +377,7 @@ def _outcome(
         "low_battery",
         "robot_problem",
         "taken_over",
+        "connection_lost",
         "home_assistant",
         "interrupted",
     }:

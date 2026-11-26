@@ -24,6 +24,7 @@ from .client import (
 from .managed_run import (
     NativeTaskEndedError,
     PlanCancelledError,
+    ReconnectWindow,
     RoomInterruptedError,
     RoomRunOutcome,
     RoomTakenOverError,
@@ -592,11 +593,12 @@ async def async_wait_for_active_session_resolution(
     """Wait for a returning task to finish or visibly resume.
 
     ``False`` means the firmware session ended and operational handoff is safe;
-    it does not prove completion. ``True`` means cleaning resumed. Repeated
-    unreadable identities raise. The enclosing room timeout bounds the wait
-    while known-active firmware sessions return to their dock.
+    it does not prove completion. ``True`` means cleaning resumed. A robot
+    that stops answering raises once the reconnect window passes. The
+    enclosing room timeout bounds the wait while known-active firmware
+    sessions return to their dock.
     """
-    unknown_reads = 0
+    contact = ReconnectWindow()
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
@@ -618,14 +620,7 @@ async def async_wait_for_active_session_resolution(
                 and state is observed_state
             ):
                 return True
-        if identity is None:
-            unknown_reads += 1
-            if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                raise RoomTakenOverError(
-                    "The returning native task ownership could not be verified"
-                )
-        else:
-            unknown_reads = 0
+        contact.read(identity)
         if cancel_event is None:
             await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
             continue
@@ -798,26 +793,20 @@ async def async_wait_with_native_identity[T](
         return await outcome()
 
     changed = asyncio.create_task(wait_for_outcome(), eager_start=True)
-    unknown_reads = 0
+    contact = ReconnectWindow()
     try:
         while True:
             transition_observed = changed.done()
             if transition_observed:
                 changed.result()
             identity = await async_read_session_identity(reader)
+            contact.read(identity)
             signal = _classify_native_identity(identity, expected)
-            if signal is NativeTaskSignal.UNKNOWN:
-                unknown_reads += 1
-                if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                    raise RoomTakenOverError(
-                        "The native task ownership could not be verified"
-                    )
-            elif signal is NativeTaskSignal.REPLACED:
+            if signal is NativeTaskSignal.REPLACED:
                 raise RoomTakenOverError("The native cleaning task was replaced")
-            else:
+            if signal is not NativeTaskSignal.UNKNOWN:
                 # An ended session can precede HA's normal return update;
                 # its history still needs independent completion verification.
-                unknown_reads = 0
                 if transition_observed:
                     return changed.result()
             if changed.done():
@@ -895,7 +884,7 @@ async def _async_confirm_started_identity(
     cancel_event: asyncio.Event | None,
 ) -> RobotActivity:
     """Wait for a new identity, never the task that preceded dispatch."""
-    unknown_reads = 0
+    contact = ReconnectWindow()
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
@@ -918,11 +907,7 @@ async def _async_confirm_started_identity(
             state = started.result()
             if transition_observed and identity and identity == expected:
                 return state
-            unknown_reads = unknown_reads + 1 if identity is None else 0
-            if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                raise RoomTakenOverError(
-                    "The started native task could not be identified"
-                )
+            contact.read(identity)
             await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
         else:
             await asyncio.wait({started}, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
@@ -954,7 +939,7 @@ async def async_wait_for_owned_resume(
     observed_resume = (
         asyncio.create_task(resume_event.wait()) if resume_event is not None else None
     )
-    unknown_reads = 0
+    contact = ReconnectWindow()
     try:
         async with asyncio.timeout(timeout_seconds):
             while True:
@@ -964,27 +949,20 @@ async def async_wait_for_owned_resume(
                     observed_resume is not None and observed_resume.done()
                 )
                 identity = await async_read_session_identity(robot.session_identity)
+                contact.read(identity)
                 signal = _classify_native_identity(identity, expected)
-                if signal is NativeTaskSignal.UNKNOWN:
-                    unknown_reads += 1
-                    if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                        raise RoomTakenOverError(
-                            "The suspended native task ownership could not be verified"
-                        )
-                elif signal is NativeTaskSignal.REPLACED:
+                if signal is NativeTaskSignal.REPLACED:
                     raise RoomTakenOverError("The suspended native task was replaced")
-                elif signal is NativeTaskSignal.ENDED:
+                if signal is NativeTaskSignal.ENDED:
                     raise NativeTaskEndedError(
                         "The suspended native task ended before it resumed"
                     )
-                else:
-                    unknown_reads = 0
-                    if transition_observed:
-                        # The identity read began after the observed resume.
-                        # Propagate errors/cancellation before recording it.
-                        if resumed.done():
-                            resumed.result()
-                        return
+                if signal is NativeTaskSignal.OWNED and transition_observed:
+                    # The identity read began after the observed resume.
+                    # Propagate errors/cancellation before recording it.
+                    if resumed.done():
+                        resumed.result()
+                    return
                 # Check again after the state transition, and keep checking
                 # session continuity during a potentially long charge interval.
                 if resumed.done():

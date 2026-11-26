@@ -16,8 +16,8 @@ from custom_components.matic_robot.managed_observation import (
 )
 from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
+    RobotConnectionLostError,
     RoomRunOutcome,
-    RoomTakenOverError,
 )
 from tests.plans.fakes import OWNED_SESSION, plan_room
 from tests.session_fakes import FakeRobot
@@ -217,10 +217,13 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
         )
 
     robot.show("returning")
-    with patch(
-        "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
+    with (
+        patch(
+            "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
+        ),
+        patch("custom_components.matic_robot.managed_run.RECONNECT_SECONDS", 0),
     ):
-        with pytest.raises(RoomTakenOverError, match="could not be verified"):
+        with pytest.raises(RobotConnectionLostError):
             await async_wait_for_active_session_resolution(
                 robot.port(session_identity=AsyncMock(return_value=None)),
                 expected_identity=OWNED_SESSION,

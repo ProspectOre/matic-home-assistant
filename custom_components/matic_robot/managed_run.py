@@ -7,6 +7,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
+from time import monotonic
+from typing import ClassVar
 
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
@@ -29,6 +31,10 @@ _COVERAGE_GUARD_MESSAGES = {
         "The clean changed while starting, so check the robot first."
     ),
 }
+
+
+# How long a run waits for the robot to answer again; restart recovery too.
+RECONNECT_SECONDS = 120
 
 
 def coverage_guard_message(error: CoverageGuardError) -> str:
@@ -227,12 +233,73 @@ def interruption_reason_code(error: RoomInterruptedError) -> str:
     return "interrupted"
 
 
-class RoomTakenOverError(HomeAssistantError):
-    """The native task ended, changed, or could no longer be identified."""
+class RoomOwnershipLostError(HomeAssistantError):
+    """The run can no longer act for its native task, so it sends nothing more."""
+
+    reason_code: ClassVar[str]
 
     def __init__(self, *args: object, suspend_reason: str | None = None) -> None:
         super().__init__(*args)
         self.suspend_reason = suspend_reason
+
+    def service_error(self, room: str) -> ServiceValidationError:
+        """Return the action error for the room the run lost."""
+        if isinstance(self, RobotConnectionLostError):
+            return validation_error(
+                "Home Assistant lost contact with the robot during the run",
+                "room_connection_lost",
+                {"room": room},
+            )
+        return validation_error(
+            "The original native cleaning task could no longer be verified",
+            "room_taken_over",
+            {"room": room},
+        )
+
+
+class RoomTakenOverError(RoomOwnershipLostError):
+    """Another native task replaced this run's, or its task can't be named."""
+
+    reason_code = "native_task_taken_over"
+
+
+class RobotConnectionLostError(RoomOwnershipLostError):
+    """The robot didn't answer for its task for the whole reconnect window.
+
+    Lost contact is not a takeover: the run's own task may still be cleaning.
+    """
+
+    reason_code = "connection_lost"
+
+
+class ReconnectWindow:
+    """Tell lost contact from a takeover while a run watches its task.
+
+    An unreadable task identity means the robot is not answering, not that
+    another task took over. The run waits for it as long as restart recovery
+    does, then ends as connection lost.
+    """
+
+    __slots__ = ("_since",)
+
+    def __init__(self) -> None:
+        self._since: float | None = None
+
+    @property
+    def waiting(self) -> bool:
+        """Whether the last identity read failed."""
+        return self._since is not None
+
+    def read(self, identity: bytes | None) -> None:
+        """Note one identity read; raise once the robot stays unreadable too long."""
+        if identity is not None:
+            self._since = None
+            return
+        now = monotonic()
+        if self._since is None:
+            self._since = now
+        elif now - self._since >= RECONNECT_SECONDS:
+            raise RobotConnectionLostError("The robot stopped answering during the run")
 
 
 def validation_error(

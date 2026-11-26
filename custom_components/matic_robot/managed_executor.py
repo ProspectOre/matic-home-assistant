@@ -27,8 +27,8 @@ from .managed_run import (
     PlanCancelledError,
     PreparedRoomDispatch,
     RoomInterruptedError,
+    RoomOwnershipLostError,
     RoomStoppedInPlaceError,
-    RoomTakenOverError,
 )
 from .native_completion import native_room_key
 from .plan_model import (
@@ -608,8 +608,8 @@ class _PlanRun:
         )
         if getattr(leaf_error, "suspend_reason", None) == "low_charge":
             self.ending = ("recharge_suspended", "low_charge", "robot")
-        elif isinstance(leaf_error, RoomTakenOverError):
-            self.ending = ("unverified", "native_task_taken_over", "unknown")
+        elif isinstance(leaf_error, RoomOwnershipLostError):
+            self.ending = ("unverified", leaf_error.reason_code, "unknown")
         elif isinstance(leaf_error, RoomInterruptedError):
             reason_code = managed_run.interruption_reason_code(leaf_error)
             self.ending = ("unverified", reason_code, "unknown")

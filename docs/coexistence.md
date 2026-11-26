@@ -31,6 +31,13 @@ over, including when a native schedule replaces the task. It never sends
 another command to win the robot back. The source of the take-over is added
 once the history fields above are mapped.
 
+Only the robot reporting a different task counts as a take-over. When the robot
+stops answering, or its current task can't be read, the plan waits for it as
+long as [restart recovery](restart-recovery.md) waits to reconnect, two
+minutes, and goes on if the robot comes back with the same task. Otherwise it
+ends as connection lost, sends nothing, and credits no room it couldn't
+verify.
+
 ## No conflicting commands
 
 Motion commands go out only when the robot is free or Home Assistant holds the

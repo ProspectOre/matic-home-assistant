@@ -231,6 +231,7 @@ async def test_unknown_session_identity_fails_closed_without_room_credit(
         patch(
             "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
         ),
+        patch("custom_components.matic_robot.managed_run.RECONNECT_SECONDS", 0),
         pytest.raises(ServiceValidationError) as failure,
     ):
         await async_run_room_leg(
@@ -248,7 +249,7 @@ async def test_unknown_session_identity_fails_closed_without_room_credit(
             advance=run_step,
         )
 
-    assert failure.value.translation_key == "room_taken_over"
+    assert failure.value.translation_key == "room_connection_lost"
     # A task this run cannot identify is never its to stop.
     sender.assert_not_awaited()
     manager.ledger.async_mark_completed.assert_not_awaited()

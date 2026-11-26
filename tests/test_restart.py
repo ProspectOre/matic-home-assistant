@@ -1132,6 +1132,7 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
             "custom_components.matic_robot.managed_observation.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
             0,
         ),
+        patch("custom_components.matic_robot.managed_run.RECONNECT_SECONDS", 0),
         patch(
             "custom_components.matic_robot.managed_observation.async_adjudicate_room_end",
             AsyncMock(

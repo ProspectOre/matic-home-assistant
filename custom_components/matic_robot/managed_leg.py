@@ -37,10 +37,10 @@ from .managed_run import (
     PlanCancelledError,
     PreparedRoomDispatch,
     RoomInterruptedError,
+    RoomOwnershipLostError,
     RoomRunOutcome,
     RoomStartTimeoutError,
     RoomStoppedInPlaceError,
-    RoomTakenOverError,
 )
 from .native_completion import RobotEnded
 from .plan_model import CleaningRoom
@@ -629,7 +629,7 @@ class _LegRun:
         if isinstance(err, PlanCancelledError):
             await self.async_cancelled(err)
             raise err
-        if isinstance(err, RoomTakenOverError):
+        if isinstance(err, RoomOwnershipLostError):
             err.suspend_reason = dispatch_control.suspended_run_reason(
                 self.manager, self.serial_number
             )
@@ -640,14 +640,10 @@ class _LegRun:
                 room,
                 "interrupted",
                 error=str(err),
-                reason_code="native_task_taken_over",
+                reason_code=err.reason_code,
                 cause="unknown",
             )
-            raise managed_run.validation_error(
-                "The original native cleaning task could no longer be verified",
-                "room_taken_over",
-                {"room": room.name},
-            ) from err
+            raise err.service_error(room.name) from err
         if isinstance(err, RoomInterruptedError):
             await dispatch_control.async_cleanup_managed_motion(
                 self.managed_user_command, self.motion_token, self.dispatch_attempted

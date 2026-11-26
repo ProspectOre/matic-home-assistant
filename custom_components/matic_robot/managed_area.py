@@ -25,6 +25,9 @@ from .const import DOMAIN
 from .managed_run import (
     PlanCancelledError,
     PreparedRoomDispatch,
+    ReconnectWindow,
+    RobotConnectionLostError,
+    RoomOwnershipLostError,
     RoomStartTimeoutError,
     RoomTakenOverError,
 )
@@ -62,8 +65,9 @@ async def _async_wait_for_area_end(
     """Wait until a plan custom area's own native mission ends.
 
     The robot reports no result for a drawn area, so the end of the area's
-    session is the end of the area (not coverage evidence). A replaced or
-    unreadable session fails closed and a robot error is terminal. Firmware
+    session is the end of the area (not coverage evidence). A replaced
+    session, or a robot that stops answering, fails closed and a robot error
+    is terminal. Firmware
     can keep an ended mission's identity while the robot is home, so an
     inactive session when docked or idle also ends it. A low-charge return
     keeps the same session and is waited out.
@@ -72,40 +76,36 @@ async def _async_wait_for_area_end(
         raise RoomTakenOverError(
             "The custom area's native task could not be identified"
         )
-    unknown_reads = 0
+    contact = ReconnectWindow()
     while True:
         _running_area_state(robot, cancel_event)
         identity = await observation.async_read_session_identity(robot.session_identity)
         # A Stop or error can arrive while the identity request is in flight.
         current = _running_area_state(robot, cancel_event)
-        if identity is None:
-            unknown_reads += 1
-            if unknown_reads >= observation.ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                raise RoomTakenOverError(
-                    "The native task ownership could not be verified"
-                )
-        elif identity == b"":
-            if unknown_reads:
-                raise RoomTakenOverError(
-                    "The custom area ended while native task ownership was unknown"
+        lost_contact = contact.waiting
+        contact.read(identity)
+        if identity == b"":
+            if lost_contact:
+                raise RobotConnectionLostError(
+                    "The custom area ended while the robot wasn't answering"
                 )
             return
-        elif identity != expected:
+        if identity and identity != expected:
             raise RoomTakenOverError("The native cleaning task was replaced")
-        else:
-            unknown_reads = 0
-            if current is not None and current.activity in _HOME_OR_IDLE:
-                active = await observation.async_active_session_state(
-                    robot.active_session
-                )
-                # The robot can stop, fail or resume during this second read.
-                current = _running_area_state(robot, cancel_event)
-                if (
-                    active is False
-                    and current is not None
-                    and current.activity in _HOME_OR_IDLE
-                ):
-                    return
+        if (
+            identity == expected
+            and current is not None
+            and current.activity in _HOME_OR_IDLE
+        ):
+            active = await observation.async_active_session_state(robot.active_session)
+            # The robot can stop, fail or resume during this second read.
+            current = _running_area_state(robot, cancel_event)
+            if (
+                active is False
+                and current is not None
+                and current.activity in _HOME_OR_IDLE
+            ):
+                return
         with suppress(TimeoutError):
             async with asyncio.timeout(observation.ROOM_STATUS_REFRESH_SECONDS):
                 await cancel_event.wait()
@@ -173,12 +173,8 @@ def _area_failure_error(
     error: Exception, area: AreaLeg
 ) -> ServiceValidationError | None:
     """Return the service error a failed area raises, or None to re-raise it."""
-    if isinstance(error, RoomTakenOverError):
-        return managed_run.validation_error(
-            "The original native cleaning task could no longer be verified",
-            "room_taken_over",
-            {"room": area.name},
-        )
+    if isinstance(error, RoomOwnershipLostError):
+        return error.service_error(area.name)
     if isinstance(error, ServiceValidationError):
         return None
     if isinstance(error, RoomStartTimeoutError):
@@ -354,13 +350,13 @@ class _AreaLegRun:
         managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None,
     ) -> ServiceValidationError | None:
         """Release a failed area; return its service error, or None to re-raise."""
-        if isinstance(error, RoomTakenOverError):
-            # A replaced task was never ours to stop.
+        if isinstance(error, RoomOwnershipLostError):
+            # A task the run can't confirm as its own is never stopped.
             if dispatch_control.shutdown_suspends_run(
                 self.hass, self.manager, self.serial_number
             ):
                 return None
-            reason_code = "native_task_taken_over"
+            reason_code = error.reason_code
         else:
             # A graceful stop cannot upgrade a failed area once it has failed.
             finish_room_event.clear()

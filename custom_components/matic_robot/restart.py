@@ -42,7 +42,7 @@ from .managed_observation import (
     async_verify_leg_completion,
     async_wait_for_settled_leg_handoff,
 )
-from .managed_run import PreparedRoomDispatch
+from .managed_run import RECONNECT_SECONDS, PreparedRoomDispatch
 from .native_completion import RobotEnded
 from .plan_model import AreaLeg, CleaningRoom, PlanLeg, plan_floor_token
 from .plan_records import LastRun, RecoveryCheckpoint
@@ -64,8 +64,8 @@ if TYPE_CHECKING:
     from . import MaticConfigEntry, MaticRuntimeData
     from .plans import CleaningPlanManager
 
-RECOVERY_ATTEMPTS = 60
 RECOVERY_RETRY_SECONDS = 2
+RECOVERY_ATTEMPTS = RECONNECT_SECONDS // RECOVERY_RETRY_SECONDS
 # Why a run ends when its checkpoint or vacuum entity cannot be used.
 _CHECKPOINT_UNVERIFIED = "restart_checkpoint_unverified"
 # Actions 0.6 removed, and the Run plan cleaning order each one stood for.
