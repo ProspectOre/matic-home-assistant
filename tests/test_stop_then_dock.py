@@ -10,6 +10,7 @@ from homeassistant.core import Context
 
 from custom_components.matic_robot import managed_dispatch, stop_return
 from custom_components.matic_robot.client.commands import UserCommand
+from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.stop_return import (
     async_send_stop,
     schedule_dock_after_stop,
@@ -180,3 +181,14 @@ async def test_a_runs_dock_goes_out_under_its_lease_without_a_stop_fence(hass) -
     entry.runtime_data.session.heartbeat.async_request_refresh.assert_awaited_once()
     manager.control.async_mark_stop_pending.assert_not_awaited()
     watch.assert_not_called()
+
+
+async def test_the_shared_command_path_refuses_stop() -> None:
+    """STOP sent without admission would leave the robot unfenced and away."""
+    session = MagicMock()
+    session.client.async_send_user_command = AsyncMock()
+    with pytest.raises(ValueError, match="admit_stop"):
+        await RobotControls.async_send_user_command(
+            SimpleNamespace(_session=session), UserCommand.STOP
+        )
+    session.client.async_send_user_command.assert_not_awaited()

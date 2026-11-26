@@ -66,6 +66,9 @@ class RobotControls(RobotCommands):
 
     async def async_send_user_command(self, command: UserCommand) -> None:
         """Serialize a user command and immediately refresh state."""
+        if command is UserCommand.STOP:
+            # STOP needs admission, its fence and the dock watcher.
+            raise ValueError("Send STOP through admit_stop and async_send_stop")
         serial_number = self._session.info.serial_number
         if command is UserCommand.RESUME:
             self._require_no_pending_stop_dispatch(serial_number)
