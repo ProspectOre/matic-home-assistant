@@ -393,6 +393,7 @@ class _LegRun:
                 partial(self.room_observer.next, self.cancel_event),
                 self.robot.session_identity,
                 self.native_identity,
+                cancel_event=self.cancel_event,
             )
         outcome = await observation.async_wait_with_native_identity(
             # Owned start already observed this room. Preserve that evidence
@@ -402,6 +403,7 @@ class _LegRun:
             ),
             self.robot.session_identity,
             self.native_identity,
+            cancel_event=self.cancel_event,
         )
         return outcome, None
 
@@ -436,7 +438,7 @@ class _LegRun:
             confirm_ownership,
             self.robot.session_identity,
             self.native_identity,
-            self.cancel_event,
+            cancel_event=self.cancel_event,
         )
         if (
             self.finish_room_event is not None

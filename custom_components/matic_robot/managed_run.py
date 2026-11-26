@@ -244,6 +244,12 @@ class RoomOwnershipLostError(HomeAssistantError):
 
     def service_error(self, room: str) -> ServiceValidationError:
         """Return the action error for the room the run lost."""
+        if isinstance(self, RobotConnectionLostError) and not self.sent:
+            return validation_error(
+                "Home Assistant couldn't reach the robot, so the room wasn't sent",
+                "room_not_sent_connection_lost",
+                {"room": room},
+            )
         if isinstance(self, RobotConnectionLostError):
             return validation_error(
                 "Home Assistant lost contact with the robot during the run",
@@ -264,12 +270,17 @@ class RoomTakenOverError(RoomOwnershipLostError):
 
 
 class RobotConnectionLostError(RoomOwnershipLostError):
-    """The robot didn't answer for its task for the whole reconnect window.
+    """The robot stopped answering, so the run can't tell what its task did.
 
-    Lost contact is not a takeover: the run's own task may still be cleaning.
+    Lost contact is not a takeover: once its leg was ``sent``, the run's own
+    task may still be cleaning.
     """
 
     reason_code = "connection_lost"
+
+    def __init__(self, *args: object, sent: bool = True) -> None:
+        super().__init__(*args)
+        self.sent = sent
 
 
 class ReconnectWindow:

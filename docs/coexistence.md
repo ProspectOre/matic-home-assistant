@@ -31,12 +31,22 @@ over, including when a native schedule replaces the task. It never sends
 another command to win the robot back. The source of the take-over is added
 once the history fields above are mapped.
 
-Only the robot reporting a different task counts as a take-over. When the robot
-stops answering, or its current task can't be read, the plan waits for it as
-long as [restart recovery](restart-recovery.md) waits to reconnect, two
-minutes, and goes on if the robot comes back with the same task. Otherwise it
-ends as connection lost, sends nothing, and credits no room it couldn't
-verify.
+Only the robot reporting a different task counts as a take-over. A robot that
+stops answering, or whose current task can't be read, ends the plan as
+connection lost instead. The plan never sends a command to a robot it can't
+read, and credits no room it couldn't verify. How long it waits depends on
+where the plan is:
+
+- Before a room is sent, it reads the robot's task three times, a second
+  apart. If none of those reads is answered, the room isn't sent.
+- Right after a room is sent, it waits up to 10 seconds for the robot to show
+  the task it started. If the robot answers without showing that task, the
+  plan ends as taken over.
+- Until the robot reports that it started, the plan's start timeout applies.
+- Once the task is running, including while the robot returns, pauses or
+  charges, it waits as long as [restart recovery](restart-recovery.md) waits
+  to reconnect, two minutes, within the room's completion timeout. It goes on
+  if the robot comes back with the same task.
 
 ## No conflicting commands
 

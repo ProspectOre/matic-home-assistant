@@ -199,7 +199,7 @@ async def async_dispatch_leg_command(
         # Nothing is sent to a robot that isn't answering, so there is no
         # task to wait for.
         raise RobotConnectionLostError(
-            "The robot didn't answer before the leg was sent"
+            "The robot didn't answer before the leg was sent", sent=False
         )
     if expected_dispatch_identity is not None and not (
         identity_baseline == expected_dispatch_identity
@@ -254,7 +254,7 @@ async def async_dispatch_leg_command(
         await robot.start(command)
     except asyncio.CancelledError:
         try:
-            identity = await _async_recover_managed_dispatch_identity(
+            identity, _ = await _async_recover_managed_dispatch_identity(
                 robot.session_identity,
                 managed_session_id,
                 identity_baseline,
@@ -271,7 +271,7 @@ async def async_dispatch_leg_command(
         # settings readback times out. Recover cleanup ownership only when the
         # robot reports the exact session UUID carried by that command; a
         # changed or merely different identity is never ours to stop.
-        identity = await _async_recover_managed_dispatch_identity(
+        identity, _ = await _async_recover_managed_dispatch_identity(
             robot.session_identity,
             managed_session_id,
             identity_baseline,
@@ -290,11 +290,16 @@ async def async_dispatch_leg_command(
             "The dispatched native task was replaced before readback"
         )
     if identity is None:
-        identity = await _async_recover_managed_dispatch_identity(
+        identity, answered = await _async_recover_managed_dispatch_identity(
             robot.session_identity,
             managed_session_id,
             identity_baseline,
         )
+        if not answered:
+            # The start went out, so the robot may be cleaning this run's task.
+            raise RobotConnectionLostError(
+                "The robot stopped answering after the leg was sent"
+            )
     if identity is None or not _identity_matches_session(identity, managed_session_id):
         raise RoomTakenOverError(
             "The dispatched native task could not be verified after readback"
@@ -358,21 +363,27 @@ async def _async_recover_managed_dispatch_identity(
     reader: Callable[[], Awaitable[bytes | None]],
     session_id: UUID,
     baseline: bytes | None,
-) -> bytes | None:
-    """Boundedly recover only this command's identity after an uncertain write."""
+) -> tuple[bytes | None, bool]:
+    """Boundedly recover only this command's identity after an uncertain write.
+
+    Return that identity, or None, and whether the robot answered the last
+    read: a different identity is an answer, a failed read is not.
+    """
+    answered = False
     try:
         async with asyncio.timeout(DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS):
             while True:
                 observed = await observation.async_read_session_identity(reader)
+                answered = observed is not None
                 if observed and observed != baseline:
                     return (
                         observed
                         if _identity_matches_session(observed, session_id)
                         else None
-                    )
+                    ), True
                 await asyncio.sleep(observation.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
     except TimeoutError:
-        return None
+        return None, answered
 
 
 def guard_native_commands(

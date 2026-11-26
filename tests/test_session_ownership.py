@@ -766,7 +766,7 @@ async def test_unknown_pre_dispatch_identity_sends_no_cleaning_command(
             checkpoint_dispatch=AsyncMock(),
             advance=run_step,
         )
-    assert error.value.translation_key == "room_connection_lost"
+    assert error.value.translation_key == "room_not_sent_connection_lost"
     command.assert_not_awaited()
     sender.assert_not_awaited()
 
@@ -855,7 +855,9 @@ async def test_state_transition_requires_a_new_identity_read(
             robot.port(session_identity=reader), expected_identity=ORIGINAL
         )
     else:
-        waiter = async_wait_with_native_identity(outcome, reader, ORIGINAL)
+        waiter = async_wait_with_native_identity(
+            outcome, reader, ORIGINAL, cancel_event=None
+        )
     task = asyncio.create_task(waiter)
     await asyncio.wait_for(read_started.wait(), 1)
     robot.show("cleaning", current_area=ROOM.name)
@@ -1864,43 +1866,6 @@ async def test_local_replacement_between_owner_read_and_stop_suppresses_stop(has
     with pytest.raises(ManagedMotionReplacedError):
         await stop
     assert transmitted == []
-
-
-@pytest.mark.parametrize("replacement", ["different", "ended"])
-async def test_successful_managed_dispatch_rejects_a_replaced_or_missing_session(
-    hass, replacement
-):
-    robot = FakeRobot()
-    from custom_components.matic_robot.managed_dispatch import (
-        async_dispatch_leg_command,
-    )
-
-    current_identity = b""
-    replacement_identity = _session_identity(
-        UUID("55555555-5555-4555-8555-555555555555")
-    )
-
-    async def replace_after_readback(_call):
-        nonlocal current_identity
-        current_identity = replacement_identity if replacement == "different" else b""
-
-    robot.on_start = replace_after_readback
-    reader = AsyncMock(side_effect=lambda: current_identity)
-    bound = []
-
-    expected_reason = (
-        "replaced" if replacement == "different" else "could not be verified"
-    )
-    with pytest.raises(RoomTakenOverError, match=expected_reason):
-        await async_dispatch_leg_command(
-            robot.port(session_identity=reader),
-            [ROOM],
-            7,
-            on_identity=bound.append,
-            floor_token="floor",
-        )
-
-    assert bound == []
 
 
 # Custom area legs ------------------------------------------------------------

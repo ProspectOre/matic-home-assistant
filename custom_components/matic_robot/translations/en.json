@@ -1927,6 +1927,9 @@
     "room_taken_over": {
       "message": "Home Assistant could no longer confirm that the cleaning in {room} was the one it started, so the plan stopped. Check the robot, then start the plan again."
     },
+    "room_not_sent_connection_lost": {
+      "message": "Home Assistant couldn't reach the robot before sending {room}, so nothing was sent for it and the plan stopped. Check that the robot is online, then start the plan again."
+    },
     "room_connection_lost": {
       "message": "Home Assistant lost contact with the robot while cleaning {room}, so the plan stopped. The robot may still be cleaning. Check that it's online, then start the plan again."
     },

@@ -329,7 +329,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
     ):
         monkeypatch.setattr(
             "custom_components.matic_robot.managed_dispatch._async_recover_managed_dispatch_identity",
-            AsyncMock(return_value=None),
+            AsyncMock(return_value=(None, True)),
         )
         await async_execute_rooms(
             hass,

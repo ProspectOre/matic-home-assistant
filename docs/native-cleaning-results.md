@@ -95,8 +95,8 @@ fires with `reason_code: room_unreachable` or `room_partly_cleaned` and
 Any other ending still ends the plan with `reason_code: native_task_ended`: a
 clean the user or the robot cancelled, or one with no stop reason. Only a
 different active task is reported as
-`native_task_taken_over`; a robot that stops answering for two minutes ends the
-plan with `connection_lost`. [Protocol notes](protocol-notes.md#cleaning-history-coverage_session_history)
+`native_task_taken_over`; a robot that stops answering ends the plan with
+`connection_lost`. [Protocol notes](protocol-notes.md#cleaning-history-coverage_session_history)
 has the fields behind this.
 
 ## Durations and estimates

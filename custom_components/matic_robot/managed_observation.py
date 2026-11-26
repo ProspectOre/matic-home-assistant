@@ -786,11 +786,13 @@ async def async_wait_with_native_identity[T](
     outcome: Callable[[], Awaitable[T]],
     reader: Callable[[], Awaitable[bytes | None]],
     expected: bytes | None,
-    cancel_event: asyncio.Event | None = None,
+    *,
+    cancel_event: asyncio.Event | None,
 ) -> T:
     """Notice replacement even when the OEM task keeps cleaning the same room.
 
-    ``cancel_event`` ends the wait for an outcome that doesn't watch it.
+    ``cancel_event`` also ends the wait for a known identity after the outcome
+    has settled, which can last the reconnect window.
     """
 
     async def wait_for_outcome() -> T:

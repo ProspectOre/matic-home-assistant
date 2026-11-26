@@ -67,8 +67,10 @@ Room events use `verified_completion` and `unverified_completion` instead;
 `room_skipped` carries `owner_skipped`, or `room_unreachable` or
 `room_partly_cleaned` for a room the robot could not reach or finish. `native_task_ended` means the mission the run started ended
 without proof of completion; `native_task_taken_over` means a different native
-task replaced it; `connection_lost` means the robot stopped answering for two
-minutes, so the run couldn't tell whether its own task went on.
+task replaced it; `connection_lost` means the robot stopped answering, so the
+run couldn't tell whether its own task went on, or, before a room was sent,
+that nothing was sent. How long each phase waits is in
+[working alongside the Matic app](coexistence.md#a-plan-gives-way).
 `cause: unknown` means the source was not established. A stopped run that
 reaches the dock afterwards fires `matic_robot_plan_docked` with
 `outcome: stopped_docked`, always after its `plan_finished`.
