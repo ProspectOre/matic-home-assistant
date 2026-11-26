@@ -42,7 +42,7 @@ from .managed_observation import (
     async_verify_leg_completion,
     async_wait_for_settled_leg_handoff,
 )
-from .managed_run import PreparedRoomDispatch
+from .managed_run import PreparedRoomDispatch, async_unless_cancelled
 from .native_completion import RobotEnded
 from .plan_model import AreaLeg, CleaningRoom, PlanLeg, plan_floor_token
 from .plan_records import LastRun, RecoveryCheckpoint
@@ -614,7 +614,10 @@ async def _async_resume_mission(recovery: _Recovery, rejoined: _Rejoined) -> str
     checkpoint, identity = recovery.checkpoint, rejoined.identity
     dispatched_at = stored_instant(checkpoint.dispatched_at)
     assert dispatched_at is not None
-    recovered = await _async_recovered_history(rejoined.robot, checkpoint, identity)
+    recovered = await async_unless_cancelled(
+        _async_recovered_history(rejoined.robot, checkpoint, identity),
+        recovery.cancel,
+    )
     if recovered is None:
         return _CHECKPOINT_UNVERIFIED
     baseline, session_hash = recovered
