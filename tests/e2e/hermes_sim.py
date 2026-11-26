@@ -917,6 +917,7 @@ class _Discovery(HermesDiscoveryRPCBase):
 
     async def GetBotInfo(self, stream: Stream[Any, BotInformation]) -> None:
         await stream.recv_message()
+        await self._robot.faults.pace("bot_info")
         await stream.send_message(
             BotInformation(
                 serial_number=self._robot.serial_number,

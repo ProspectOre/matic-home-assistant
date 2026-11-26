@@ -1,4 +1,4 @@
-"""Pairing a discovered robot through Home Assistant's setup dialog.
+"""Pairing a robot through Home Assistant's setup and Reconfigure dialogs.
 
 The real config flow pins the simulator's certificate and checks each
 credential over Hermes; ``sim_pairing`` stands in for the Bluetooth bond.
@@ -13,10 +13,15 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from homeassistant.config_entries import SOURCE_ZEROCONF, ConfigEntryState
+from homeassistant.config_entries import (
+    SOURCE_RECONFIGURE,
+    SOURCE_ZEROCONF,
+    ConfigEntryState,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot import config_flow
 from custom_components.matic_robot.client import HermesCredential
@@ -239,4 +244,139 @@ async def test_without_an_adapter_a_pairing_from_elsewhere_is_checked_live(
     assert CONF_BLUETOOTH_ADDRESS not in entry.data
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
+    await _unload(hass)
+
+
+async def _reconfigure(hass: HomeAssistant, entry: MockConfigEntry, choice: str) -> str:
+    """Open the entry's Reconfigure menu and choose ``choice``."""
+    menu = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
+    )
+    form = await hass.config_entries.flow.async_configure(
+        menu["flow_id"], {"next_step_id": choice}
+    )
+    assert form["type"] is FlowResultType.FORM
+    return form["flow_id"]
+
+
+async def test_reconfigure_pairs_again_and_keeps_the_pin(
+    hass: HomeAssistant,
+    simulator: RunningSimulator,
+    robot: SimulatedRobot,
+    window: PairingWindow,
+    config_entry: MockConfigEntry,
+) -> None:
+    config_entry.add_to_hass(hass)
+    saved = dict(config_entry.data)
+    flow_id = await _reconfigure(hass, config_entry, "replace_local_access")
+
+    code = await _answer(hass, flow_id, {})
+    assert code["step_id"] == "pairing_code"
+    result = await _answer(hass, flow_id, {"passkey": CODE})
+
+    assert (result["type"], result["reason"]) == (
+        FlowResultType.ABORT,
+        "reauth_successful",
+    )
+    credential = HermesCredential.from_storage(
+        config_entry.data[CONF_HERMES_CREDENTIAL]
+    )
+    # Only the pairing changes; the robot accepts the new one.
+    assert credential.bearer_header() in robot.credentials
+    assert dict(config_entry.data) == {
+        **saved,
+        CONF_HERMES_CREDENTIAL: credential.to_storage(),
+        CONF_BLUETOOTH_ADDRESS: ADDRESS,
+    }
+    await hass.async_block_till_done()
+    assert config_entry.state is ConfigEntryState.LOADED
+    await _unload(hass)
+
+
+async def test_reconfigure_without_an_adapter_checks_a_pasted_pairing(
+    hass: HomeAssistant,
+    simulator: RunningSimulator,
+    robot: SimulatedRobot,
+    config_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        config_flow, "async_has_local_bluetooth_adapter", lambda _: False
+    )
+    config_entry.add_to_hass(hass)
+    saved = dict(config_entry.data)
+    flow_id = await _reconfigure(hass, config_entry, "replace_local_access")
+    paste = await _answer(hass, flow_id, {config_flow.CONF_IMPORT_CREDENTIAL: True})
+    assert paste["step_id"] == "import_credential"
+
+    stranger = SimulatedRobot().add_credential(str(uuid4())).to_storage()
+    rejected = await _answer(hass, flow_id, {CONF_HERMES_CREDENTIAL: stranger})
+    assert rejected["errors"] == {"base": "import_rejected"}
+    simulator.link.cut()
+    issued = robot.add_credential(str(uuid4())).to_storage()
+    offline = await _answer(hass, flow_id, {CONF_HERMES_CREDENTIAL: issued})
+    assert offline["errors"] == {"base": "cannot_connect"}
+    assert dict(config_entry.data) == saved
+    simulator.link.restore()
+
+    result = await _answer(hass, flow_id, {CONF_HERMES_CREDENTIAL: issued})
+
+    assert result["reason"] == "reauth_successful"
+    assert dict(config_entry.data) == {
+        **saved,
+        CONF_HERMES_CREDENTIAL: issued,
+        CONF_PAIRING_METHOD: "import",
+    }
+    await hass.async_block_till_done()
+    assert config_entry.state is ConfigEntryState.LOADED
+    await _unload(hass)
+
+
+async def test_reconfigure_re_pins_a_reset_robot(
+    hass: HomeAssistant,
+    simulator: RunningSimulator,
+    robot: SimulatedRobot,
+    window: PairingWindow,
+    config_entry: MockConfigEntry,
+) -> None:
+    # The robot was reset: it presents a new certificate and refuses the
+    # pairing made before the reset.
+    config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        config_entry,
+        data={**config_entry.data, CONF_CERTIFICATE_FINGERPRINT: "00" * 32},
+    )
+    robot.credentials.clear()
+    saved = dict(config_entry.data)
+    flow_id = await _reconfigure(hass, config_entry, "recover_identity")
+    address = {
+        config_flow.CONF_ROBOT_ADDRESS: {
+            "host": simulator.host,
+            "port": simulator.port,
+        }
+    }
+
+    simulator.link.cut()
+    offline = await _answer(hass, flow_id, address)
+    assert offline["errors"] == {"base": "recover_cannot_connect"}
+    assert dict(config_entry.data) == saved
+    simulator.link.restore()
+    code = await _answer(hass, flow_id, address)
+    assert code["step_id"] == "pairing_code"
+    result = await _answer(hass, flow_id, {"passkey": CODE})
+
+    assert (result["type"], result["reason"]) == (
+        FlowResultType.ABORT,
+        "identity_recovered",
+    )
+    credential = HermesCredential.from_storage(
+        config_entry.data[CONF_HERMES_CREDENTIAL]
+    )
+    assert robot.credentials == {credential.bearer_header()}
+    assert (
+        config_entry.data[CONF_CERTIFICATE_FINGERPRINT]
+        == simulator.certificate.fingerprint
+    )
+    await hass.async_block_till_done()
+    assert config_entry.state is ConfigEntryState.LOADED
     await _unload(hass)
