@@ -42,7 +42,8 @@ from .robot_commands import CleanPlanArea, CleanRooms, PlanStart
 from .robot_port import RobotPort
 from .run_control import ManagedMotionReplacedError
 from .stop_return import (
-    async_clear_ownerless_stop_if_settled,
+    async_mark_run_docked,
+    async_send_stop,
     schedule_dock_after_stop,
     schedule_dock_confirmation,
 )
@@ -76,61 +77,20 @@ async def async_managed_user_command(
     token: int,
     command: UserCommand,
 ) -> None:
-    """Use the same ownership, stop fence and dock settlement for every run."""
+    """Send a run's command under its lease; a STOP then docks once it settles."""
     runtime = entry.runtime_data
-    stop_run_id = (
-        manager.ledger.active_run_id(serial_number)
-        if command is UserCommand.STOP
-        else None
-    )
+    if command is not UserCommand.STOP:
+        async with manager.control.managed_command(serial_number, token):
+            await runtime.client.async_send_user_command(command)
+            await runtime.session.heartbeat.async_request_refresh()
+        return
+    run_id = manager.ledger.active_run_id(serial_number)
     async with manager.control.managed_command(
-        serial_number, token, teardown_cleanup=command is UserCommand.STOP
+        serial_number, token, teardown_cleanup=True
     ):
-        await runtime.client.async_send_user_command(command)
-        if command is UserCommand.STOP:
-            await manager.control.async_mark_stop_pending(
-                serial_number, run_id=stop_run_id
-            )
-        await runtime.session.heartbeat.async_request_refresh()
-    if command is UserCommand.STOP:
-        schedule_managed_dock_after_stop(
-            hass, entry, manager, serial_number, entity_id, stop_run_id, context
-        )
-
-
-def schedule_managed_dock_after_stop(
-    hass: HomeAssistant,
-    entry: MaticConfigEntry,
-    manager: CleaningPlanManager,
-    serial_number: str,
-    entity_id: str,
-    run_id: str | None,
-    context: Context | None,
-) -> None:
-    """Bind fresh or restored settlement to the same run and native guards."""
-    runtime = entry.runtime_data
-    journal = runtime.client.activity_journal
-    stop_fence_token_reader = manager.control.stop_fence_token
-    stop_fence_token = stop_fence_token_reader(serial_number)
+        await async_send_stop(entry, manager, serial_number, run_id)
     schedule_dock_after_stop(
-        hass,
-        client=runtime.client,
-        refresh=runtime.session.heartbeat.async_request_refresh,
-        manager=manager,
-        serial_number=serial_number,
-        entity_id=entity_id,
-        run_id=run_id,
-        set_run_id=journal.set_run_id,
-        get_run_id=journal.current_run_id,
-        on_docked=partial(
-            _async_mark_run_docked,
-            manager,
-            serial_number,
-            run_id,
-            entity_id,
-            context,
-            stop_fence_token,
-        ),
+        hass, entry, manager, serial_number, entity_id, run_id=run_id, context=context
     )
 
 
@@ -154,7 +114,7 @@ def schedule_run_dock_confirmation(
         set_run_id=robot.set_activity_run_id,
         get_run_id=robot.get_activity_run_id,
         on_docked=partial(
-            _async_mark_run_docked, manager, serial_number, run_id, entity_id, context
+            async_mark_run_docked, manager, serial_number, run_id, entity_id, context
         ),
     )
 
@@ -512,52 +472,6 @@ def run_provenance(call: ServiceCall) -> str:
     if getattr(context, "user_id", None):
         return "user"
     return normalize_run_provenance(None)
-
-
-async def _async_mark_run_docked(
-    manager: CleaningPlanManager,
-    serial_number: str,
-    run_id: str | None,
-    entity_id: str,
-    context: Context | None,
-    stop_fence_token: int | None = None,
-) -> bool:
-    """Bridge the stop watcher to durable run closure for service calls."""
-    if run_id is None:
-        return False
-    return await manager.ledger.async_mark_run_docked(
-        serial_number,
-        run_id,
-        entity_id=entity_id,
-        context=context,
-        stop_fence_token=stop_fence_token,
-    )
-
-
-async def ensure_stop_settled(
-    hass: HomeAssistant,
-    manager: CleaningPlanManager,
-    serial_number: str,
-    entity_id: str,
-    native_active: Callable[[], Awaitable[bool | None]],
-    fresh_state: Callable[[], Awaitable[object]],
-) -> None:
-    """Reject replacement plans while the OEM stop countdown is still active."""
-    if not manager.control.stop_pending(serial_number):
-        return
-    if await async_clear_ownerless_stop_if_settled(
-        hass,
-        native_active=native_active,
-        fresh_state=fresh_state,
-        manager=manager,
-        serial_number=serial_number,
-        entity_id=entity_id,
-    ):
-        return
-    raise managed_run.validation_error(
-        "The robot is stopping; wait until it docks",
-        "robot_stop_pending",
-    )
 
 
 def stop_is_pending(manager: CleaningPlanManager, serial_number: str) -> bool:

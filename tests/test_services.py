@@ -50,11 +50,7 @@ from custom_components.matic_robot.const import (
     MAX_ROOM_SEQUENCE_SIZE,
 )
 from custom_components.matic_robot.firmware import ANALYSIS_VERSION
-from custom_components.matic_robot.managed_dispatch import (
-    _async_mark_run_docked,
-    ensure_stop_settled,
-    run_provenance,
-)
+from custom_components.matic_robot.managed_dispatch import run_provenance
 from custom_components.matic_robot.managed_observation import (
     _async_wait_for_robot_activity,
 )
@@ -84,7 +80,6 @@ from custom_components.matic_robot.plan_model import (
 )
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.robot_commands import RobotCommands
 from custom_components.matic_robot.robot_controls import RobotControls
 from custom_components.matic_robot.room_sequence import (
     _resolve_room_id as _resolve_sequence_room_id,
@@ -120,6 +115,10 @@ from custom_components.matic_robot.service_schemas import (
 )
 from custom_components.matic_robot.services import (
     async_register_services,
+)
+from custom_components.matic_robot.stop_return import (
+    async_mark_run_docked,
+    ensure_stop_settled,
 )
 from custom_components.matic_robot.stores import LiveState, Store
 from tests.plans.fakes import memory_manager, recovery_record
@@ -228,11 +227,7 @@ async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
         ),
     )
     stop_fence_token = 19
-    await _async_mark_run_docked(
-        manager, "serial", None, "vacuum.matic", automation.context
-    )
-    manager.ledger.async_mark_run_docked.assert_not_awaited()
-    await _async_mark_run_docked(
+    await async_mark_run_docked(
         manager,
         "serial",
         "run-1",
@@ -1229,7 +1224,7 @@ async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> N
         patch.object(
             manager.control, "request_stop", wraps=manager.control.request_stop
         ) as request,
-        patch.object(RobotCommands, "schedule_dock_after_stop"),
+        patch("custom_components.matic_robot.vacuum.schedule_dock_after_stop"),
         patch(
             "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=("vacuum.test", entry, serial_number, {}),
@@ -1339,7 +1334,7 @@ async def test_stop_service_preserves_managed_stop_reason_for_return_to_base(
 
     try:
         with (
-            patch.object(RobotCommands, "schedule_dock_after_stop"),
+            patch("custom_components.matic_robot.vacuum.schedule_dock_after_stop"),
             patch(
                 "custom_components.matic_robot.service_context.saved_plan_context",
                 return_value=("vacuum.test", entry, serial_number, {}),
@@ -1413,7 +1408,7 @@ async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
         await asyncio.create_task(entity.async_return_to_base())
 
     with (
-        patch.object(RobotCommands, "schedule_dock_after_stop"),
+        patch("custom_components.matic_robot.vacuum.schedule_dock_after_stop"),
         patch(
             "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=("vacuum.test", entry, serial_number, {}),
@@ -1496,7 +1491,7 @@ async def test_stop_service_blocks_resume_until_stop_dispatch(hass) -> None:
 
     try:
         with (
-            patch.object(RobotCommands, "schedule_dock_after_stop"),
+            patch("custom_components.matic_robot.vacuum.schedule_dock_after_stop"),
             patch(
                 "custom_components.matic_robot.service_context.saved_plan_context",
                 return_value=("vacuum.test", entry, serial_number, {}),
@@ -1719,6 +1714,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
             ),
         ),
     )
+    session.client = entry.runtime_data.client
     call = ServiceCall(
         hass,
         DOMAIN,
@@ -2608,7 +2604,7 @@ async def test_tracked_run_checkpoints_its_cadence_snapshot_before_dispatch(
         },
     )
     with patch(
-        "custom_components.matic_robot.managed_dispatch.ensure_stop_settled",
+        "custom_components.matic_robot.stop_return.ensure_stop_settled",
         new=AsyncMock(),
     ):
         await async_execute_rooms(
@@ -3207,6 +3203,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
         async_send_user_command=AsyncMock(),
     )
+    session.client = client
     entry = SimpleNamespace(
         entry_id="entry",
         runtime_data=SimpleNamespace(
@@ -5890,7 +5887,9 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
         {"entity_id": ["vacuum.test"], "expected_run_id": "old-run"},
     )
     with (
-        patch.object(RobotCommands, "schedule_dock_after_stop") as schedule_dock,
+        patch(
+            "custom_components.matic_robot.vacuum.schedule_dock_after_stop"
+        ) as schedule_dock,
         patch(
             "custom_components.matic_robot.service_context.saved_plan_context",
             return_value=("vacuum.test", entry, serial, {}),

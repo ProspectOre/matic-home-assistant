@@ -66,6 +66,9 @@ class RobotControls(RobotCommands):
 
     async def async_send_user_command(self, command: UserCommand) -> None:
         """Serialize a user command and immediately refresh state."""
+        if command is UserCommand.STOP:
+            # STOP needs admission, its fence and the dock watcher.
+            raise ValueError("Send STOP through admit_stop and async_send_stop")
         serial_number = self._session.info.serial_number
         if command is UserCommand.RESUME:
             self._require_no_pending_stop_dispatch(serial_number)
@@ -73,19 +76,8 @@ class RobotControls(RobotCommands):
         async with self.motion_lease(fence, take_motion=False):
             if command is UserCommand.RESUME:
                 self._require_no_pending_stop_dispatch(serial_number)
-            await self.async_dispatch_admitted_command(command, run_id=None)
-
-    async def async_dispatch_admitted_command(
-        self, command: UserCommand, *, run_id: str | None
-    ) -> None:
-        """Dispatch a command while the caller owns its command-lock lease."""
-        serial_number = self._session.info.serial_number
-        await self._session.client.async_send_user_command(command)
-        if command is UserCommand.STOP:
-            await self._plans.control.async_mark_stop_pending(
-                serial_number, run_id=run_id
-            )
-        await self._session.heartbeat.async_request_refresh()
+            await self._session.client.async_send_user_command(command)
+            await self._session.heartbeat.async_request_refresh()
 
     def holds_task(self) -> bool:
         """Return whether the robot holds a task a sink summon would join."""

@@ -62,6 +62,7 @@ from .service_schemas import (
     RUN_SELECTED_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
 )
+from .stop_return import admit_stop
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -506,53 +507,49 @@ async def _async_stop_intelligent_cleaning(
 async def _async_reserve_stop(
     manager: CleaningPlanManager, serial_number: str, data: Mapping[str, Any]
 ) -> tuple[int, int] | None:
-    """Record the stop and reserve its dispatch.
+    """Admit the stop and reserve its dispatch.
 
     Returns the motion and stop generations the dispatch is fenced to, or
     None when there is nothing to send.
     """
-    async with manager.control.external_command(serial_number):
-        run_id = manager.ledger.active_run_id(serial_number)
-        if "expected_run_id" in data and (
-            data["expected_run_id"] != run_id
-            or manager.control.cancellation_reason(serial_number) == "motion_replaced"
-        ):
-            raise validation_error(
-                "The managed cleaning run has changed; Stop was not sent",
-                "managed_run_changed",
-            )
-        stop_now = bool(data.get("stop_now"))
-        if stop_now:
-            _require_pending_smart_stop(manager, serial_number, data, run_id)
-        decision = (
-            manager.control.request_stop(serial_number, stop_now=True)
-            if stop_now
-            else manager.control.request_stop(serial_number)
-        )
-        expected_generation = manager.control.motion_generation(serial_number)
-        expected_stop_generation = manager.control.stop_request_generation(
-            serial_number
-        )
-        await manager.recovery.async_checkpoint_stop_intent(
-            serial_number, decision.behavior, run_id=run_id
-        )
-        if (
-            manager.control.motion_generation(serial_number) != expected_generation
-            or manager.control.stop_request_generation(serial_number)
-            != expected_stop_generation
-        ):
+    async with admit_stop(
+        manager,
+        serial_number,
+        stop_now=bool(data.get("stop_now")),
+        require=partial(_require_expected_run, manager, serial_number, data),
+    ) as admitted:
+        if admitted is None:
             return None
-        will_dispatch = decision.behavior != "after_room" and (
-            decision.behavior != "not_running" or bool(data.get("include_unmanaged"))
+        will_dispatch = admitted.behavior != "after_room" and (
+            admitted.behavior != "not_running" or bool(data.get("include_unmanaged"))
         )
         if not will_dispatch:
             return None
         manager.control.reserve_stop_dispatch(
             serial_number,
-            expected_generation=expected_generation,
-            expected_stop_generation=expected_stop_generation,
+            expected_generation=admitted.generation,
+            expected_stop_generation=admitted.stop_generation,
         )
-        return expected_generation, expected_stop_generation
+        return admitted.generation, admitted.stop_generation
+
+
+def _require_expected_run(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    data: Mapping[str, Any],
+    run_id: str | None,
+) -> None:
+    """Refuse a Stop aimed at a run that is no longer the active one."""
+    if "expected_run_id" in data and (
+        data["expected_run_id"] != run_id
+        or manager.control.cancellation_reason(serial_number) == "motion_replaced"
+    ):
+        raise validation_error(
+            "The managed cleaning run has changed; Stop was not sent",
+            "managed_run_changed",
+        )
+    if data.get("stop_now"):
+        _require_pending_smart_stop(manager, serial_number, data, run_id)
 
 
 def _require_pending_smart_stop(

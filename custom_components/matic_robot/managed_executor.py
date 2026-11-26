@@ -16,7 +16,7 @@ from homeassistant.core import Context, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
-from . import leg_handoff, managed_run
+from . import leg_handoff, managed_run, stop_return
 from . import managed_area as area_execution
 from . import managed_dispatch as dispatch_control
 from . import managed_leg as leg_execution
@@ -205,7 +205,7 @@ class _PlanRun:
         # Publish ownership before the first suspending check. Otherwise
         # Stop can observe no run while this start waits for an old stop
         # fence to clear, and prepare_run would erase its cancellation.
-        await dispatch_control.ensure_stop_settled(
+        await stop_return.ensure_stop_settled(
             self.hass,
             self.manager,
             self.serial_number,
