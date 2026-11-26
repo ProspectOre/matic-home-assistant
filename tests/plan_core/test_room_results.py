@@ -446,3 +446,25 @@ def test_source_and_block_reason_follow_the_floor_identity():
         )
         == "restored_sensor_state"
     )
+
+
+@pytest.mark.parametrize("native_start", [None, "2026-11-01T09:00:00+00:00"])
+def test_managed_room_outside_the_native_session_does_not_match(native_start):
+    snapshot = {
+        "robot_reported_completed_by_room": {
+            "living": {"at": "2026-11-01T10:00:00+00:00", "started_at": native_start}
+        },
+        "plan_history": {
+            "daily": {
+                "rooms": {
+                    "living": {
+                        "last_started": "2026-11-01T12:00:00+00:00",
+                        "last_completed": "2026-11-01T12:20:00+00:00",
+                    }
+                }
+            }
+        },
+    }
+    assert not room_results._native_room_history_matches_managed_room(
+        snapshot, "living"
+    )
