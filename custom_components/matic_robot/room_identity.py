@@ -1,4 +1,4 @@
-"""Stable native room identity shared by cadence import and dispatch."""
+"""Stable native room and floor identity shared by cadence, history and dispatch."""
 
 import hashlib
 import struct
@@ -30,3 +30,9 @@ def room_cadence_identity(floor_plan: FloorPlan, room_id: str) -> str:
         digest.update(struct.pack(">I", len(value)))
         digest.update(value)
     return digest.hexdigest()
+
+
+def native_statistics_have_ambiguous_floor(floor_plan: FloorPlan) -> bool:
+    """Whether room-name-only history could belong to another known floor."""
+    known_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
+    return len(known_floor_ids | {floor_plan.mission_id}) > 1

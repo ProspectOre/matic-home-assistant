@@ -5,18 +5,18 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import Any
 
 from homeassistant.util import dt as dt_util
 
 from .client import CleaningSessionRecord, FloorPlan
 from .plan_timing import ROTATION_FUTURE_TOLERANCE_SECONDS, latest_timestamp
+from .room_identity import native_statistics_have_ambiguous_floor
+from .room_results import managed_start_in_native_session
 from .room_statistics import (
     NATIVE_MODES,
     NativeRoomStatistic,
     native_room_statistics_by_session,
-    native_statistics_have_ambiguous_floor,
 )
 
 _COMPLETION_KEYS = (
@@ -642,10 +642,6 @@ def _native_room_statistic_matches_managed_history(
             )
             if managed_start is None or managed_start.tzinfo is None:
                 continue
-            if (
-                native_start - timedelta(seconds=120)
-                <= managed_start
-                <= native_end + timedelta(seconds=120)
-            ):
+            if managed_start_in_native_session(managed_start, native_start, native_end):
                 return True
     return False

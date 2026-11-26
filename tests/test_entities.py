@@ -759,45 +759,6 @@ def test_managed_room_statistics_ignore_transit_and_cancelled_rooms() -> None:
     assert study_last.native_value is None
 
 
-def test_managed_room_statistics_validate_session_and_unmatched_room() -> None:
-    snapshot = {
-        "plan_history": {
-            "handoff": {
-                "rooms": {
-                    "room-1": {
-                        "room_id": "room-1",
-                        "last_started": "2026-01-01T08:00:00+00:00",
-                        "last_completed": "2026-01-01T08:06:00+00:00",
-                        "last_duration_seconds": 360,
-                        "last_result": "completed",
-                    }
-                }
-            },
-            "older": {
-                "rooms": {
-                    "room-2": {
-                        "room_id": "room-2",
-                        "last_started": "2025-12-31T07:00:00+00:00",
-                        "last_completed": "2025-12-31T07:05:00+00:00",
-                        "last_duration_seconds": 300,
-                        "last_result": "completed",
-                    }
-                }
-            },
-        }
-    }
-
-    assert sensor._managed_room_session_value(
-        snapshot, "room-1", "invalid", "2026-01-01T08:10:00+00:00"
-    ) == (False, None)
-    assert sensor._managed_room_session_value(
-        snapshot,
-        "room-2",
-        "2026-01-01T07:59:00+00:00",
-        "2026-01-01T08:10:00+00:00",
-    ) == (True, ("2025-12-31T07:05:00+00:00", 300))
-
-
 def test_room_statistics_apply_newer_verified_plan_history() -> None:
     entry = _entry()
     history = entry.runtime_data.cleaning_plans
@@ -824,17 +785,6 @@ def test_room_statistics_apply_newer_verified_plan_history() -> None:
     assert last_cleaned.native_value.isoformat() == "2026-01-04T08:10:00+00:00"
     duration.async_write_ha_state.assert_called_once()
     last_cleaned.async_write_ha_state.assert_called_once()
-    assert sensor._managed_room_history_value(snapshot, "room-1") == (
-        "2026-01-04T08:10:00+00:00",
-        510,
-    )
-    assert sensor._managed_room_history_value(snapshot, "missing") is None
-    snapshot["last_completed_by_room"]["invalid"] = {
-        "at": "2026-01-04T08:10:00+00:00",
-        "duration_seconds": None,
-    }
-    assert sensor._managed_room_history_value(snapshot, "invalid") is None
-    assert sensor._latest_room_statistics_value(None, None) is None
 
 
 def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
