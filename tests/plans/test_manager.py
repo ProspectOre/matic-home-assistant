@@ -346,6 +346,33 @@ async def test_a_cancelled_unload_waiter_still_ends_the_run_and_cleans_up(
     assert not control.actor("serial").teardowns
 
 
+async def test_metadata_wait_returns_before_a_finished_worker_is_forgotten(
+    hass,
+) -> None:
+    """A worker that finished, but whose done callback is still queued, is settled."""
+    manager = CleaningPlanManager(hass)
+    repository = manager.repository
+    worker = asyncio.create_task(asyncio.sleep(0))
+    await worker
+    # Registering a finished task queues its done callback for a later step.
+    repository.register_metadata_task("serial", worker)
+    assert repository.metadata_persistence_tasks["serial"] == {worker}
+    gather = asyncio.gather
+    calls = 0
+
+    def bounded_gather(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 3:
+            raise AssertionError("the wait kept awaiting the finished worker")
+        return gather(*args, **kwargs)
+
+    with patch("asyncio.gather", bounded_gather):
+        await repository.async_wait_metadata_persistence("serial")
+    await asyncio.sleep(0)
+    assert "serial" not in repository.metadata_persistence_tasks
+
+
 async def test_dock_scope_cleanup_claims_unset_run_id(hass) -> None:
     """A live dock watcher claims an otherwise-unset activity scope."""
     manager = CleaningPlanManager(hass)

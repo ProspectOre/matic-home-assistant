@@ -545,7 +545,13 @@ class PlanRepository:
         while True:
             if idle is not None:
                 await idle.wait()
-            tasks = tuple(self.metadata_persistence_tasks.get(serial_number, ()))
+            # A finished worker stays listed until its done callback runs, and
+            # awaiting only finished work never yields to let that callback run.
+            tasks = tuple(
+                task
+                for task in self.metadata_persistence_tasks.get(serial_number, ())
+                if not task.done()
+            )
             if not tasks and not self.metadata_admissions.get(serial_number):
                 return
             if tasks:
