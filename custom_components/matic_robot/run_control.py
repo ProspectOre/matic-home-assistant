@@ -593,7 +593,9 @@ class RunControl:
             actor.finish_room_event.clear()
             actor.cancel_event.set()
             if task is not asyncio.current_task():
-                await asyncio.gather(task, return_exceptions=True)
+                # A cancelled waiter must not cancel the run, which ends on its
+                # cancel event and records why.
+                await asyncio.shield(asyncio.gather(task, return_exceptions=True))
 
         reconciliation_tasks = tuple(actor.reconciliation_tasks)
         actor.reconciliation_tasks = set()

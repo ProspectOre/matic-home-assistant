@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntryState
 from custom_components.matic_robot import async_unload_entry
 from custom_components.matic_robot.const import CONF_SERIAL_NUMBER
 from custom_components.matic_robot.managed_run import PlanCancelledError
+from custom_components.matic_robot.photo_tours import PhotoTours
 from custom_components.matic_robot.restart import async_recover_managed_run
 from tests.plans.fakes import memory_manager, recovery_record
 
@@ -28,6 +29,7 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
     runtime.run_trails = SimpleNamespace(async_shutdown=AsyncMock())
     runtime.wifi_survey = SimpleNamespace(async_shutdown=AsyncMock())
     runtime.photos = SimpleNamespace(async_shutdown=AsyncMock())
+    runtime.photo_tours = PhotoTours()
     runtime.session.async_stop = AsyncMock()
     entry.entry_id = "entry"
     entry.disabled_by = None

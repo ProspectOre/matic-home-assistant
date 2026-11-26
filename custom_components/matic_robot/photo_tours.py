@@ -71,14 +71,8 @@ SCHEDULE_GUARD_BEFORE = timedelta(minutes=30)
 DEFAULT_COOLDOWN_SECONDS = 15 * 60
 PHOTO_TAKEN_EVENT = f"{DOMAIN}_photo_taken"
 
-_tours: dict[str, asyncio.Lock] = {}
-# The task running each robot's tour and the tours finishing up. Another
-# command stops a tour: cancelled before it finishes up, or kept from docking
-# while it does.
-_running: dict[str, asyncio.Task[Any]] = {}
-_finishing: set[str] = set()
-_stop_requested: set[str] = set()
-_cancelled: set[str] = set()
+# When each robot's last tour started. It outlives a reload, so reloading
+# does not lift the cooldown.
 _last_tour_started: dict[str, float] = {}
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,20 +119,106 @@ class _Shot:
         return self.viewpoint.name if self.viewpoint is not None else self.room
 
 
-def stop_photo_tour(entry_id: str) -> None:
-    """End the robot's tour before it sends another command.
+class PhotoTours:
+    """The entry's photo tour: one at a time, ended by another command or unload.
 
-    Called when someone else commands the robot, so the tour cannot send it
-    on to the next stop afterwards. A tour already finishing up is not
-    interrupted, but it no longer sends the robot to the dock.
+    Another command stops a tour: cancelled before it finishes up, or kept
+    from docking while it does. Unload cancels it either way, waits, and
+    refuses any tour after it until a failed unload reopens the runner.
     """
-    task = _running.get(entry_id)
-    if task is None or task.done():
-        return
-    _stop_requested.add(entry_id)
-    if entry_id not in _finishing:
-        _cancelled.add(entry_id)
+
+    def __init__(self) -> None:
+        self._closed = False
+        self._task: asyncio.Task[Any] | None = None
+        self._finishing = False
+        self._stop_requested = False
+        self._cancelled = False
+
+    def stop(self) -> None:
+        """End the robot's tour before another command is sent.
+
+        A tour already finishing up is not interrupted, but it no longer
+        sends the robot to the dock.
+        """
+        task = self._task
+        if task is None:
+            return
+        self._stop_requested = True
+        if not self._finishing:
+            self._cancelled = True
+            task.cancel()
+
+    async def async_shutdown(self) -> None:
+        """End the running tour, sending the robot nothing, and wait for it."""
+        self._closed = True
+        task = self._task
+        if task is None:
+            return
+        self._stop_requested = self._cancelled = True
         task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    def reopen(self) -> None:
+        """Accept tours again after the entry failed to unload."""
+        self._closed = False
+
+    async def async_run(
+        self,
+        hass: HomeAssistant,
+        entry: MaticConfigEntry,
+        entity_id: str,
+        stops: list[TourStop],
+        *,
+        full_resolution: bool = False,
+        skip_cooldown: bool = False,
+        question: str | None = None,
+        ai_task_entity_id: str | None = None,
+        context: Context | None = None,
+    ) -> list[dict[str, Any]]:
+        """Visit each stop in turn, photograph it, then dock.
+
+        Each photo is returned with its stop as soon as the robot has saved
+        it, and a ``matic_robot_photo_taken`` event is fired for it. The robot
+        is sent to the dock after the last photo and after a failure when
+        ownership is still confirmed.
+        """
+        if self._closed:
+            raise _error("photo_tour_stopped")
+        if self._task is not None:
+            raise _error("photo_tour_running")
+        tour_question = _tour_question(hass, entry, question, ai_task_entity_id)
+        task = asyncio.current_task()
+        assert task is not None
+        self._task = task
+        try:
+            tour = _Tour(
+                hass,
+                entry,
+                entity_id,
+                context,
+                tour_question,
+                full_resolution,
+                self,
+                _check_tour_start(entry, stops, skip_cooldown=skip_cooldown),
+                deadline=monotonic() + MAX_TOUR_SECONDS,
+            )
+            return await tour.async_run()
+        except asyncio.CancelledError:
+            if self._cancelled and task.uncancel() == 0:
+                raise _error("photo_tour_stopped") from None
+            raise
+        finally:
+            self._task = None
+            self._finishing = self._stop_requested = self._cancelled = False
+
+    def begin_finishing(self) -> None:
+        """Keep the tour running from here on when another command stops it."""
+        self._finishing = True
+
+    @property
+    def stop_requested(self) -> bool:
+        """Return whether a command or unload has stopped the tour."""
+        return self._stop_requested
 
 
 async def async_run_photo_tour(
@@ -146,40 +226,12 @@ async def async_run_photo_tour(
     entry: MaticConfigEntry,
     entity_id: str,
     stops: list[TourStop],
-    *,
-    full_resolution: bool = False,
-    skip_cooldown: bool = False,
-    question: str | None = None,
-    ai_task_entity_id: str | None = None,
-    context: Context | None = None,
+    **options: Any,
 ) -> list[dict[str, Any]]:
-    """Run a tour that a command from elsewhere can stop."""
-    if entry.entry_id in _running:
-        raise _error("photo_tour_running")
-    task = asyncio.current_task()
-    assert task is not None
-    _running[entry.entry_id] = task
-    try:
-        return await _async_run_tour(
-            hass,
-            entry,
-            entity_id,
-            stops,
-            full_resolution=full_resolution,
-            skip_cooldown=skip_cooldown,
-            question=question,
-            ai_task_entity_id=ai_task_entity_id,
-            context=context,
-        )
-    except asyncio.CancelledError:
-        if entry.entry_id in _cancelled and task.uncancel() == 0:
-            raise _error("photo_tour_stopped") from None
-        raise
-    finally:
-        del _running[entry.entry_id]
-        _finishing.discard(entry.entry_id)
-        _stop_requested.discard(entry.entry_id)
-        _cancelled.discard(entry.entry_id)
+    """Run a tour on the entry's runner, which unload stops."""
+    return await entry.runtime_data.photo_tours.async_run(
+        hass, entry, entity_id, stops, **options
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +253,8 @@ class _Tour:
     context: Context | None
     question: _TourQuestion | None
     full_resolution: bool
+    runner: PhotoTours
+    shots: list[_Shot]
     deadline: float
     album: str = field(default_factory=lambda: uuid4().hex)
     # The area the robot reported at each stop it reached.
@@ -261,9 +315,8 @@ class _Tour:
         A command that stopped the tour decides where the robot goes. A dock
         that fails is reported only when nothing else failed first.
         """
-        entry_id = self.entry.entry_id
-        _finishing.add(entry_id)
-        if not self.arrivals or entry_id in _stop_requested:
+        self.runner.begin_finishing()
+        if not self.arrivals or self.runner.stop_requested:
             return
         can_dock = False
         try:
@@ -272,7 +325,7 @@ class _Tour:
         except Exception:
             _LOGGER.exception("Could not verify Matic photo tour ownership")
         # A command can arrive while the ownership read is under way.
-        if not can_dock or entry_id in _stop_requested:
+        if not can_dock or self.runner.stop_requested:
             return
         try:
             async with asyncio.timeout(self._remaining("docking")):
@@ -288,6 +341,22 @@ class _Tour:
             if not failed:
                 raise _error("photo_tour_dock_timeout") from err
 
+    async def async_run(self) -> list[dict[str, Any]]:
+        """Visit every shot, then finish up."""
+        try:
+            async with self.operation_timeout():
+                await _async_check_schedule(self.entry)
+        except TimeoutError as err:
+            raise _error("photo_tour_timeout") from err
+        _last_tour_started[self.entry.entry_id] = monotonic()
+        try:
+            results = [await self.async_visit(shot) for shot in self.shots]
+        except BaseException:
+            await self.async_finish(failed=True)
+            raise
+        await self.async_finish(failed=False)
+        return results
+
     def operation_timeout(self) -> asyncio.Timeout:
         """Bound a step so the tour keeps its reserve for docking."""
         return asyncio.timeout(
@@ -299,55 +368,6 @@ class _Tour:
         if remaining == 0:
             raise TimeoutError(f"tour deadline exhausted before {step}")
         return remaining
-
-
-async def _async_run_tour(
-    hass: HomeAssistant,
-    entry: MaticConfigEntry,
-    entity_id: str,
-    stops: list[TourStop],
-    *,
-    full_resolution: bool,
-    skip_cooldown: bool,
-    question: str | None,
-    ai_task_entity_id: str | None,
-    context: Context | None,
-) -> list[dict[str, Any]]:
-    """Visit each stop in turn, photograph it, then dock.
-
-    Each photo is returned with its stop as soon as the robot has saved it,
-    and a ``matic_robot_photo_taken`` event is fired for it. The robot is sent
-    to the dock after the last photo and after a failure when ownership is
-    still confirmed.
-    """
-    lock = _tours.setdefault(entry.entry_id, asyncio.Lock())
-    if lock.locked():
-        raise _error("photo_tour_running")
-    tour_question = _tour_question(hass, entry, question, ai_task_entity_id)
-    async with lock:
-        shots = _check_tour_start(entry, stops, skip_cooldown=skip_cooldown)
-        tour = _Tour(
-            hass,
-            entry,
-            entity_id,
-            context,
-            tour_question,
-            full_resolution,
-            deadline=monotonic() + MAX_TOUR_SECONDS,
-        )
-        try:
-            async with tour.operation_timeout():
-                await _async_check_schedule(entry)
-        except TimeoutError as err:
-            raise _error("photo_tour_timeout") from err
-        _last_tour_started[entry.entry_id] = monotonic()
-        try:
-            results = [await tour.async_visit(shot) for shot in shots]
-        except BaseException:
-            await tour.async_finish(failed=True)
-            raise
-        await tour.async_finish(failed=False)
-        return results
 
 
 def _tour_question(

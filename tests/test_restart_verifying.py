@@ -435,3 +435,35 @@ async def test_recovery_cancellation_attribution(hass, recovery_state, stage, ac
             events[0].data["cause"],
         ) == expected
     client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("action", ["unload", "shutdown"])
+async def test_unload_ends_a_held_recovery_history_read(hass, recovery_state, action):
+    manager, entry, _, _ = recovery_state
+    client = entry.runtime_data.client
+    held = asyncio.Event()
+
+    async def hold(**_: object):
+        held.set()
+        await asyncio.Event().wait()
+
+    client.async_get_cleaning_session_records.side_effect = hold
+    recovery = hass.async_create_task(async_recover_managed_run(hass, entry, "serial"))
+    await held.wait()
+    if action == "shutdown":
+        hass.set_state(CoreState.stopping)
+    async with asyncio.timeout(1):
+        await manager.control.async_cancel_and_wait(
+            "serial", preserve_run=action == "shutdown"
+        )
+    await recovery
+    assert client.async_get_cleaning_session_records.await_count == 1
+    if action == "shutdown":
+        assert recovery_record(manager) is not None
+    else:
+        run = manager.history.snapshot("serial")["last_run"]
+        assert (run["outcome"], run["reason_code"]) == (
+            "unverified",
+            "config_entry_unload",
+        )
+    client.async_send_user_command.assert_not_awaited()

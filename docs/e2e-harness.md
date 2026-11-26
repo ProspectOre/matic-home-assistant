@@ -40,17 +40,17 @@ with `curl -X POST http://127.0.0.1:8124/step/<name>` for a name in `STEPS`;
 | Floor and task | `coverage_plan` serves the floor and retains the commanded goals as room visits, so a room cleaned again appears twice; `active_session_key` carries the task's session; `coverage_session_history` gets a record with per-room, per-mode results when the task ends. One live photographic and one structural map page confirm the floor. `sink_summon_locations` holds a sink posture once a test saves one. |
 | Navigation | The robot's state codes while driving somewhere are not recorded, so it arrives at once: ready in the room without a task, paused with one. A sink trip waits until the `refilled` step, then returns. A map-tap posture parks at its point: `latest_pose` reports that point and the posture's heading as a quaternion, and the current area is the room containing it. `block_next_goal` makes the next posture unreachable; the robot then reports nothing, because how a real robot reports one is not recorded. |
 
-Tests move the robot with explicit scripted steps such as `start_cleaning`,
-`finish_room`, `finish_session`, `arrive_at_dock`, `low_charge_recharge`,
-`fault`, `app_takes_over`, `refilled`, `hold_photos` and `release_photos`, then
-await the integration's accepted state before advancing. History timestamps use
-the wall clock because the integration binds a record to the dispatch time. A
-few tests shorten a wait constant (the dock-after-stop poll, the history window)
-rather than wait minutes; the logic is unchanged.
+Tests move the robot with scripted steps such as `start_cleaning`, `finish_room`,
+`finish_session`, `arrive_at_dock`, `low_charge_recharge`, `fault`,
+`app_takes_over`, `refilled`, `hold_photos`, `release_photos`, `hold_commands`
+and `release_commands`, then await the integration's accepted state. History
+timestamps use the wall clock because the integration binds a record to the
+dispatch time. A few tests shorten a wait constant (the dock-after-stop poll,
+the history window) rather than wait minutes; the logic is unchanged.
 
 ## Faults
 
-`robot.faults` breaks the streams of one collection or channel, by name;
+`robot.faults` breaks the streams of one collection or channel, by name (`bot_info`, the identity read, takes `delay` and `stall`);
 `simulator.link` breaks the connection. Both are in `tests/e2e/sim_faults.py`.
 A `reset` or `corrupt` acts once, on the first stream that has handled `after`
 messages, so the retry succeeds; an open subscription takes it at once.
@@ -122,7 +122,7 @@ replaced before it is committed.
 - A keepalive ping finds a silent link with no request waiting; refused pings
   double its interval; one stream's fault leaves the others open.
 - A lost or unacknowledged plan start fails the run and is not sent again.
-- A revoked credential starts reauthentication. Setup handles each pairing code outcome.
+- A revoked credential starts reauthentication. Setup handles each pairing code outcome. Reconfigure saves a moved robot's address only after the pinned robot answers there, and names each failure: unreachable, timed out, new certificate, refused pairing, another serial or another robot. It pairs again, over Bluetooth or a pasted pairing, and re-pins a reset robot.
 - Matic Map's plan list, previews, delete and progress reset, as it sends them.
 - Client level: unknown credentials, fingerprint and serial pinning, snapshot,
   tracked and pushed collections, unsupported endpoints, map-tap postures and held photos.

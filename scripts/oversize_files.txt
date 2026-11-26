@@ -1,5 +1,5 @@
 custom_components/matic_robot/area_binding_geometry.py 1629
-custom_components/matic_robot/config_flow.py 1632
+custom_components/matic_robot/config_flow.py 1607
 custom_components/matic_robot/managed_observation.py 1087
 custom_components/matic_robot/plan_ledger.py 1653
 custom_components/matic_robot/sensor.py 1181
@@ -28,10 +28,10 @@ tests/test_daily_room_limit.py 1395
 tests/test_entities.py 2469
 tests/test_firmware.py 1246
 tests/test_firmware_reports.py 1387
-tests/test_init.py 1199
+tests/test_init.py 1175
 tests/test_llm.py 3040
 tests/test_mixed_coverage.py 2062
-tests/test_photo_tours.py 1431
+tests/test_photo_tours.py 1430
 tests/test_plan_entries.py 1055
 tests/test_restart.py 1459
 tests/test_services.py 6017
