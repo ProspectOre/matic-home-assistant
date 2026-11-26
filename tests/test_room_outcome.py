@@ -279,8 +279,14 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
         )
 
 
-async def test_a_stop_ends_the_wait_for_a_robot_that_isnt_answering(hass) -> None:
+async def test_a_stop_ends_the_wait_for_a_robot_that_isnt_answering(
+    hass, monkeypatch
+) -> None:
     """After the outcome settles only identity is awaited; a Stop still ends it."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_observation.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
+        0.01,
+    )
     cancelled, read = asyncio.Event(), asyncio.Event()
 
     async def unanswered() -> None:
@@ -296,6 +302,6 @@ async def test_a_stop_ends_the_wait_for_a_robot_that_isnt_answering(hass) -> Non
     )
     await asyncio.wait_for(read.wait(), 1)
     cancelled.set()
-    # One identity retry interval, far inside the two-minute reconnect window.
+    # The next retry, far inside the two-minute reconnect window.
     with pytest.raises(PlanCancelledError):
         await asyncio.wait_for(waiter, 1.5)
