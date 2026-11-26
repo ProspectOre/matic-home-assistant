@@ -284,6 +284,7 @@ class SimulatedRobot:
         self.hold_photo_saves = False
         self._held_photos: list[SimPhoto] = []
         self._navigation_results: deque[str | None] = deque()
+        self._held_commands: list[bytes] | None = None
         self.set_collection("instamatic_snaps", [])
         self.set_property("wifi_status", wifi_status(-60))
         self.set_property("active_session_key", IDLE_SESSION_KEY)
@@ -463,6 +464,19 @@ class SimulatedRobot:
             self._save_photo(photo)
         self._held_photos.clear()
 
+    def hold_commands(self) -> None:
+        """Accept user commands but act on them only at ``release_commands``.
+
+        This models a robot that reports a command's effect late.
+        """
+        self._held_commands = []
+
+    def release_commands(self) -> None:
+        """Act on the user commands held since ``hold_commands``, in order."""
+        held, self._held_commands = self._held_commands or [], None
+        for payload in held:
+            self.apply_command("user_command", payload)
+
     def block_next_goal(self) -> None:
         """Make the next map-tap goal unreachable: the robot does not move.
 
@@ -587,6 +601,9 @@ class SimulatedRobot:
                     self.set_property("wifi_status", result)
             return
         if channel != "user_command":
+            return
+        if self._held_commands is not None:
+            self._held_commands.append(payload)
             return
         if payload == EMOTE_SNAP_PAYLOAD:
             if self._photos:
