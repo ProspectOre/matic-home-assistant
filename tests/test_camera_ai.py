@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +19,8 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.matic_robot import camera_ai, llm_camera, photo_tours
 from custom_components.matic_robot import media_source as media_source_module
@@ -201,13 +204,18 @@ async def test_staged_photo_count_is_reserved_before_concurrent_writes(
 async def test_staged_photo_expires_without_another_request(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(media_source_module, "ATTACHMENT_TTL_SECONDS", 0.01)
+    # Move the loop's clock instead of sleeping through a tiny TTL: staging
+    # writes in the executor, and a busy run can outlast any wall-clock TTL.
+    ttl = media_source_module.ATTACHMENT_TTL_SECONDS
     source = photo_attachment_source(hass)
     media_source_id = await source.async_stage_photo("entry-one", "photo", b"image")
     token = media_source_id.rsplit("/", maxsplit=1)[-1]
     path = source._staged[token].path
 
-    await asyncio.sleep(0.03)
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=ttl - 1))
+    assert token in source._staged
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=ttl))
+    await asyncio.gather(*tuple(source._cleanup_tasks))
 
     assert token not in source._staged
     assert not await asyncio.to_thread(path.exists)
