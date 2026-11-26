@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from homeassistant.core import callback
 
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.models import CleaningSessionRecord
@@ -75,10 +76,12 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     started_events = []
     completed_events = []
     hass.bus.async_listen(
-        f"{DOMAIN}_room_started", lambda e: started_events.append(e.data["room"])
+        f"{DOMAIN}_room_started",
+        callback(lambda e: started_events.append(e.data["room"])),
     )
     hass.bus.async_listen(
-        f"{DOMAIN}_room_completed", lambda e: completed_events.append(e.data["room"])
+        f"{DOMAIN}_room_completed",
+        callback(lambda e: completed_events.append(e.data["room"])),
     )
     sender = AsyncMock()
 

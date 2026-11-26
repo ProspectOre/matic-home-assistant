@@ -6,7 +6,7 @@ import asyncio
 import traceback
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 
 from custom_components.matic_robot.area_binding import (
     binding_for_area,
@@ -143,8 +143,10 @@ async def test_room_area_room_plan_uses_verified_native_handoffs(
     ):
         hass.bus.async_listen(
             f"{DOMAIN}_{name}",
-            lambda event, event_name=name: observed.append(
-                (event_name, event.data.get("room") or event.data.get("area"))
+            callback(
+                lambda event, event_name=name: observed.append(
+                    (event_name, event.data.get("room") or event.data.get("area"))
+                )
             ),
         )
 

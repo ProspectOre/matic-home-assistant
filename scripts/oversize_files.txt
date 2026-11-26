@@ -35,7 +35,7 @@ tests/test_photo_tours.py 1430
 tests/test_plan_entries.py 1055
 tests/test_restart.py 1459
 tests/test_services.py 6017
-tests/test_session_ownership.py 2585
+tests/test_session_ownership.py 2583
 tests/test_slam_history_edges.py 1020
 tests/test_slam_map_store.py 1816
 tests/test_slam_scene.py 3032
