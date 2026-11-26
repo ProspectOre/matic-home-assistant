@@ -30,6 +30,7 @@ from custom_components.matic_robot.client.exceptions import (
     InvalidRobotCertificateError,
     MaticError,
     PairingModeRequiredError,
+    RequestTimeoutError,
 )
 from custom_components.matic_robot.client.models import RobotInfo
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
@@ -1017,6 +1018,8 @@ async def test_reauth_entry_point_opens_confirmation(hass) -> None:
         (CannotConnectError("offline"), "cannot_connect"),
         (CertificateMismatchError("changed"), "certificate_changed"),
         (InvalidRobotCertificateError("not a robot"), "invalid_certificate"),
+        (RequestTimeoutError("info timed out"), "cannot_connect"),
+        (EndpointUnsupportedError("Handshake"), "cannot_connect"),
     ],
 )
 async def test_reconfigure_keeps_existing_address_after_errors(
