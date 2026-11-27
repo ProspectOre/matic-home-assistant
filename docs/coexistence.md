@@ -62,7 +62,11 @@ on where the plan is:
 Motion commands go out only when the robot is free or Home Assistant holds the
 task, under the existing command leases. The robot sends no acknowledgement for
 user commands (the app's acknowledged-command call is unused), so Home Assistant
-confirms a command by the state it reads back. [Queue changes](queue-changes.md)
+confirms a command by the state it reads back. At the end of a plan, **Return
+to the dock when finished** sends DOCK only when the robot is away from the
+dock and not already heading there. When the last state it pushed shows it
+away, Home Assistant reads its state again first; if that read fails, the
+pushed state decides. [Queue changes](queue-changes.md)
 act on the robot's own queue. The guide describes their confirmation and
 physical-test limits.
 

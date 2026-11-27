@@ -30,21 +30,12 @@ from tests.plans.fakes import (
     leg_rooms,
     memory_manager,
     mission_ends,
+    owned_leg,
     plan_room,
     run_plan_call,
 )
 from tests.session_fakes import FakeRobot, one_room_missions, run_step
 from tests.wire_builders import _session_identity
-
-
-def _owned_leg(verified: object = True) -> AsyncMock:
-    """Stand in for a leg whose mission ran as this run's own native session."""
-
-    async def run(*_args: object, on_native_identity, **_kwargs: object) -> object:
-        on_native_identity(OWNED_SESSION)
-        return verified
-
-    return AsyncMock(side_effect=run)
 
 
 async def test_room_unverified_handoff_does_not_start_the_next_room(
@@ -578,7 +569,7 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
     managed_command = AsyncMock()
     robot.show("idle")
     with patch(
-        "custom_components.matic_robot.managed_leg.async_run_room_leg", _owned_leg()
+        "custom_components.matic_robot.managed_leg.async_run_room_leg", owned_leg()
     ) as run:
         await async_execute_rooms(
             hass,
@@ -646,7 +637,7 @@ async def test_execute_rooms_stops_after_unverified_room(hass, monkeypatch) -> N
 
     with patch(
         "custom_components.matic_robot.managed_leg.async_run_room_leg",
-        _owned_leg(False),
+        owned_leg(False),
     ) as run:
         await async_execute_rooms(
             hass,
@@ -707,7 +698,7 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
     with (
         patch(
             "custom_components.matic_robot.managed_leg.async_run_room_leg",
-            _owned_leg(),
+            owned_leg(),
         ),
         patch.object(
             manager.control,
@@ -735,7 +726,7 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
         sender = AsyncMock(side_effect=error)
         with patch(
             "custom_components.matic_robot.managed_leg.async_run_room_leg",
-            _owned_leg(),
+            owned_leg(),
         ):
             run = async_execute_rooms(
                 hass,

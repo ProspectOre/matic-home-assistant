@@ -329,7 +329,9 @@ class FakeRobot:
                 "error": self.error,
                 "refresh": AsyncMock(),
                 "active_session": AsyncMock(return_value=False),
-                "fresh_state": AsyncMock(return_value=None),
+                "fresh_state": AsyncMock(
+                    side_effect=lambda: self.state.value.operational
+                ),
                 "session_history": history,
                 "session_keys": session_keys,
                 "idle_session_revision": AsyncMock(return_value=None),
