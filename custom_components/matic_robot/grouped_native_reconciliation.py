@@ -2,40 +2,56 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
 from homeassistant.util import dt as dt_util
 
-from .client import CleaningSessionRecord, native_session_hash
+from .client import CleaningSessionRecord
 from .native_completion import (
     NativeRoomCompletion,
     match_session_room_completions,
     match_single_room_completions,
     native_room_key,
 )
+from .plan_model import CleaningRoom
 
 
 def build_grouped_native_reconciliation(
     plan_id: str,
-    rooms: Sequence[Mapping[str, str]],
+    leg: Sequence[CleaningRoom],
+    observed_ids: Collection[str],
+    settled_ids: Collection[str],
     dispatched_at: datetime | None,
-    native_identity: bytes | None,
+    session_hash: str | None,
     floor_token: str | None,
     run_id: str | None,
 ) -> dict[str, Any] | None:
-    """Freeze observed rooms and identity from one native grouped dispatch."""
-    session_hash = native_session_hash(native_identity or b"", active=True)
+    """Return the marker a late grouped record settles a leg's rooms by.
+
+    It names the rooms the robot was seen in that the run did not settle,
+    bound to the dispatch's session; None when there are none or the
+    dispatch cannot be identified.
+    """
+    children = [
+        {
+            "room_id": room.room_id,
+            "room": room.name,
+            "cleaning_mode": room.cleaning_mode,
+            "coverage_setting": room.coverage_setting,
+        }
+        for room in leg
+        if room.room_id in observed_ids and room.room_id not in settled_ids
+    ]
     if (
-        not rooms
+        not children
         or dispatched_at is None
         or session_hash is None
         or not floor_token
         or not run_id
     ):
         return None
-    children = [dict(room) for room in rooms]
     return {
         **children[0],
         "plan_id": plan_id,

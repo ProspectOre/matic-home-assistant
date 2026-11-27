@@ -27,6 +27,7 @@ from .client import (
     uuid_string,
 )
 from .const import DOMAIN
+from .grouped_native_reconciliation import build_grouped_native_reconciliation
 from .leg_settlement import LegSettlement
 from .managed_dispatch import (
     async_managed_user_command,
@@ -44,6 +45,7 @@ from .managed_observation import (
     async_verify_leg_completion,
     async_wait_for_settled_leg_handoff,
 )
+from .managed_reconciliation import schedule_grouped_native_reconciliation
 from .managed_run import (
     RECONNECT_SECONDS,
     PlanCancelledError,
@@ -731,7 +733,14 @@ async def _async_verify_ended_leg(
     if recovery.lost_ownership() or not recovery.completion_is_current():
         return "restart_recovery_superseded"
     return await _async_settle_ended_leg(
-        recovery, rejoined, leg, evidence or {}, robot_ended, completion_sessions
+        recovery,
+        rejoined,
+        leg,
+        dispatched_at,
+        session_hash,
+        evidence or {},
+        robot_ended,
+        completion_sessions,
     )
 
 
@@ -761,13 +770,18 @@ async def _async_settle_ended_leg(
     recovery: _Recovery,
     rejoined: _Rejoined,
     leg: list[CleaningRoom],
+    dispatched_at: datetime,
+    session_hash: str | None,
     evidence: dict[str, tuple[str, int]],
     robot_ended: dict[str, RobotEnded],
     completion_sessions: list[str],
 ) -> str:
     """Settle the leg's rooms as the leg runner does and say if the run settled.
 
-    Rooms the run settled before the restart keep their results.
+    Rooms the run settled before the restart keep their results. A multi-room
+    leg that leaves rooms unproven keeps a marker for the ones the robot
+    entered, and its late grouped record can still credit them, as in a live
+    run.
     """
     run, restarted, checkpoint = recovery.run, recovery.restarted, recovery.checkpoint
     manager, serial_number = recovery.manager, recovery.serial_number
@@ -788,6 +802,41 @@ async def _async_settle_ended_leg(
             RoomVerified(manager.recovery.counted_room_ids(serial_number, run.run_id))
         )
 
+    marker: dict[str, Any] | None = None
+    marker_saved = False
+
+    def build_marker() -> None:
+        # Live runs keep a settled leg's marker only for a grouped record.
+        nonlocal marker
+        if len(leg) > 1:
+            marker = build_grouped_native_reconciliation(
+                run.plan_id,
+                leg,
+                checkpoint.started_room_ids or (),
+                {
+                    *evidence,
+                    *manager.ledger.skipped_room_ids(serial_number, run.run_id),
+                },
+                dispatched_at,
+                session_hash,
+                recovery.floor_token,
+                run.run_id,
+            )
+
+    async def record_unverified(room: CleaningRoom) -> bool:
+        # The first unproven room carries the marker. The ownership check and
+        # the write commit together, and a replacement command drops it.
+        nonlocal marker_saved
+        recorded = await manager.ledger.async_mark_ended_unverified(
+            serial_number,
+            run.plan_id,
+            room,
+            native_reconciliation=None if marker_saved else marker,
+            completion_is_current=still_owned,
+        )
+        marker_saved = marker_saved or (recorded and marker is not None)
+        return recorded
+
     try:
         await LegSettlement(
             hass=recovery.hass,
@@ -807,16 +856,20 @@ async def _async_settle_ended_leg(
             completion_sessions=completion_sessions,
             ending_early=lambda: entered is not None,
             entered_room_ids=entered or (),
-            record_unverified=partial(
-                manager.ledger.async_mark_ended_unverified,
-                serial_number,
-                run.plan_id,
-                completion_is_current=still_owned,
-            ),
+            record_unverified=record_unverified,
             settled_room_ids=restarted.completed_room_ids | restarted.settled_room_ids,
-        ).async_settle()
+        ).async_settle(build_marker)
     except PlanCancelledError:
         return "restart_recovery_superseded"
+    if marker is not None and marker_saved and still_owned():
+        schedule_grouped_native_reconciliation(
+            recovery.hass,
+            manager,
+            serial_number,
+            recovery.entity_id,
+            marker,
+            rejoined.robot,
+        )
     return (
         progress.run.end_reason
         if progress.run.all_settled(

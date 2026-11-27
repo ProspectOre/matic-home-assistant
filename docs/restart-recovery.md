@@ -104,8 +104,10 @@ at the dock. A replacement command, expiry, or ownership mismatch retires it.
   leg's rooms as a run that never restarted would: rooms the history proves
   are credited, rooms it shows unreached or partly cleaned settle without
   credit, and the rest end unverified with `partial_native_result`, as a live
-  run's do, with no late-history watch since recovery holds no motion token. After a Smart Stop it reads only the
-  rooms the robot kept, cancels the ones it dropped, and closes the run as
+  run's do. In a multi-room leg, the robot's later record can still credit
+  the unproven rooms it entered, as in a live run; a command that replaces
+  the run drops that watch. After a Smart Stop it reads only the rooms the
+  robot kept, cancels the ones it dropped, and closes the run as
   `stopped_docked` once the robot is home, without sending it anything.
 - Missing floor evidence, malformed checkpoints, and old runs without checkpoints
   cannot resume cleaning. Previously cancelled runs are not resumed.
