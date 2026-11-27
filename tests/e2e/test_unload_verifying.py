@@ -173,7 +173,7 @@ async def test_unload_while_the_next_leg_inventory_stalls(
     expect_finished(
         finished,
         "unverified",
-        "restart_remaining_queue_unverified",
+        "partial_native_result",
         1,
         "docked",
         rooms=1,

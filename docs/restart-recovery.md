@@ -103,8 +103,8 @@ at the dock. A replacement command, expiry, or ownership mismatch retires it.
   with its original deadline; it cannot dispatch another leg. It settles the
   leg's rooms as a run that never restarted would: rooms the history proves
   are credited, rooms it shows unreached or partly cleaned settle without
-  credit, and the rest end unverified, with no late-history watch since
-  recovery holds no motion token. After a Smart Stop it reads only the
+  credit, and the rest end unverified with `partial_native_result`, as a live
+  run's do, with no late-history watch since recovery holds no motion token. After a Smart Stop it reads only the
   rooms the robot kept, cancels the ones it dropped, and closes the run as
   `stopped_docked` once the robot is home, without sending it anything.
 - Missing floor evidence, malformed checkpoints, and old runs without checkpoints

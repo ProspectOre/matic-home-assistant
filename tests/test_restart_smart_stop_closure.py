@@ -57,7 +57,7 @@ async def test_recovered_smart_stop_closes_at_the_dock_only_when_unclaimed(
                     "recovery_checkpoint": checkpoint,
                 }
             ),
-            "restart_remaining_queue_unverified",
+            "partial_native_result",
         )
 
     assert finish.await_args.args[5] == "cancelled"
