@@ -171,7 +171,10 @@ async def test_verified_leg_never_dispatches_remaining_queue(hass, recovery_stat
     run = manager.history.snapshot("serial")["last_run"]
     assert run["outcome"] == "unverified"
     assert run["completed_room_count"] == 1
-    assert run["reason_code"] == "restart_remaining_queue_unverified"
+    assert (run["reason_code"], run["cause"]) == (
+        "partial_native_result",
+        "native_result",
+    )
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
@@ -332,9 +335,7 @@ async def test_partial_proof_survives_real_remaining_timeout(
     run = manager.history.snapshot("serial")["last_run"]
     assert run["completed_room_count"] == 1
     assert run["outcome"] == ("cancelled" if stop else "unverified")
-    assert run["reason_code"] == (
-        "managed_stop" if stop else "restart_remaining_queue_unverified"
-    )
+    assert run["reason_code"] == ("managed_stop" if stop else "partial_native_result")
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 

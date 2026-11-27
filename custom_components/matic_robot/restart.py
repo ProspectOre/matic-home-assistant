@@ -33,7 +33,11 @@ from .managed_dispatch import (
     schedule_run_dock_confirmation,
     shutdown_suspends_run,
 )
-from .managed_executor import async_execute_rooms, async_finish_plan_run
+from .managed_executor import (
+    PARTIAL_NATIVE_ENDING,
+    async_execute_rooms,
+    async_finish_plan_run,
+)
 from .managed_leg import withheld_room_ids
 from .managed_observation import (
     LEG_HANDOFF_TIMEOUT_SECONDS,
@@ -70,6 +74,8 @@ if TYPE_CHECKING:
 
 RECOVERY_RETRY_SECONDS = 2
 RECOVERY_ATTEMPTS = RECONNECT_SECONDS // RECOVERY_RETRY_SECONDS
+# A leg recovery settled without proof for every room ends as a live run would.
+_, _PARTIAL_REASON, _PARTIAL_CAUSE = PARTIAL_NATIVE_ENDING
 # Why a run ends when its checkpoint or vacuum entity cannot be used.
 _CHECKPOINT_UNVERIFIED = "restart_checkpoint_unverified"
 # Actions 0.6 removed, and the Run plan cleaning order each one stood for.
@@ -821,7 +827,7 @@ async def _async_settle_ended_leg(
                 if isinstance(item, AreaLeg)
             },
         )
-        else "restart_remaining_queue_unverified"
+        else _PARTIAL_REASON
     )
 
 
@@ -875,6 +881,8 @@ async def _async_finish_recovered_run(
         if stopped
         else "verified_completion"
         if completed
+        else _PARTIAL_CAUSE
+        if reason == _PARTIAL_REASON
         else "home_assistant",
         stored.completed_room_count if stored is not None else 0,
     )

@@ -59,6 +59,9 @@ from .run_machine import (
 _LOGGER = logging.getLogger(__name__)
 
 _HOME_OR_RETURNING = observation.HOME | {RobotActivity.RETURNING}
+# A run whose legs ended without proof for every room, as the robot reported
+# them: outcome, reason code and cause.
+PARTIAL_NATIVE_ENDING = ("unverified", "partial_native_result", "native_result")
 
 
 class _Handoff(NamedTuple):
@@ -561,7 +564,7 @@ class _PlanRun:
                 "verified_completion",
             )
         else:
-            self.ending = ("unverified", "partial_native_result", "native_result")
+            self.ending = PARTIAL_NATIVE_ENDING
         self.raise_if_cancelled()
         current = self.robot.observed()
         if (
