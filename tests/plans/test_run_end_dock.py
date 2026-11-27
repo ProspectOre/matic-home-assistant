@@ -7,6 +7,7 @@ import pytest
 from custom_components.matic_robot import managed_dispatch as dispatch_control
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import async_execute_rooms
 from tests.plans.fakes import (
     OWNED_SESSION,
@@ -171,3 +172,40 @@ async def test_a_stop_during_the_end_of_run_read_sends_no_dock(hass) -> None:
         )
     assert stop_arrived
     managed_command.assert_not_awaited()
+
+
+async def test_a_takeover_during_the_end_of_run_read_sends_no_dock(hass) -> None:
+    """A run whose motion is replaced while the robot is read ends as replaced."""
+    robot = FakeRobot()
+    robot.show("cleaning")
+    reported = FakeRobot()
+    reported.show("idle")
+    manager = memory_manager(hass)
+    finished = []
+    hass.bus.async_listen(f"{DOMAIN}_plan_finished", finished.append)
+
+    async def read_then_replace():
+        manager.control.replace_managed_motion("serial")
+        return reported.state.value.operational
+
+    managed_command = AsyncMock()
+    with patch(
+        "custom_components.matic_robot.managed_leg.async_run_room_leg", owned_leg()
+    ):
+        await async_execute_rooms(
+            hass,
+            run_plan_call(hass, return_to_base=True),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [plan_room("Kitchen", "room-kitchen")],
+            floor_token="floor",
+            robot=robot.port(
+                session_identity=AsyncMock(return_value=OWNED_SESSION),
+                fresh_state=read_then_replace,
+            ),
+            managed_user_command=managed_command,
+        )
+    await hass.async_block_till_done()
+    managed_command.assert_not_awaited()
+    assert [event.data["reason_code"] for event in finished] == ["managed_replaced"]
