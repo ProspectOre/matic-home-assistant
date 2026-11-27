@@ -51,6 +51,8 @@ from .managed_run import (
     PlanCancelledError,
     PreparedRoomDispatch,
     RobotConnectionLostError,
+    RoomOwnershipLostError,
+    RoomTakenOverError,
     async_unless_cancelled,
 )
 from .native_completion import RobotEnded
@@ -84,6 +86,7 @@ _, _PARTIAL_REASON, _PARTIAL_CAUSE = PARTIAL_NATIVE_ENDING
 _LIVE_RUN_CAUSES = {
     _PARTIAL_REASON: _PARTIAL_CAUSE,
     RobotConnectionLostError.reason_code: "unknown",
+    RoomTakenOverError.reason_code: "unknown",
 }
 # Why a run ends when its checkpoint or vacuum entity cannot be used.
 _CHECKPOINT_UNVERIFIED = "restart_checkpoint_unverified"
@@ -422,9 +425,9 @@ async def async_recover_managed_run(
     except NativeHistoryIncompleteError:
         # Unlike a failed read, this holds until the robot drops the entry.
         reason = "restart_history_incomplete"
-    except RobotConnectionLostError as err:
-        # The robot stopped answering for the reconnect window, as a live
-        # run would report it.
+    except RoomOwnershipLostError as err:
+        # The robot stopped answering for the reconnect window, or another
+        # mission took it: reported as a live run reports them.
         reason = err.reason_code
     except (
         HomeAssistantError,

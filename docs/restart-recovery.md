@@ -99,7 +99,8 @@ at the dock. A replacement command, expiry, or ownership mismatch retires it.
   (history was unreadable, or the checkpoint predates it) cannot continue; nor
   can a robot that does not settle within the bounded 12-minute handoff wait.
   A robot that stops answering for two minutes during that wait ends the run
-  `connection_lost`, as in a live run.
+  `connection_lost`, and one that starts another mission ends it
+  `native_task_taken_over`, as in a live run.
 - If history verification had already begun, recovery resumes that observer
   with its original deadline; it cannot dispatch another leg. It settles the
   leg's rooms as a run that never restarted would: rooms the history proves

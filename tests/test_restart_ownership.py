@@ -142,10 +142,14 @@ async def test_a_run_without_its_call_floor_vacuum_or_start_cannot_resume(
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
-async def test_a_robot_silent_during_the_recovered_handoff_sends_nothing(
-    hass, recovery_state, monkeypatch
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [("silent", "connection_lost"), ("taken_over", "native_task_taken_over")],
+)
+async def test_a_robot_lost_during_the_recovered_handoff_sends_nothing(
+    hass, recovery_state, monkeypatch, case, reason
 ):
-    """Lost contact while settling ends the run as a live run's, sending nothing."""
+    """Lost contact or a takeover while settling ends the run as a live run's."""
     manager, entry, checkpoint, room = recovery_state
     next_room = CleaningRoom("office", "Office", "mop", "standard")
     checkpoint.update(
@@ -172,13 +176,17 @@ async def test_a_robot_silent_during_the_recovered_handoff_sends_nothing(
     )
 
     async def settle_silently(*args, **kwargs):
-        # The robot stops answering once recovery starts the settle wait.
-        client.async_get_cleaning_session_identity.side_effect = CannotConnectError(
-            "offline"
-        )
-        client.async_get_active_cleaning_session_state.side_effect = CannotConnectError(
-            "offline"
-        )
+        # Once recovery starts the settle wait, the robot stops answering or
+        # another mission starts on it.
+        if case == "taken_over":
+            client.async_get_cleaning_session_identity.return_value = b"other"
+        else:
+            client.async_get_cleaning_session_identity.side_effect = CannotConnectError(
+                "offline"
+            )
+            client.async_get_active_cleaning_session_state.side_effect = (
+                CannotConnectError("offline")
+            )
         return await async_wait_for_settled_leg_handoff(*args, **kwargs)
 
     with (
@@ -197,7 +205,7 @@ async def test_a_robot_silent_during_the_recovered_handoff_sends_nothing(
     last_run = manager.history.snapshot("serial")["last_run"]
     assert (last_run["outcome"], last_run["reason_code"], last_run["cause"]) == (
         "unverified",
-        "connection_lost",
+        reason,
         "unknown",
     )
     client.async_send_user_command.assert_not_awaited()
