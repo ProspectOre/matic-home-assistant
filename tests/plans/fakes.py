@@ -314,3 +314,13 @@ async def interrupted_run(
         runtime_data=runtime, robot=robot, state=ConfigEntryState.LOADED
     )
     return manager, entry, checkpoint, room
+
+
+def owned_leg(verified: object = True) -> AsyncMock:
+    """Stand in for a leg whose mission ran as this run's own native session."""
+
+    async def run(*_args: object, on_native_identity, **_kwargs: object) -> object:
+        on_native_identity(OWNED_SESSION)
+        return verified
+
+    return AsyncMock(side_effect=run)
