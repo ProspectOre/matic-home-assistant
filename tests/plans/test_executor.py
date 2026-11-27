@@ -9,6 +9,7 @@ import pytest
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
+from custom_components.matic_robot import managed_dispatch as dispatch_control
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import RobotActivity
@@ -669,6 +670,79 @@ async def test_execute_rooms_docks_on_what_the_robot_reports(
     assert [call.args[1] for call in managed_command.await_args_list] == (
         [UserCommand.DOCK] if docks else []
     )
+
+
+@pytest.mark.parametrize("stored", ["returning", "docked"])
+async def test_execute_rooms_reads_no_robot_state_when_it_already_shows_home(
+    hass, stored: str
+) -> None:
+    """A stored state already home or returning decides alone, with no DOCK."""
+    robot = FakeRobot()
+    robot.show(stored)
+    fresh_state = AsyncMock()
+    managed_command = AsyncMock()
+    with patch(
+        "custom_components.matic_robot.managed_leg.async_run_room_leg", _owned_leg()
+    ):
+        await async_execute_rooms(
+            hass,
+            run_plan_call(hass, return_to_base=True),
+            memory_manager(hass),
+            "vacuum.matic",
+            "serial",
+            [plan_room("Kitchen", "room-kitchen")],
+            floor_token="floor",
+            robot=robot.port(
+                session_identity=AsyncMock(return_value=OWNED_SESSION),
+                fresh_state=fresh_state,
+            ),
+            managed_user_command=managed_command,
+        )
+    fresh_state.assert_not_awaited()
+    managed_command.assert_not_awaited()
+
+
+async def test_smart_stop_to_a_returning_robot_sends_no_dock_but_confirms_it(
+    hass,
+) -> None:
+    """After a Smart Stop the run still confirms the dock it did not need to send."""
+    robot = FakeRobot()
+    robot.show("cleaning")
+    reported = FakeRobot()
+    reported.show("returning")
+    fresh_state = AsyncMock(return_value=reported.state.value.operational)
+    manager = memory_manager(hass)
+    managed_command = AsyncMock()
+
+    async def finish_then_stop(*_args, on_native_identity, **_kwargs) -> bool:
+        on_native_identity(OWNED_SESSION)
+        manager.control.finish_room_event("serial").set()
+        return True
+
+    with (
+        patch(
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
+            AsyncMock(side_effect=finish_then_stop),
+        ),
+        patch.object(dispatch_control, "schedule_run_dock_confirmation") as confirm,
+    ):
+        await async_execute_rooms(
+            hass,
+            run_plan_call(hass, return_to_base=False),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [plan_room("Kitchen", "one"), heavy_room("Study", "two")],
+            floor_token="floor",
+            robot=robot.port(
+                session_identity=AsyncMock(return_value=OWNED_SESSION),
+                fresh_state=fresh_state,
+            ),
+            managed_user_command=managed_command,
+        )
+    fresh_state.assert_awaited_once()
+    managed_command.assert_not_awaited()
+    confirm.assert_called_once()
 
 
 async def test_execute_rooms_stops_after_unverified_room(hass, monkeypatch) -> None:
