@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -205,6 +206,52 @@ def _native_room_result_overlaps_session(
     return started - SESSION_LEAD <= result <= ended
 
 
+def managed_run_overlaps_native_session(
+    rotations: object,
+    started_at: object,
+    ended_at: object,
+    room_id: str | None = None,
+) -> bool:
+    """Whether a managed run started a room, ``room_id`` or any, in a native session.
+
+    Without the session's start, only that room's own managed span can hold
+    the session's end.
+    """
+    native_end = _aware(ended_at)
+    native_start = _aware(started_at)
+    if (
+        native_end is None
+        or (native_start is None and room_id is None)
+        or not isinstance(rotations, Mapping)
+    ):
+        return False
+    for rotation in rotations.values():
+        rooms = rotation.get("rooms") if isinstance(rotation, Mapping) else None
+        if not isinstance(rooms, Mapping):
+            continue
+        for record in rooms.values() if room_id is None else (rooms.get(room_id),):
+            if not isinstance(record, Mapping):
+                continue
+            managed_start = _aware(record.get("last_started"))
+            if managed_start is None:
+                continue
+            if native_start is not None:
+                if managed_start_in_native_session(
+                    managed_start, native_start, native_end
+                ):
+                    return True
+                continue
+            managed_end = _aware(record.get("last_completed")) or managed_start
+            if managed_start - SESSION_LEAD <= native_end <= managed_end + SESSION_LEAD:
+                return True
+    return False
+
+
+def _aware(value: object) -> datetime | None:
+    parsed = _instant(value) if isinstance(value, str) else None
+    return parsed if parsed is not None and parsed.tzinfo is not None else None
+
+
 def _native_room_history_matches_managed_room(
     snapshot: dict[str, Any], room_id: str
 ) -> bool:
@@ -212,31 +259,12 @@ def _native_room_history_matches_managed_room(
     native_record = snapshot.get("robot_reported_completed_by_room", {}).get(room_id)
     if not isinstance(native_record, dict):
         return False
-    native_started = native_record.get("started_at")
-    raw_native_end = native_record.get("at")
-    native_end = _instant(raw_native_end) if isinstance(raw_native_end, str) else None
-    if native_end is None or native_end.tzinfo is None:
-        return False
-    parsed_start = _instant(native_started) if isinstance(native_started, str) else None
-    for rotation in snapshot.get("plan_history", {}).values():
-        rooms = rotation.get("rooms") if isinstance(rotation, dict) else None
-        record = rooms.get(room_id) if isinstance(rooms, dict) else None
-        if not isinstance(record, dict):
-            continue
-        raw_start = record.get("last_started")
-        managed_start = _instant(raw_start) if isinstance(raw_start, str) else None
-        if managed_start is None or managed_start.tzinfo is None:
-            continue
-        raw_end = record.get("last_completed")
-        managed_end = _instant(raw_end) if isinstance(raw_end, str) else None
-        if managed_end is None or managed_end.tzinfo is None:
-            managed_end = managed_start
-        if parsed_start is not None and parsed_start.tzinfo is not None:
-            if managed_start_in_native_session(managed_start, parsed_start, native_end):
-                return True
-        elif managed_start - SESSION_LEAD <= native_end <= managed_end + SESSION_LEAD:
-            return True
-    return False
+    return managed_run_overlaps_native_session(
+        snapshot.get("plan_history"),
+        native_record.get("started_at"),
+        native_record.get("at"),
+        room_id,
+    )
 
 
 def _latest_room_statistics_value(

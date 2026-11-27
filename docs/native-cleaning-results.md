@@ -64,10 +64,13 @@ lets them advance [room schedules](room-schedules.md):
   room-schedule counters. Saved plans and run history are kept.
 
 History matches the robot's own IDs for the clean, the floor and the room, so a
-late record updates the right room while another floor is active and a renamed
+record from another floor never updates the active floor's rooms and a renamed
 room keeps its history. An unknown room ID never falls back to a name. Older
-records without IDs match only a unique room name on a single known floor.
-`statistics_source` on each sensor says which kind of match was used, and
+records without IDs match only a unique room name on a single known floor, so
+on a home with more than one floor only records that name the active floor
+count. `statistics_source` on each sensor says which kind of match was used
+(`robot_native_mode_result_identity_match` or
+`robot_native_mode_result_room_name_match`), and
 `native_statistics_blocked_reason` says why a statistic is withheld. Reading
 history twice never counts work twice, and a newer partial clean does not erase
 an older completed one.
