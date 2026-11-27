@@ -27,8 +27,10 @@ from custom_components.matic_robot.area_binding import (
     binding_for_floor_plan,
 )
 from custom_components.matic_robot.client.commands import UserCommand
+from custom_components.matic_robot.client.coverage_receipts import native_session_hash
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import (
+    CleaningModeResult,
     CleaningSession,
     CleaningSessionRecord,
     FloorPlan,
@@ -8964,6 +8966,124 @@ async def test_leg_takeover_during_verification_interrupts(hass) -> None:
         )
 
     manager.async_mark_interrupted.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("identity_after_history", "cancel_during_read"),
+    [(b"", False), (b"another-task", False), (None, False), (b"", True)],
+)
+async def test_leg_checks_native_identity_when_ha_still_reports_paused(
+    hass, identity_after_history, cancel_during_read
+) -> None:
+    """A water pause can outlive the native mission in HA's state."""
+    rooms = [
+        CleaningRoom("study", "Study", "vacuum_and_mop", "standard"),
+        CleaningRoom("hall", "Hall", "vacuum", "standard"),
+        CleaningRoom("den", "Den", "vacuum_and_mop", "standard"),
+        CleaningRoom("office", "Office", "vacuum_and_mop", "standard"),
+    ]
+    manager = _leg_manager()
+    key = bytes.fromhex("1214121209010203040506070811090a0b0c0d0e0f10")
+    session_hash = native_session_hash(key)
+    assert session_hash is not None
+    native_identity = b"owned-task"
+    cancel_event = asyncio.Event()
+    history_read = False
+    dispatched = dt_util.utcnow() - timedelta(minutes=10)
+    ended_at = (dt_util.utcnow() - timedelta(seconds=1)).isoformat()
+    record = CleaningSessionRecord(
+        key,
+        CleaningSession(
+            dispatched.isoformat(),
+            ended_at,
+            590,
+            tuple(room.name for room in rooms),
+            (),
+            False,
+            vacuum_completed_rooms=tuple(room.name for room in rooms),
+            mop_completed_rooms=("Den",),
+            combined_completed_rooms=("Den",),
+            mode_results=(
+                *(CleaningModeResult(r.name, "vacuum", "completed", 60) for r in rooms),
+                CleaningModeResult("Study", "mop", "unattempted", 0),
+                CleaningModeResult("Den", "mop", "completed", 40),
+                CleaningModeResult("Office", "mop", "partial", 20),
+            ),
+        ),
+    )
+    dispatch = _PreparedRoomDispatch(
+        tuple(rooms),
+        None,
+        dispatched,
+        native_identity=native_identity,
+        recovered=True,
+        session_hash=session_hash,
+    )
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
+
+    async def terminal(*_args, **_kwargs):
+        nonlocal native_identity
+        native_identity = b""
+        hass.states.async_set("vacuum.matic", "returning")
+        return RoomRunOutcome.HANDOFF_CANDIDATE, None
+
+    async def stale_pause(*_args, **_kwargs) -> None:
+        hass.states.async_set("vacuum.matic", "paused")
+
+    async def history() -> tuple[CleaningSessionRecord, ...]:
+        nonlocal history_read, native_identity
+        history_read = True
+        native_identity = identity_after_history
+        return (record,)
+
+    async def read_identity() -> bytes | None:
+        if history_read and cancel_during_read:
+            cancel_event.set()
+        return native_identity
+
+    manager.async_mark_verifying.side_effect = stale_pause
+    prefetch = AsyncMock()
+    if cancel_during_read:
+        expectation = pytest.raises(PlanCancelledError)
+    elif identity_after_history == b"":
+        expectation = nullcontext()
+    else:
+        expectation = pytest.raises(ServiceValidationError)
+
+    with expectation:
+        completed = await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            cancel_event=cancel_event,
+            prepared_dispatch=dispatch,
+            session_identity=read_identity,
+            session_history=history,
+            prefetch_next=prefetch,
+            wait_for_leg_outcome=terminal,
+        )
+        assert completed is False
+
+    prefetch.assert_not_awaited()
+    if cancel_during_read:
+        manager.async_mark_completed.assert_not_awaited()
+        manager.async_mark_cancelled.assert_awaited_once()
+    elif identity_after_history == b"":
+        assert [
+            (call.args[2].room_id, call.kwargs["duration_seconds"])
+            for call in manager.async_mark_completed.await_args_list
+        ] == [("hall", 60), ("den", 100)]
+        assert [
+            call.args[2].room_id
+            for call in manager.async_mark_ended_unverified.await_args_list
+        ] == ["study", "office"]
+        manager.async_mark_interrupted.assert_not_awaited()
+    else:
+        manager.async_mark_completed.assert_not_awaited()
+        manager.async_mark_interrupted.assert_awaited_once()
 
 
 async def test_leg_without_history_reader_credits_nothing(hass) -> None:

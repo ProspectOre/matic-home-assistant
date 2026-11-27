@@ -762,6 +762,7 @@ async def _async_run_room(
                                     cancel_event=cancel_event,
                                     on_verified_session=completion_sessions.append,
                                     session_hash=dispatch.session_hash,
+                                    session_identity=session_identity,
                                 )
                                 completion_verified = (
                                     room_verdict is NativeRoomVerdict.COMPLETED
@@ -1824,6 +1825,7 @@ async def _async_run_leg(
                             cancel_event=cancel_event,
                             on_verified_session=completion_sessions.append,
                             session_hash=dispatch.session_hash,
+                            session_identity=session_identity,
                         )
                         break
                     if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
@@ -2128,6 +2130,7 @@ async def _async_verify_leg_completion(
     timeout_seconds: float | None = None,
     on_verified_session: Callable[[str], None] | None = None,
     session_hash: str | None = None,
+    session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
 ) -> dict[str, tuple[str, int]] | None:
     """Match one new native leg record and return per-room completion evidence.
 
@@ -2147,11 +2150,12 @@ async def _async_verify_leg_completion(
             else timeout_seconds
         ):
             for attempt in range(attempts):
-                _raise_if_completion_verification_was_replaced(
+                await _async_check_completion_ownership(
                     hass,
                     entity_id,
                     cancel_event,
                     allow_active_cleaning=allow_active_cleaning,
+                    session_identity=session_identity if session_hash else None,
                 )
                 try:
                     records = await read_dispatch_history(reader, session_hash)
@@ -2160,11 +2164,12 @@ async def _async_verify_leg_completion(
                         "Native Matic leg evidence unavailable (%s)", type(err).__name__
                     )
                     records = ()
-                _raise_if_completion_verification_was_replaced(
+                await _async_check_completion_ownership(
                     hass,
                     entity_id,
                     cancel_event,
                     allow_active_cleaning=allow_active_cleaning,
+                    session_identity=session_identity if session_hash else None,
                 )
                 now = dt_util.utcnow()
                 matches: list[CleaningSessionRecord] = []
@@ -2594,6 +2599,7 @@ async def _async_adjudicate_room_end(
     allow_active_cleaning: bool = False,
     on_verified_session: Callable[[str], None] | None = None,
     session_hash: str | None = None,
+    session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
 ) -> NativeRoomVerdict | RobotEnded:
     """Settle an ended single-room mission from one new native record.
 
@@ -2607,11 +2613,12 @@ async def _async_adjudicate_room_end(
     try:
         async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
             for attempt in range(attempts):
-                _raise_if_completion_verification_was_replaced(
+                await _async_check_completion_ownership(
                     hass,
                     entity_id,
                     cancel_event,
                     allow_active_cleaning=allow_active_cleaning,
+                    session_identity=session_identity if session_hash else None,
                 )
                 try:
                     records = await read_dispatch_history(reader, session_hash)
@@ -2621,11 +2628,12 @@ async def _async_adjudicate_room_end(
                         type(err).__name__,
                     )
                     records = ()
-                _raise_if_completion_verification_was_replaced(
+                await _async_check_completion_ownership(
                     hass,
                     entity_id,
                     cancel_event,
                     allow_active_cleaning=allow_active_cleaning,
+                    session_identity=session_identity if session_hash else None,
                 )
                 now = dt_util.utcnow()
                 matches = match_single_room_completions(
@@ -2679,12 +2687,13 @@ async def _async_adjudicate_room_end(
     return NativeRoomVerdict.UNVERIFIED
 
 
-def _raise_if_completion_verification_was_replaced(
+async def _async_check_completion_ownership(
     hass: HomeAssistant | None,
     entity_id: str | None,
     cancel_event: asyncio.Event | None,
     *,
     allow_active_cleaning: bool = False,
+    session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
 ) -> None:
     """Abort history verification if cancellation or a new task takes over."""
     if cancel_event is not None and cancel_event.is_set():
@@ -2697,6 +2706,15 @@ def _raise_if_completion_verification_was_replaced(
         and state is not None
         and state.state in {"cleaning", "paused"}
     ):
+        if session_identity is not None:
+            # HA can still show a paused or cleaning task after firmware has
+            # cleared it. Only an explicit native end allows the verifier to
+            # proceed, and the evidence must still match the dispatched UUID.
+            identity = await _async_read_session_identity(session_identity)
+            if cancel_event is not None and cancel_event.is_set():
+                raise PlanCancelledError
+            if identity == b"":
+                return
         raise RoomTakenOverError(
             "Another cleaning task started while completion was being verified"
         )
