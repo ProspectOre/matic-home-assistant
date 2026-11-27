@@ -8968,9 +8968,12 @@ async def test_leg_takeover_during_verification_interrupts(hass) -> None:
     manager.async_mark_interrupted.assert_awaited_once()
 
 
-@pytest.mark.parametrize("identity_after_history", [b"", b"another-task", None])
+@pytest.mark.parametrize(
+    ("identity_after_history", "cancel_during_read"),
+    [(b"", False), (b"another-task", False), (None, False), (b"", True)],
+)
 async def test_leg_checks_native_identity_when_ha_still_reports_paused(
-    hass, identity_after_history
+    hass, identity_after_history, cancel_during_read
 ) -> None:
     """A water pause can outlive the native mission in HA's state."""
     rooms = [
@@ -8984,6 +8987,8 @@ async def test_leg_checks_native_identity_when_ha_still_reports_paused(
     session_hash = native_session_hash(key)
     assert session_hash is not None
     native_identity = b"owned-task"
+    cancel_event = asyncio.Event()
+    history_read = False
     dispatched = dt_util.utcnow() - timedelta(minutes=10)
     ended_at = (dt_util.utcnow() - timedelta(seconds=1)).isoformat()
     record = CleaningSessionRecord(
@@ -9026,16 +9031,21 @@ async def test_leg_checks_native_identity_when_ha_still_reports_paused(
         hass.states.async_set("vacuum.matic", "paused")
 
     async def history() -> tuple[CleaningSessionRecord, ...]:
-        nonlocal native_identity
+        nonlocal history_read, native_identity
+        history_read = True
         native_identity = identity_after_history
         return (record,)
 
     async def read_identity() -> bytes | None:
+        if history_read and cancel_during_read:
+            cancel_event.set()
         return native_identity
 
     manager.async_mark_verifying.side_effect = stale_pause
     prefetch = AsyncMock()
-    if identity_after_history == b"":
+    if cancel_during_read:
+        expectation = pytest.raises(PlanCancelledError)
+    elif identity_after_history == b"":
         expectation = nullcontext()
     else:
         expectation = pytest.raises(ServiceValidationError)
@@ -9048,6 +9058,7 @@ async def test_leg_checks_native_identity_when_ha_still_reports_paused(
             "vacuum.matic",
             "serial",
             rooms,
+            cancel_event=cancel_event,
             prepared_dispatch=dispatch,
             session_identity=read_identity,
             session_history=history,
@@ -9057,7 +9068,10 @@ async def test_leg_checks_native_identity_when_ha_still_reports_paused(
         assert completed is False
 
     prefetch.assert_not_awaited()
-    if identity_after_history == b"":
+    if cancel_during_read:
+        manager.async_mark_completed.assert_not_awaited()
+        manager.async_mark_cancelled.assert_awaited_once()
+    elif identity_after_history == b"":
         assert [
             (call.args[2].room_id, call.kwargs["duration_seconds"])
             for call in manager.async_mark_completed.await_args_list
