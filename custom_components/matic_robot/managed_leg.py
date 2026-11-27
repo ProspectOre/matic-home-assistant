@@ -27,7 +27,13 @@ from . import managed_dispatch as dispatch_control
 from . import managed_observation as observation
 from . import managed_reconciliation as history_reconciliation
 from . import managed_run
-from .client import CoverageGuardError, MaticError, RobotActivity, UserCommand
+from .client import (
+    CoverageGuardError,
+    MaticError,
+    RobotActivity,
+    UserCommand,
+    native_session_hash,
+)
 from .grouped_native_reconciliation import build_grouped_native_reconciliation
 from .leg_finish import async_end_after_current_room
 from .leg_settlement import LegSettlement, RoomResult, fire_room_event
@@ -164,25 +170,15 @@ class _GroupedRecord:
         return bool(run.credited or run.robot_ended)
 
     def late_marker(self, run: _LegRun, credited_ids: Collection[str]) -> Any:
-        skipped = run.skipped_room_ids()
         return build_grouped_native_reconciliation(
             run.plan_id,
-            [
-                {
-                    "room_id": room.room_id,
-                    "room": room.name,
-                    "cleaning_mode": room.cleaning_mode,
-                    "coverage_setting": room.coverage_setting,
-                }
-                for room in run.leg
-                if room.room_id in run.observed_ids
-                and room.room_id not in credited_ids
-                and room.room_id not in skipped
-            ],
+            run.leg,
+            run.observed_ids,
+            {*credited_ids, *run.skipped_room_ids()},
             run.dispatch.dispatched_at
             if run.room_observer is not None and run.dispatch is not None
             else None,
-            run.native_identity,
+            native_session_hash(run.native_identity or b"", active=True),
             run.floor_token,
             run.run_id,
         )
