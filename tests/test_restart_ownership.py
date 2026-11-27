@@ -145,7 +145,7 @@ async def test_a_run_without_its_call_floor_vacuum_or_start_cannot_resume(
 async def test_a_robot_silent_during_the_recovered_handoff_sends_nothing(
     hass, recovery_state, monkeypatch
 ):
-    """Lost contact while settling ends recovery as unavailable, sending nothing."""
+    """Lost contact while settling ends the run as a live run's, sending nothing."""
     manager, entry, checkpoint, room = recovery_state
     next_room = CleaningRoom("office", "Office", "mop", "standard")
     checkpoint.update(
@@ -195,5 +195,9 @@ async def test_a_robot_silent_during_the_recovered_handoff_sends_nothing(
     settled.assert_awaited_once()
     runner.assert_not_awaited()
     last_run = manager.history.snapshot("serial")["last_run"]
-    assert last_run["reason_code"] == "restart_recovery_unavailable"
+    assert (last_run["outcome"], last_run["reason_code"], last_run["cause"]) == (
+        "unverified",
+        "connection_lost",
+        "unknown",
+    )
     client.async_send_user_command.assert_not_awaited()

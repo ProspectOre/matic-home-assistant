@@ -50,6 +50,7 @@ from .managed_run import (
     RECONNECT_SECONDS,
     PlanCancelledError,
     PreparedRoomDispatch,
+    RobotConnectionLostError,
     async_unless_cancelled,
 )
 from .native_completion import RobotEnded
@@ -78,6 +79,12 @@ RECOVERY_RETRY_SECONDS = 2
 RECOVERY_ATTEMPTS = RECONNECT_SECONDS // RECOVERY_RETRY_SECONDS
 # A leg recovery settled without proof for every room ends as a live run would.
 _, _PARTIAL_REASON, _PARTIAL_CAUSE = PARTIAL_NATIVE_ENDING
+# The cause a live run gives with each reason recovery shares with it; every
+# other unverified recovery ending is Home Assistant's.
+_LIVE_RUN_CAUSES = {
+    _PARTIAL_REASON: _PARTIAL_CAUSE,
+    RobotConnectionLostError.reason_code: "unknown",
+}
 # Why a run ends when its checkpoint or vacuum entity cannot be used.
 _CHECKPOINT_UNVERIFIED = "restart_checkpoint_unverified"
 # Actions 0.6 removed, and the Run plan cleaning order each one stood for.
@@ -415,6 +422,10 @@ async def async_recover_managed_run(
     except NativeHistoryIncompleteError:
         # Unlike a failed read, this holds until the robot drops the entry.
         reason = "restart_history_incomplete"
+    except RobotConnectionLostError as err:
+        # The robot stopped answering for the reconnect window, as a live
+        # run would report it.
+        reason = err.reason_code
     except (
         HomeAssistantError,
         MaticError,
@@ -934,9 +945,7 @@ async def _async_finish_recovered_run(
         if stopped
         else "verified_completion"
         if completed
-        else _PARTIAL_CAUSE
-        if reason == _PARTIAL_REASON
-        else "home_assistant",
+        else _LIVE_RUN_CAUSES.get(reason, "home_assistant"),
         stored.completed_room_count if stored is not None else 0,
     )
     entity_id = checkpoint.entity_id
