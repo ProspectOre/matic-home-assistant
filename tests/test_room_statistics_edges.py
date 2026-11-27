@@ -485,6 +485,9 @@ def test_managed_history_matcher_skips_malformed_history_containers():
     }
     assert managed_run_overlaps_native_session(rotations, *window)
     assert managed_run_overlaps_native_session(rotations, None, ended_at, "living")
+    # Without the session's start, a match for any room would rest on the end
+    # time alone, so it is refused.
+    assert not managed_run_overlaps_native_session(rotations, None, ended_at)
     assert not managed_run_overlaps_native_session(rotations, None, ended_at, "kitchen")
 
 

@@ -112,3 +112,16 @@ async def test_record_without_a_floor_stays_withheld(hass):
     assert snapshot["robot_reported_completed_by_room"] == {}
     assert _shown(snapshot, GROUND) is None
     assert native_statistics_blocked(snapshot, "room-1", GROUND)
+
+
+@pytest.mark.asyncio
+async def test_single_floor_home_withholds_a_record_from_a_redrawn_floor(hass):
+    ended = (dt_util.utcnow() - timedelta(minutes=5)).isoformat()
+    snapshot = await _imported(hass, _record(ended, 7, "partition-ground"))
+    single = replace(GROUND, mapped_floors=(MappedFloor(7, "Ground", "ground"),))
+    redrawn = replace(single, partition_protocol_id="partition-redrawn")
+
+    assert _shown(snapshot, single) == (ended, 420)
+    # The same mission under a new partition may have new room boundaries.
+    assert _shown(snapshot, redrawn) is None
+    assert not native_statistics_blocked(snapshot, "room-1", redrawn)
