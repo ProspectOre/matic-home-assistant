@@ -745,6 +745,47 @@ async def test_smart_stop_to_a_returning_robot_sends_no_dock_but_confirms_it(
     confirm.assert_called_once()
 
 
+async def test_a_stop_during_the_end_of_run_read_sends_no_dock(hass) -> None:
+    """A Stop that arrives while the robot is read wins over the read's answer."""
+    robot = FakeRobot()
+    robot.show("cleaning")
+    reported = FakeRobot()
+    reported.show("idle")
+    stop_arrived = False
+
+    async def read_then_stop():
+        nonlocal stop_arrived
+        stop_arrived = True
+        return reported.state.value.operational
+
+    managed_command = AsyncMock()
+    with (
+        patch(
+            "custom_components.matic_robot.managed_leg.async_run_room_leg",
+            _owned_leg(),
+        ),
+        patch.object(
+            dispatch_control, "stop_is_pending", side_effect=lambda *_: stop_arrived
+        ),
+    ):
+        await async_execute_rooms(
+            hass,
+            run_plan_call(hass, return_to_base=True),
+            memory_manager(hass),
+            "vacuum.matic",
+            "serial",
+            [plan_room("Kitchen", "room-kitchen")],
+            floor_token="floor",
+            robot=robot.port(
+                session_identity=AsyncMock(return_value=OWNED_SESSION),
+                fresh_state=read_then_stop,
+            ),
+            managed_user_command=managed_command,
+        )
+    assert stop_arrived
+    managed_command.assert_not_awaited()
+
+
 async def test_execute_rooms_stops_after_unverified_room(hass, monkeypatch) -> None:
     """A terminal room without native completion never dispatches the next room."""
     one_room_missions(monkeypatch)
