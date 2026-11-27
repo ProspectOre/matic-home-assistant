@@ -608,6 +608,7 @@ async def async_recover_managed_run(
                 timeout_seconds=remaining,
                 on_verified_session=completion_sessions.append,
                 session_hash=session_hash,
+                session_identity=runtime.client.async_get_cleaning_session_identity,
             )
             verified_coverage = await async_confirm_completed_coverage(
                 manager.coverage_receipt(serial_number, run["run_id"]),
