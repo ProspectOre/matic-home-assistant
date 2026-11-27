@@ -423,12 +423,13 @@ class SimulatedRobot:
             visits=[Visit(room.id, [], [(0, 1)], now) for room in self.floor.rooms],
             started_at=now - 600_000_000_000,
         )
-        self._history.append(
-            (
-                session.session_wire,
-                session.history_value(self.floor, now, completed=True),
-            )
+        self.add_history(
+            session.session_wire, session.history_value(self.floor, now, completed=True)
         )
+
+    def add_history(self, key: bytes, value: bytes) -> None:
+        """Publish one more session-history record."""
+        self._history.append((key, value))
         self.set_collection("coverage_session_history", self._history)
 
     def hold_history(self) -> None:

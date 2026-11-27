@@ -37,6 +37,39 @@ def _room_fields(active: ActivePlan) -> dict[str, Any]:
     }
 
 
+def _robot_reported_room(room: dict[str, Any]) -> dict[str, Any]:
+    """Project a room's stored native result and the evidence behind it.
+
+    A stored partition hash means the robot's record named this floor; a
+    result without one matched by room name.
+    """
+    completed = isinstance(room.get("robot_last_completed"), str)
+    partition_hash = room.get("robot_last_partition_hash")
+    identified = completed and isinstance(partition_hash, str)
+    projection = {
+        "name": room.get("name"),
+        "at": room.get("robot_last_completed"),
+        "duration_seconds": room.get("robot_last_duration_seconds"),
+        "floor_mission_id": room.get(
+            "robot_last_floor_id", room.get("robot_last_invalid_floor_id")
+        ),
+        "started_at": room.get("robot_last_session_started_at"),
+        "source": (
+            "robot_native_mode_result_identity_match"
+            if identified
+            else "robot_native_mode_result_room_name_match"
+            if completed
+            else "robot_native_mode_result_managed_session"
+            if room.get("robot_last_invalid_source") == "managed_session"
+            else "robot_native_mode_result_ambiguous"
+        ),
+        "excluded_modes": room.get("robot_last_conflicted_modes", []),
+    }
+    if identified:
+        projection["floor_partition_hash"] = partition_hash
+    return projection
+
+
 class PlanHistory:
     """Project shared run state without writing accounting or recovery records."""
 
@@ -202,23 +235,7 @@ class PlanHistory:
                 for room_id, room in robot["rooms"].items()
             },
             "robot_reported_completed_by_room": {
-                room_id: {
-                    "name": room.get("name"),
-                    "at": room.get("robot_last_completed"),
-                    "duration_seconds": room.get("robot_last_duration_seconds"),
-                    "floor_mission_id": room.get(
-                        "robot_last_floor_id", room.get("robot_last_invalid_floor_id")
-                    ),
-                    "started_at": room.get("robot_last_session_started_at"),
-                    "source": (
-                        "robot_native_mode_result_room_name_match"
-                        if isinstance(room.get("robot_last_completed"), str)
-                        else "robot_native_mode_result_managed_session"
-                        if room.get("robot_last_invalid_source") == "managed_session"
-                        else "robot_native_mode_result_ambiguous"
-                    ),
-                    "excluded_modes": room.get("robot_last_conflicted_modes", []),
-                }
+                room_id: _robot_reported_room(room)
                 for room_id, room in robot["rooms"].items()
                 if isinstance(room.get("robot_last_completed"), str)
                 or isinstance(room.get("robot_last_invalidated_at"), str)

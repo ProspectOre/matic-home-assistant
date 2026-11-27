@@ -19,11 +19,11 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.plans import (
     CleaningPlanManager,
 )
+from custom_components.matic_robot.room_results import (
+    managed_run_overlaps_native_session,
+)
 from custom_components.matic_robot.room_statistics import (
     native_room_statistics_by_session,
-)
-from custom_components.matic_robot.room_statistics_store import (
-    _native_room_statistic_matches_managed_history,
 )
 from custom_components.matic_robot.stores import CleaningHistory
 from tests.plans.fakes import memory_manager
@@ -444,30 +444,48 @@ def test_managed_history_matcher_skips_malformed_history_containers():
         now=dt_util.utcnow(),
         future_tolerance_seconds=60,
     )["living"]
+    window = (statistic.started_at, statistic.ended_at)
 
-    assert not _native_room_statistic_matches_managed_history(
-        {"rotations": "malformed"}, statistic
+    assert not managed_run_overlaps_native_session("malformed", *window)
+    assert not managed_run_overlaps_native_session({"broken": "not-a-mapping"}, *window)
+    assert not managed_run_overlaps_native_session(
+        {"broken": {"rooms": "not-a-mapping"}},
+        *window,
     )
-    assert not _native_room_statistic_matches_managed_history(
-        {"rotations": {"broken": "not-a-mapping"}}, statistic
-    )
-    assert not _native_room_statistic_matches_managed_history(
-        {"rotations": {"broken": {"rooms": "not-a-mapping"}}},
-        statistic,
-    )
-    assert not _native_room_statistic_matches_managed_history(
-        {"rotations": {"broken": {"rooms": {"living": None}}}},
-        statistic,
+    assert not managed_run_overlaps_native_session(
+        {"broken": {"rooms": {"living": None}}},
+        *window,
     )
     for invalid_start in ("bad-time", "2026-11-01T09:30:00"):
-        assert not _native_room_statistic_matches_managed_history(
-            {
-                "rotations": {
-                    "bad-start": {"rooms": {"living": {"last_started": invalid_start}}}
-                }
-            },
-            statistic,
+        assert not managed_run_overlaps_native_session(
+            {"bad-start": {"rooms": {"living": {"last_started": invalid_start}}}},
+            *window,
         )
+        assert not managed_run_overlaps_native_session(
+            {"bad-start": {"rooms": {"living": {"last_started": invalid_start}}}},
+            None,
+            ended_at,
+            "living",
+        )
+    assert not managed_run_overlaps_native_session(
+        {"broken": {"rooms": {"living": None}}}, None, ended_at, "living"
+    )
+    # A well-formed record beside the broken ones still matches, in both forms;
+    # without the session's start, only that room's own span can hold its end.
+    rotations = {
+        "broken": {"rooms": "not-a-mapping"},
+        "run": {
+            "rooms": {
+                "living": {
+                    "last_started": "2026-11-01T09:30:00+00:00",
+                    "last_completed": "2026-11-01T09:59:00+00:00",
+                }
+            }
+        },
+    }
+    assert managed_run_overlaps_native_session(rotations, *window)
+    assert managed_run_overlaps_native_session(rotations, None, ended_at, "living")
+    assert not managed_run_overlaps_native_session(rotations, None, ended_at, "kitchen")
 
 
 def test_other_room_managed_session_suppresses_incidental_native_room_completion():

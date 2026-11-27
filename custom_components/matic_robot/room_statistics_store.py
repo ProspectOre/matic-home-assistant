@@ -12,7 +12,7 @@ from homeassistant.util import dt as dt_util
 from .client import CleaningSessionRecord, FloorPlan
 from .plan_timing import ROTATION_FUTURE_TOLERANCE_SECONDS, latest_timestamp
 from .room_identity import native_statistics_have_ambiguous_floor
-from .room_results import managed_start_in_native_session
+from .room_results import managed_run_overlaps_native_session
 from .room_statistics import (
     NATIVE_MODES,
     NativeRoomStatistic,
@@ -398,7 +398,9 @@ def _managed_session(
             if (existing_timestamp is None or statistic.timestamp >= existing_timestamp)
             and (
                 room.get("robot_last_managed_session_hash") == statistic.session_hash
-                or _native_room_statistic_matches_managed_history(robot, statistic)
+                or managed_run_overlaps_native_session(
+                    robot.get("rotations"), statistic.started_at, statistic.ended_at
+                )
             )
         ),
         None,
@@ -603,45 +605,3 @@ def _remember_native_mode_tombstone_identity(
     )
     del tombstones[:-64]
     return True
-
-
-def _native_room_statistic_matches_managed_history(
-    robot: Mapping[str, Any], statistic: NativeRoomStatistic
-) -> bool:
-    """Match a native session to any room start recorded for a managed run."""
-    native_start = (
-        dt_util.parse_datetime(statistic.started_at)
-        if isinstance(statistic.started_at, str)
-        else None
-    )
-    native_end = dt_util.parse_datetime(statistic.ended_at)
-    if (
-        native_start is None
-        or native_start.tzinfo is None
-        or native_end is None
-        or native_end.tzinfo is None
-    ):
-        return False
-    rotations = robot.get("rotations")
-    if not isinstance(rotations, Mapping):
-        return False
-    for rotation in rotations.values():
-        if not isinstance(rotation, Mapping):
-            continue
-        rooms = rotation.get("rooms")
-        if not isinstance(rooms, Mapping):
-            continue
-        for record in rooms.values():
-            if not isinstance(record, Mapping):
-                continue
-            raw_managed_start = record.get("last_started")
-            managed_start = (
-                dt_util.parse_datetime(raw_managed_start)
-                if isinstance(raw_managed_start, str)
-                else None
-            )
-            if managed_start is None or managed_start.tzinfo is None:
-                continue
-            if managed_start_in_native_session(managed_start, native_start, native_end):
-                return True
-    return False
